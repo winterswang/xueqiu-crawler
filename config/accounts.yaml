@@ -1,0 +1,32 @@
+# 雪球账号配置
+
+accounts:
+  - id: "5739488179"
+    name: "Elon翻开每一页"
+    url: "https://xueqiu.com/u/5739488179"
+    enabled: true
+    description: "价值投资深度分析"
+    
+  - id: "6308001210"
+    name: "czy710"
+    url: "https://xueqiu.com/u/6308001210"
+    enabled: true
+    description: "中海油分析专家"
+    
+  - id: "6249637706"
+    name: "待确认"
+    url: "https://xueqiu.com/u/6249637706"
+    enabled: true
+    description: ""
+    
+  - id: "9951187724"
+    name: "待确认"
+    url: "https://xueqiu.com/u/9951187724"
+    enabled: true
+    description: ""
+    
+  - id: "1936609590"
+    name: "待确认"
+    url: "https://xueqiu.com/u/1936609590"
+    enabled: true
+    description: ""

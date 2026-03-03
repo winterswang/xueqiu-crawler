@@ -1,0 +1,29 @@
+# 雪球爬虫配置
+
+crawler:
+  delay_min: 2              # 最小请求间隔(秒)
+  delay_max: 5              # 最大请求间隔(秒)
+  timeout: 30               # 页面超时(秒)
+  headless: true            # 无头模式
+  max_articles: 20          # 每次最多爬取文章数
+  max_retries: 3            # 最大重试次数
+
+storage:
+  output_dir: data/         # 输出目录
+  format: markdown          # 存储格式
+  
+schedule:
+  enabled: true
+  cron: "0 2 * * *"         # 每天凌晨2点
+  
+logging:
+  level: INFO
+  file: logs/crawler.log
+
+# 反爬策略
+anti_detect:
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  locale: "zh-CN"
+  viewport:
+    width: 1920
+    height: 1080
