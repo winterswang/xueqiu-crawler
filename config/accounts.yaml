@@ -31,6 +31,12 @@ accounts:
     enabled: true
     description: ""
     
+  - id: "4641860462"
+    name: "待确认"
+    url: "https://xueqiu.com/u/4641860462"
+    enabled: true
+    description: ""
+    
   - id: "1936609590"
     name: "逸修1"
     url: "https://xueqiu.com/u/1936609590"
