@@ -442,6 +442,69 @@ class XueqiuCrawler:
         
         return user_id  # 返回ID作为默认值
     
+    def _update_account_name(self, user_id: str, name: str):
+        """更新账号配置中的用户名"""
+        try:
+            accounts_path = self.project_root / 'config' / 'accounts.yaml'
+            with open(accounts_path, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+            
+            # 更新账号名称
+            for account in data.get('accounts', []):
+                if account.get('id') == user_id:
+                    if account.get('name') in ['待确认', user_id]:
+                        account['name'] = name
+                        self.logger.info(f"更新账号名称: {user_id} -> {name}")
+                        
+                        # 保存配置
+                        with open(accounts_path, 'w', encoding='utf-8') as f:
+                            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+                        return True
+                    break
+        except Exception as e:
+            self.logger.warning(f"更新账号名称失败: {e}")
+        
+        return False
+    
+    def _check_and_handle_login(self, page: Page) -> bool:
+        """检查是否需要登录，如果需要则展示二维码"""
+        try:
+            # 检查是否有登录提示或验证码
+            page_content = page.content()
+            
+            # 检查是否在验证页面
+            if 'Verification' in page.title() or '验证' in page_content:
+                self.logger.warning("检测到验证页面，需要人工验证")
+                
+                # 尝试查找二维码
+                qr_elem = page.query_selector('img.qrcode, img[src*="qrcode"], canvas')
+                if qr_elem:
+                    # 获取二维码图片
+                    qr_src = qr_elem.get_attribute('src')
+                    if qr_src:
+                        self.logger.info("发现二维码，请扫描登录")
+                        # 这里可以保存二维码图片或发送给用户
+                        return True
+                
+                # 查找登录按钮
+                login_btn = page.query_selector('button.login, a.login, .login-btn')
+                if login_btn:
+                    self.logger.info("点击登录按钮...")
+                    login_btn.click()
+                    page.wait_for_timeout(2000)
+                    
+                    # 检查是否有二维码
+                    qr_elem = page.query_selector('img.qrcode, img[src*="qrcode"]')
+                    if qr_elem:
+                        self.logger.info("请扫描二维码登录")
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.warning(f"检查登录状态失败: {e}")
+            return False
+    
     def crawl_user(self, user_id: str, url: str) -> List[dict]:
         """爬取单个用户的文章"""
         self.logger.info(f"开始爬取用户: {user_id}")
@@ -463,6 +526,16 @@ class XueqiuCrawler:
                 self.logger.info(f"访问用户主页: {url}")
                 page.goto(url, timeout=30000)
                 page.wait_for_timeout(3000)
+                
+                # 检查是否需要登录/验证
+                if self._check_and_handle_login(page):
+                    self.logger.warning("需要人工验证，等待...")
+                    page.wait_for_timeout(10000)  # 等待用户扫描
+                
+                # 获取用户名并更新配置
+                user_name = self._get_user_name(page, user_id)
+                if user_name and user_name != user_id:
+                    self._update_account_name(user_id, user_name)
                 
                 # 解析文章列表
                 article_list = self._parse_article_list(page, user_id)
