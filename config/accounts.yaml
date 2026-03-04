@@ -14,7 +14,7 @@ accounts:
     description: "中海油分析专家"
     
   - id: "6249637706"
-    name: "待确认"
+    name: "海豚研究君"
     url: "https://xueqiu.com/u/6249637706"
     enabled: true
     description: ""
@@ -26,7 +26,7 @@ accounts:
     description: ""
     
   - id: "1936609590"
-    name: "待确认"
+    name: "逸修1"
     url: "https://xueqiu.com/u/1936609590"
     enabled: true
     description: ""

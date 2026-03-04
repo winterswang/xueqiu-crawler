@@ -90,13 +90,56 @@ class XueqiuCrawler:
         if self.index_file.exists():
             with open(self.index_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        return {'articles': {}, 'last_update': None}
+        return {'articles': {}, 'last_update': None, 'history': {}}
     
     def _save_index(self):
         """保存索引"""
         self.index['last_update'] = datetime.now().isoformat()
         with open(self.index_file, 'w', encoding='utf-8') as f:
             json.dump(self.index, f, ensure_ascii=False, indent=2)
+    
+    def _save_history(self, user_id: str, articles: List[dict]):
+        """保存历史快照"""
+        history_dir = self.data_dir / 'history' / user_id
+        history_dir.mkdir(parents=True, exist_ok=True)
+        
+        today = datetime.now().strftime('%Y-%m-%d')
+        history_file = history_dir / f'{today}.json'
+        
+        history_data = {
+            'date': today,
+            'user_id': user_id,
+            'article_count': len(articles),
+            'articles': [
+                {
+                    'article_id': a.get('article_id'),
+                    'title': a.get('title', '')[:50],
+                    'crawl_time': a.get('crawl_time')
+                }
+                for a in articles
+            ]
+        }
+        
+        with open(history_file, 'w', encoding='utf-8') as f:
+            json.dump(history_data, f, ensure_ascii=False, indent=2)
+        
+        self.logger.info(f"历史快照已保存: {history_file}")
+    
+    def _get_history_article_ids(self, user_id: str) -> set:
+        """获取历史文章ID集合"""
+        history_dir = self.data_dir / 'history' / user_id
+        if not history_dir.exists():
+            return set()
+        
+        article_ids = set()
+        # 读取所有历史快照
+        for history_file in sorted(history_dir.glob('*.json'), reverse=True)[:7]:  # 最近7天
+            with open(history_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                for article in data.get('articles', []):
+                    article_ids.add(article.get('article_id'))
+        
+        return article_ids
     
     def _random_delay(self):
         """随机延迟"""
@@ -242,10 +285,10 @@ class XueqiuCrawler:
                     if like_match:
                         article['likes'] = int(like_match.group(1))
                 
-                # 过滤：只要有链接和内容就算
-                if article['link'] and article['content']:
+                # 过滤：只要有文章链接就保留，到详情页再判断
+                if article['link']:
                     articles.append(article)
-                    self.logger.info(f"  [{len(articles)}] {article['title'][:30] if article['title'] else article['content'][:30]}...")
+                    self.logger.info(f"  [{len(articles)}] {article['title'][:30] if article['title'] else '待获取标题'}...")
                 
             except Exception as e:
                 self.logger.warning(f"解析动态 {i+1} 失败: {e}")
@@ -266,6 +309,8 @@ class XueqiuCrawler:
         }
         
         try:
+            # 先导航到文章页面
+            page.goto(url, timeout=30000)
             page.wait_for_load_state('networkidle', timeout=15000)
             page.wait_for_timeout(2000)  # 额外等待
             
@@ -273,13 +318,14 @@ class XueqiuCrawler:
             page_title = page.title()
             self.logger.debug(f"页面标题: {page_title}")
             if page_title:
-                # 尝试不同的分割方式
-                if ' - 雪球' in page_title:
-                    title = page_title.split(' - 雪球')[0].strip()
-                elif '- 雪球' in page_title:
-                    title = page_title.split('- 雪球')[0].strip()
-                elif '雪球' in page_title:
-                    title = page_title.split('雪球')[0].strip().rstrip('-').strip()
+                # 统一处理：找到 "雪球" 并分割
+                if '雪球' in page_title:
+                    # 找到雪球的位置，取前面的部分
+                    idx = page_title.find('雪球')
+                    title = page_title[:idx].strip()
+                    # 去掉可能的分隔符
+                    title = title.rstrip('-').rstrip('—').rstrip('–').strip()
+                    self.logger.debug(f"提取标题: {title[:50]}...")
                 else:
                     title = page_title.strip()
                 
@@ -287,6 +333,7 @@ class XueqiuCrawler:
                 if len(title) > 100:
                     title = title[:100] + '...'
                 detail['title'] = title
+                self.logger.info(f"提取标题: {title[:50]}...")
             
             # 获取作者
             author_elem = page.query_selector('.article__bd__from a, .user-name, .author-name, .status-content a[href*="/u/"]')
@@ -302,19 +349,23 @@ class XueqiuCrawler:
             content_elem = page.query_selector('.article__bd__detail')
             if content_elem:
                 detail['content'] = content_elem.inner_text().strip()
+                self.logger.info(f"提取正文: {len(detail['content'])} 字符")
             else:
                 # 对于短状态，尝试其他选择器
+                self.logger.warning("未找到 .article__bd__detail，尝试备选选择器")
                 for sel in ['.status-content', '.article-content', '.status__content', 'article']:
                     elem = page.query_selector(sel)
                     if elem:
                         text = elem.inner_text().strip()
                         if len(text) > 20:
                             detail['content'] = text
+                            self.logger.info(f"备选选择器 {sel}: {len(text)} 字符")
                             break
                 
                 # 如果还是没有内容，从页面标题获取（短状态）
                 if not detail['content'] and detail['title']:
                     detail['content'] = detail['title']
+                    self.logger.warning(f"使用标题作为内容: {detail['content'][:50]}...")
             
             # 获取互动数据
             page_text = page.content()
@@ -364,6 +415,29 @@ class XueqiuCrawler:
         
         self.logger.info(f"保存文章: {filepath}")
         return str(filepath)
+    
+    def _get_user_name(self, page: Page, user_id: str) -> str:
+        """从用户主页获取用户名称"""
+        try:
+            # 在用户主页上获取用户名
+            name_elem = page.query_selector('.user-name, .username, .profile__name')
+            if name_elem:
+                name = name_elem.inner_text().strip()
+                if name:
+                    self.logger.info(f"获取用户名: {name}")
+                    return name
+            
+            # 备选：从页面标题获取
+            page_title = page.title()
+            if '的雪球专栏' in page_title:
+                name = page_title.split('的雪球专栏')[0].strip()
+                if name:
+                    return name
+                    
+        except Exception as e:
+            self.logger.warning(f"获取用户名失败: {e}")
+        
+        return user_id  # 返回ID作为默认值
     
     def crawl_user(self, user_id: str, url: str) -> List[dict]:
         """爬取单个用户的文章"""

@@ -1,0 +1,805 @@
+{
+  "articles": {
+    "377764482": {
+      "title": "看完了《张忠谋自传》，未来一段时间，会开始看AI相关的公司。",
+      "author": "方文19",
+      "publish_time": "发布于2026-03-03 14:00",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:17:21.028020",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377764482.md"
+    },
+    "377717237": {
+      "title": "回复@东方之子: 别人的改革。。//@东方之子:回复@但斌:韩国股市为什么大涨呢？李在明就职一个月内便推动修订扩大信托责...",
+      "author": "@但斌",
+      "publish_time": "发布于2026-03-03 10:34",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:17:28.109448",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377717237.md"
+    },
+    "377646420": {
+      "title": "回复@刘成岗: 没写清楚，改好了//@刘成岗:回复@行人23:啊？那建议@Elon翻开每一页 修改表达区分【事实】【展望...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-03-02 21:59",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:17:35.771090",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377646420.md"
+    },
+    "377630659": {
+      "title": "回复@莉莉安78: 很好的问题。1.虽然401k是雇主选择，但是这些钱可以Rollover到个人名下的 IRA 账户，这...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "云南",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:17:42.737696",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377630659.md"
+    },
+    "377622528": {
+      "title": "回复@十六日夜: 嚯，还有这回事，真勇//@十六日夜:回复@Elon翻开每一页:记得2016年那会儿$Robinhood...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-03-02 18:31",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:17:49.542462",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377622528.md"
+    },
+    "377613192": {
+      "title": "回复@Wayne爱自由: 加到todo里👌//@Wayne爱自由:回复@Elon翻开每一页:Elon有兴趣看看同样有多...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-03-02 17:25",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:17:56.225370",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377613192.md"
+    },
+    "377561462": {
+      "title": "回复@Waterzzz: 我觉得任何对商业模式的分析都要基于事实和数据。这行业可以说是个古老的行业了，完全不需要自己猜，...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-03-02 13:23",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:18:04.782173",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377561462.md"
+    },
+    "377536268": {
+      "title": "翻开这一页(6)：今非昔比的Robinhood 这批文章篇幅会稍长一些，主要是 Robinhood 对很多人都是比较陌生的，所以会花费一些时间来讲讲业务。但由于HOOD...",
+      "author": "Elon翻开每一页的雪球专栏",
+      "publish_time": "云南",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:18:11.136053",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377536268.md"
+    },
+    "377474922": {
+      "title": "写完了",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-03-01 22:16",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:18:18.828301",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377474922.md"
+    },
+    "377450967": {
+      "title": "今天估计能写完 Robinhood ，明天发，是个大工程。",
+      "author": "Elon翻开每一页",
+      "publish_time": "发布于2026-03-01 16:13",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:18:24.853335",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377450967.md"
+    },
+    "377343102": {
+      "title": "回复@拿拿1349: 历史上，国内的反垄断多以罚款为主，只要不对 携程 做分拆都好说。//@拿拿1349:回复@Elon...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-02-28 08:34",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:18:32.079189",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377343102.md"
+    },
+    "377312746": {
+      "title": "回复@huakj: 求稳还是 腾讯 ，我个人偏好 携程 。//@huakj:回复@Elon翻开每一页:目前和腾讯比，您觉...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-02-27 22:05",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:18:38.834482",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377312746.md"
+    },
+    "377310441": {
+      "title": "回复@刘成岗: 所以说投资者的回报仅仅取决于管理层的资本配置能力（而非业务的增长情况）。//@刘成岗:回复@Elon翻开...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-02-27 21:47",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:18:46.690750",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377310441.md"
+    },
+    "377310316": {
+      "title": "回复@迷路阳光: 客观只能这么说：疯狂给管理层发钱的现象得到明显遏制，经营效率趋势向好。 查看图片//@迷路阳光:回复@...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-02-27 21:45",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:18:52.917838",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377310316.md"
+    },
+    "377309856": {
+      "title": "【2025Q4】先看估值。主营业务的扣非净利TTM是134亿，如果加上净利息是149亿。(市值-净现金)/(扣非净利TT...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "云南",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:19:00.179297",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377309856.md"
+    },
+    "377298224": {
+      "title": "翻开这一页(5)：携程 公司本身上感觉没什么好讲的，所以不会有正文，只在评论区连载财报评论。",
+      "author": "Elon翻开每一页的雪球专栏",
+      "publish_time": "发布于2026-02-27 20:14",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:19:06.734866",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377298224.md"
+    },
+    "377292729": {
+      "title": "就这一件事，AI在国内就功德无量。。",
+      "author": "@莉莉安78",
+      "publish_time": "发布于2026-02-27 19:24",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:19:13.998688",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377292729.md"
+    },
+    "377286224": {
+      "title": "刚才看了个评论，终于知道怎么念这个IP了：KeyA 可以啊",
+      "author": "@杭州小透明",
+      "publish_time": "云南",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:19:22.146596",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377286224.md"
+    },
+    "377216559": {
+      "title": "这个是硬货",
+      "author": "@杭州小透明",
+      "publish_time": "发布于2026-02-27 12:13",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:19:28.370484",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377216559.md"
+    },
+    "377201247": {
+      "title": "回复@时光投资-Edward: 俗话说，听其言观其行。如果言都不行，行一定不行。。。//@时光投资-Edward:回复@...",
+      "author": "@Elon翻开每一页",
+      "publish_time": "发布于2026-02-27 11:01",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-04T00:19:36.737185",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/377201247.md"
+    },
+    "371624650": {
+      "title": "2025年布油均价68美元中海油内在价值估算 2024年布油均价80美元下， 中海油 各板块估值分析如下。1，国内证实储量折现值6524亿元，价值约10700亿元，1...",
+      "author": "czy710的雪球专栏",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:19:58.256340",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/371624650.md"
+    },
+    "377677161": {
+      "title": "中海油 2025年净利润约1260亿元，扣非利润约1300亿元，加回勘探失败费用约135亿元，维持性 自由现金流 约14...",
+      "author": "@czy710",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:20:06.067934",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377677161.md"
+    },
+    "377676478": {
+      "title": "回复@秋天的第一棵树: 很多原因，我之前帖子分析过。应该关注和研究企业价值，而不是研究市场先生的出价（股价和市盈率）。/...",
+      "author": "@czy710",
+      "publish_time": "发布于2026-03-03 07:31",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:20:13.897556",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377676478.md"
+    },
+    "377674316": {
+      "title": "巴菲特投资油气开采企业和投资农场比较 1986年，美国无风险长期国债收益率7.68%，回本周期13年。巴菲特在农场价格大跌的时候买入农场。他自己不太懂农业生产...",
+      "author": "czy710的雪球专栏",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:20:20.417776",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377674316.md"
+    },
+    "377487701": {
+      "title": "回复@czy710: 按巴菲特的说法，企业在较短时间形成的护城河，更容易在短时间被颠覆，例如 美团 过去几年形成的外卖配...",
+      "author": "@czy710",
+      "publish_time": "发布于2026-03-02 07:42",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:20:28.164462",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377487701.md"
+    },
+    "377448962": {
+      "title": "回复@枫林守望者: 不论什么行业或企业，企业的内在价值都等于未来现金流折现值。//@枫林守望者:回复@czy710:无法...",
+      "author": "@czy710",
+      "publish_time": "发布于2026-03-01 15:38",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:20:36.913195",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377448962.md"
+    },
+    "377434870": {
+      "title": "回复@gregxiang: 你问ai//@gregxiang:回复@czy710:能把对应的ROE和真实利率水平说下吗？...",
+      "author": "@czy710",
+      "publish_time": "发布于2026-03-01 11:24",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:20:43.556666",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377434870.md"
+    },
+    "377429543": {
+      "title": "巴菲特于1972年收购喜诗糖果后，至2024年各阶段利润增速如下。1，1972一1983年，净利润从208万美元增长至1...",
+      "author": "@czy710",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:20:50.331079",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377429543.md"
+    },
+    "377382114": {
+      "title": "回复@长期主义: 你复合验证一下就行了，上游总净利润减去原油开采利润（原油开采桶油利润超过10美元每桶乘原油开采量）等于...",
+      "author": "@czy710",
+      "publish_time": "发布于2026-02-28 15:53",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:20:56.839175",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377382114.md"
+    },
+    "377343549": {
+      "title": "如何估算喜诗糖果目前的内在价值 2010年喜诗糖果净利润5740万美元，2024年净利润5810万美元，过去15年年均利润增速约0.08%，单价年均增长...",
+      "author": "czy710的雪球专栏",
+      "publish_time": "发布于2026-02-28 08:41",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:21:05.865708",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377343549.md"
+    },
+    "377165198": {
+      "title": "回复@杰飞特: 海丰国际 和航运股我刚开始关注和研，计划研究明白后等未来行业周期底部附近开始买入，若海丰国际在行业周期底...",
+      "author": "@czy710",
+      "publish_time": "发布于2026-02-27 08:57",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:21:12.594037",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377165198.md"
+    },
+    "377156077": {
+      "title": "回复@一吸一呼一人生: 过去如何能长期拿住 海丰国际 呢？需要做以下几个判断。1，亚洲小型短途集装箱运输市场的roe 是...",
+      "author": "@czy710",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:21:19.653352",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377156077.md"
+    },
+    "377067865": {
+      "title": "回复@猪肉要少吃: 从2015 －2026年， 海丰国际 的投资者年化复合回报率约30%左右，远远高于行业内的其他企业。...",
+      "author": "@czy710",
+      "publish_time": "发布于2026-02-26 15:11",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:21:28.793551",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/377067865.md"
+    },
+    "376972355": {
+      "title": "海丰国际初步观察 海丰国际 的特点，极度聚焦于亚洲小型集装箱船（1000 －2000TEU）短途支线运输细分市场，自有船占比极高。在亚洲2...",
+      "author": "czy710的雪球专栏",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:21:35.879915",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/376972355.md"
+    },
+    "376812092": {
+      "title": "2016 和2020年布油均价43美元下国际油企上游经营状况 2016和2020年，布油均价约43.5美元每桶，2016年欧美6大油企（美孚，雪佛龙，康菲， 道达尔 ， 壳牌 ，BP...",
+      "author": "czy710的雪球专栏",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:21:41.663111",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/376812092.md"
+    },
+    "376601012": {
+      "title": "中长期油价底部区域价格分析 假设2025年布油均价47-50美元，美国4大油气巨头上游油气开采平均利润为零。美国页岩油田在布油50–55美元左右，桶...",
+      "author": "czy710的雪球专栏",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:21:48.686850",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/376601012.md"
+    },
+    "376569357": {
+      "title": "回复@均衡的股票小电光: 你这些问题问ai就有答案了。//@均衡的股票小电光:回复@czy710:请问c大中东地区23美...",
+      "author": "@czy710",
+      "publish_time": "发布于2026-02-22 08:58",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:21:56.473000",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/376569357.md"
+    },
+    "376567741": {
+      "title": "2025年，中东地区原油产量约2800万桶每天，美国页岩油产量约950万桶每天（4大油企并购后的美国页岩油产量占950万...",
+      "author": "@czy710",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:22:04.545190",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/376567741.md"
+    },
+    "376545095": {
+      "title": "回复@zaizaiguo: 折现率取10%，今年的1元钱等于明年的1.1元钱。今年的2万亿折现值到明年约变成2.2万亿折...",
+      "author": "@czy710",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:22:11.241889",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/376545095.md"
+    },
+    "376544835": {
+      "title": "回复@舒夫斯基: 全球总原油经济可采储量对应全球年开采量，包含了中东和俄罗斯。//@舒夫斯基:回复@czy710:石油价...",
+      "author": "@czy710",
+      "publish_time": "发布于2026-02-21 11:53",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-04T00:22:18.572035",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/376544835.md"
+    },
+    "377649520": {
+      "title": "大模型血亏 360%，MiniMax 照样 “香饽饽”？ 老登落幕，新科登场！今天港股 “香饽饽”、中国独立模型商$MINIMAX-WP(00100)$ 放榜 2025 年全年答...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-03-02 22:23",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:22:38.785276",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/377649520.md"
+    },
+    "377254995": {
+      "title": "怪兽饮料：新一轮产品周期将至，怪兽再迎 “进化” 大年？ 能量饮料龙头 怪兽饮料 （MNST）于北京时间 2026 年 2 月 27 日早间美股盘后发布了 2025 年第四季度财...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-27 15:18",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:22:46.192088",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/377254995.md"
+    },
+    "377209547": {
+      "title": "戴尔 DELL：翻倍成长的 AI，能打消 “存储紧张” 的担忧吗？ 戴尔公司 (DELL.N) 北京时间 2 月 27 日凌晨，美股盘后发布 2026 财年第四季度财报（截至 2026 年...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-27 11:31",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:22:54.555248",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/377209547.md"
+    },
+    "377208270": {
+      "title": "唯品会：再现业绩波动？别怕，有 10% 股东回报救场 $唯品会(VIPS)$ 于 2 月 26 日晚，发榜了 2025 年 4 季度财报，虽然此前公司已调低了业绩指引，实际表...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-27 11:26",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:23:00.745582",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/377208270.md"
+    },
+    "377192149": {
+      "title": "多邻国：指引再暴雷，绿鸟真成 “Dead Duo” 了？ $多邻国(DUOL)$ 于美东时间 2 月 26 日盘后发布了 2025 年第四季度的业绩，又是熟悉的指引暴雷。具体来看...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-27 10:31",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:23:07.556120",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/377192149.md"
+    },
+    "377160742": {
+      "title": "瑞幸：外卖大战 “绑架” 了咖啡一哥？ $瑞幸咖啡(LK)$ $瑞幸粉单(LKNCY)$ 于北京时间 2026 年 2 月 26 日下午美股盘前发布了 2025...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-27 08:15",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:23:14.889055",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/377160742.md"
+    },
+    "377107149": {
+      "title": "$百度(BIDU)$ $百度集团-SW(09888)$ 本季度正式采用新架构进行业绩披露，分为AI业务和其他传统业务两部...",
+      "author": "老韭菜做梦想自由",
+      "publish_time": "发布于2026-02-26 19:11",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:23:22.105410",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/377107149.md"
+    },
+    "377048189": {
+      "title": "Salesforce：AI 替代论摧枯拉朽，SaaS 龙头已成 “弃子”？ 近期在 “AI 杀死 SaaS” 叙事下，受冲击最严重之一 的$Salesforce(CRM)$ ，今早美股盘后公布 2.....",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-26 13:52",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:23:28.991531",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/377048189.md"
+    },
+    "376979571": {
+      "title": "英伟达：业绩狂热 vs 股价冰冷，宇宙第一股就此失宠？ 英伟达 (NVDA.O) 北京时间 2026 年 2 月 26 日凌晨，美股盘后发布 2026 财年第四季度财报（截至 ...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-26 09:11",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:23:35.542995",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/376979571.md"
+    },
+    "376971531": {
+      "title": "Circle：用业绩回击唱衰，稳定币第一股能站 “稳” 吗？ 美东 2 月 25 日盘前，稳定币 USDC 发行方$Circle(CRCL)$ 布了 2025 年第四季度业绩。虽然占...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "浙江",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:23:41.662270",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/376971531.md"
+    },
+    "376935429": {
+      "title": "$Circle(CRCL)$ USDC 规模与储备资产利率均为公开信息，因此占总收入 95% 的利息收入基本可提前确定。...",
+      "author": "zyleee",
+      "publish_time": "发布于2026-02-25 20:54",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:23:49.091204",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/376935429.md"
+    },
+    "376847608": {
+      "title": "拉美“阿里”的撕裂人格：收入“巨人”、利润“矮子” 拉美版“ 阿里 ”—$MercadoLibre(MELI)$ 业绩发布后股价先涨后跌。整体来看，当季业绩表现还不错，盘后...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-25 11:00",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:23:55.605135",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/376847608.md"
+    },
+    "376829016": {
+      "title": "马斯克再甩 “王炸”：SpaceX 真能重塑 “太空经济学”？ 25 年底以来商业航天在资本市场的关注度飙升，在本篇报告中，我们尝试通过 “前因后果” 的梳理来为商业航天投资机会研究提...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-25 09:56",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:24:02.872704",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/376829016.md"
+    },
+    "376191669": {
+      "title": "烂行情 + 烂业绩，Coinbase 何时到 “底”？ 北京凌晨 2 月 13 日美股盘后，$Coinbase Global(COIN)$ 发布了 2025 年四季度财报。Q4...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-13 18:24",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:24:11.478896",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/376191669.md"
+    },
+    "376127355": {
+      "title": "Rivian: 告别补贴时代，R2 能扛起翻盘大旗？ $Rivian Automotive(RIVN)$ 于 2026 年 2 月 12 日美股盘后发布了 2025 年四季度...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-13 11:27",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:24:19.231400",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/376127355.md"
+    },
+    "376122502": {
+      "title": "应用材料 AMAT：Capex 大周期驾到，设备股春天来了！ 应用材料（AMAT.O）北京时间 2026 年 2 月 13 日早，美股盘后发布 2026 财年第一季度财报（截至 20...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-13 11:05",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:24:25.893899",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/376122502.md"
+    },
+    "376106202": {
+      "title": "Airbnb: 业绩还不赖，但已沦为周期股？ 另类住宿龙头$爱彼迎(ABNB)$ ，今早公布了 2025 财年 3 季度财报，整体来看，公司的业绩要比预期的更好，不同...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-13 10:08",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:24:32.072638",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/376106202.md"
+    },
+    "375995610": {
+      "title": "回复@不翻倍不改名8: 基本跌倒谷底了，恐慌式踩踏了//@不翻倍不改名8:回复@海豚研究君:尽管如此 也看不明白盘前-2...",
+      "author": "@海豚研究君",
+      "publish_time": "发布于2026-02-12 14:44",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:24:40.075822",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/375995610.md"
+    },
+    "375966460": {
+      "title": "Unity 被谁 “杀” 穿了？ 大家好，我是海豚君！美东时间 2 月 11 日美股盘前，游戏引擎龙头$Unity(U)$ 发布了 2025 年四季度财报...",
+      "author": "海豚研究君的雪球专栏",
+      "publish_time": "发布于2026-02-12 12:06",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T00:24:49.093362",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/375966460.md"
+    },
+    "307548176": {
+      "title": "目前中概、港股、美股互联网公司个人用的估值表【3.02更】 前言：1、互联网公司财报里的扣非归母净利润口径是各家自定义，不统一，不具备横向对比意义（美股巨头是归母净利润，扣非归母净...",
+      "author": "逸修1的雪球专栏",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:15:01.979130",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/307548176.md"
+    },
+    "377860685": {
+      "title": "$网易(NTES)$ 前段时间走得弱，最近倒是挺强的",
+      "author": "怀素书",
+      "publish_time": "发布于2026-03-03 23:57",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:15:09.153460",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377860685.md"
+    },
+    "377857666": {
+      "title": "回复@一只脆皮椰: 你说得对 我去年意识到某公司到27年都不可能恢复我当时预期的25年的eps后，就果断卖了，后来被人嘲...",
+      "author": "@逸修1",
+      "publish_time": "发布于2026-03-03 23:26",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:15:15.681857",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377857666.md"
+    },
+    "377855321": {
+      "title": "越是这种时候，就越会认识到基本面、估值和股东回报的重要性但是往往如果之前没意识到，现在才意识到，已经比较晚了",
+      "author": "偏见很安静",
+      "publish_time": "发布于2026-03-03 23:10",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:15:21.803672",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377855321.md"
+    },
+    "377828685": {
+      "title": "给力，这里多待一段时间也不是不可以",
+      "author": "@心动公司(02400)",
+      "publish_time": "发布于2026-03-03 19:41",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:15:30.195643",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377828685.md"
+    },
+    "377797481": {
+      "title": "回复@逸修1: 互联网不用pb估值的原因是互联网行业比较重要的因素是人、用户、网络效应、技术等这些东西都在pb上没法体现...",
+      "author": "@阿禾_",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:15:37.691877",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377797481.md"
+    },
+    "377793428": {
+      "title": "回复@刘成岗: 互联网行业用pb估值的，明显就是新来的……//@刘成岗:回复@曼巴投资:没有股东回报的公司，净资产和股东...",
+      "author": "@阿禾_",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:15:44.962515",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377793428.md"
+    },
+    "377783996": {
+      "title": "发完盈喜后，用tap maker直播做游戏？ 没试过，用什么平台比较好？",
+      "author": "@逸修1",
+      "publish_time": "发布于2026-03-03 15:04",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:15:53.089497",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377783996.md"
+    },
+    "377779046": {
+      "title": "回复@zerom0z: 我不给投资建议 但是之前说过我的操作思路： 一起跌的时候，基本面右侧的优先//@zerom0z:...",
+      "author": "@逸修1",
+      "publish_time": "发布于2026-03-03 14:47",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:16:00.531887",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377779046.md"
+    },
+    "377777513": {
+      "title": "市场短期真是没法预期的 1月初我说团动比1：1启动 当时还以为是在90-100之间相遇 没想到现在看起来是在70-80之...",
+      "author": "@逸修1",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:16:08.152643",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377777513.md"
+    },
+    "377772235": {
+      "title": "最近比较好的是躺平专心做游戏或玩游戏，等贝塔过去",
+      "author": "逸修1",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:16:14.711409",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377772235.md"
+    },
+    "377740475": {
+      "title": "$恒生科技指数(HKHSTECH)$ 话说想过什么能让恒科eps短期得到大幅度改善不？互联网这边其实就是外卖闪购大战从内...",
+      "author": "scrat投资笔记",
+      "publish_time": "发布于2026-03-03 11:52",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:16:22.566601",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377740475.md"
+    },
+    "377729081": {
+      "title": "小镇国际服和火炬后面就是常态跟踪了，常态跟踪的一些标准是：1、小镇国际服1月流水应该是1亿左右（首月流水应有1.5亿左右...",
+      "author": "Skynyrd",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:16:29.652047",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377729081.md"
+    },
+    "377685529": {
+      "title": "美股倒是没反应，港股给跌不少……",
+      "author": "@逸修1",
+      "publish_time": "发布于2026-03-03 09:10",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:16:37.862606",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377685529.md"
+    },
+    "377639531": {
+      "title": "唯品会 更新： 25年扣非净利润70亿，股权激励17亿左右，净利润53亿左右 目前估值8-9倍（扣非） 唯品会算中概最近...",
+      "author": "@逸修1",
+      "publish_time": "发布于2026-03-02 21:01",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:16:46.358668",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377639531.md"
+    },
+    "377634671": {
+      "title": "爱奇艺 更新： 24年净利润18亿左右、25年刚好盈亏平衡附近，考虑到还是不少利息费用，实际上会更难；25年Q4看，也刚...",
+      "author": "@逸修1",
+      "publish_time": "发布于2026-03-02 20:18",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:16:52.019075",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377634671.md"
+    },
+    "377632879": {
+      "title": "好消息 看起来进度快的话，下半年能进 港股通",
+      "author": "@网易-S(09999)",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:17:00.664513",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377632879.md"
+    },
+    "377625690": {
+      "title": "投资没锚的股票，短期风险确实挺大的我去年下半年建仓的 美团 部分仓位，浮亏已经不少如果不是经历过更恐怖的21-24年初，...",
+      "author": "-坐以待币-",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:17:07.498633",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377625690.md"
+    },
+    "377623670": {
+      "title": "百度 更新：全年看，经营利润104亿（已去掉162亿的那笔减值），净利润应该是90亿左右（正常算税），扣非净利润125亿...",
+      "author": "@逸修1",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:17:15.069567",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377623670.md"
+    },
+    "377551915": {
+      "title": "目前看，今年上半年tap肯定是能吃饱的，目前就有： 明日方舟终末地、洛克王国世界、异环、王者荣耀世界",
+      "author": "@逸修1",
+      "publish_time": "发布于2026-03-02 12:21",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-04T01:17:21.694040",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/377551915.md"
+    },
+    "377862278": {
+      "title": "SEA: 疯狂撒币求未来，东南亚 “小腾讯” 又进无底洞？ 东南亚小 腾讯 $Sea Limited(SE)$ ，3 月 3 日晚美股盘前交付了 25 年 4 季度业绩，又是熟悉的...",
+      "author": "",
+      "publish_time": "发布于2026-03-04 00:18",
+      "user_id": "6249637706",
+      "crawl_time": "2026-03-04T02:05:39.600489",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6249637706/377862278.md"
+    },
+    "377724888": {
+      "title": "Joby Aviation：4Q25财报和分析师电话会议纪要 管理层观点（Management View）$Joby Aviation(JOBY)$ 创始人兼首席执行官乔·本·贝维特...",
+      "author": "",
+      "publish_time": "发布于2026-03-03 10:56",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:08:16.400207",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377724888.md"
+    },
+    "377724015": {
+      "title": "多邻国：4Q25财报和分析师电话会议纪要 管理层观点$多邻国(DUOL)$ 首席执行官 Luis von Ahn 在开场时宣布了一项重要管理层变动：“截至今天，一...",
+      "author": "",
+      "publish_time": "发布于2026-03-03 10:53",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:08:23.546430",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377724015.md"
+    },
+    "377722226": {
+      "title": "欧特克：2026财年财报和分析师电话会议纪要 管理层观点$欧特克(ADSK)$ 首席执行官 Andrew Anagnost 在开场时强调，公司“在2026财年取得了强...",
+      "author": "",
+      "publish_time": "发布于2026-03-03 10:48",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:08:31.568597",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377722226.md"
+    },
+    "377720435": {
+      "title": "SoundHound：4Q25财报和分析师电话会议纪要 管理层观点$SoundHound AI(SOUN)$ 联合创始人、首席执行官、总裁兼董事Keyvan Mohajer表示...",
+      "author": "",
+      "publish_time": "发布于2026-03-03 10:43",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:08:38.750514",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377720435.md"
+    },
+    "377719459": {
+      "title": "Zscaler：4Q25财报和分析师电话会议纪要 管理层观点$Zscaler(ZS)$ 首席执行官 Jagtar Chaudhry 表示：“ARR 增长了 25%，反映出...",
+      "author": "",
+      "publish_time": "发布于2026-03-03 10:40",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:08:45.820387",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377719459.md"
+    },
+    "377715860": {
+      "title": "AST：4Q25财报和分析师电话会议纪要 管理层观点$AST SpaceMobile(ASTS)$ 创始人、董事长兼首席执行官 Abel Avellan 表示，2...",
+      "author": "",
+      "publish_time": "发布于2026-03-03 10:30",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:08:52.103008",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377715860.md"
+    },
+    "377714889": {
+      "title": "Quantum：4Q25财报和分析师电话会议纪要 管理层观点（Management View）$Quantum Computing(QUBT)$ 首席执行官黄玉平表示，2...",
+      "author": "",
+      "publish_time": "发布于2026-03-03 10:27",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:09:00.516099",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377714889.md"
+    },
+    "377552628": {
+      "title": "Nuscale：4Q25财报和分析师电话会议纪要 管理层观点$NuScale Power(SMR)$ 总裁兼首席执行官约翰·霍普金斯（John Hopkins）表示，“这...",
+      "author": "",
+      "publish_time": "发布于2026-03-02 12:27",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:09:08.577105",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377552628.md"
+    },
+    "377549697": {
+      "title": "CoreWeave财报：25年营收超过51亿美元 管理层视角CEO Michael Intrator 强调，2025 年是“CoreWeave 具有里程碑意义的一年”。截...",
+      "author": "",
+      "publish_time": "发布于2026-03-02 12:05",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:09:16.080045",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377549697.md"
+    },
+    "377287845": {
+      "title": "Rocket Lab财报：营收同比增长36% 中大型火箭发射延迟 管理层观点$Rocket Lab(RKLB)$ CEO Peter Beck 宣布，公司2025年实现创纪录的年度营收6...",
+      "author": "ActionDan",
+      "publish_time": "发布于2026-02-27 18:39",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:09:24.279359",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377287845.md"
+    },
+    "377213441": {
+      "title": "Block财报：业绩很好 CEO却和马斯克一样高调裁员 管理层观点$Block(XYZ)$ Jack Dorsey（ Block 联合创始人、负责人兼董事长）宣布进行大规模裁员...",
+      "author": "天问",
+      "publish_time": "发布于2026-02-27 11:50",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:09:31.142751",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377213441.md"
+    },
+    "377209531": {
+      "title": "Circle财报：稳定币市场份额过半 公司想成为代理AI的货币 管理层观点$Circle(CRCL)$ 联合创始人、董事长兼首席执行官 Jeremy Allaire 强调区块链、稳定币...",
+      "author": "",
+      "publish_time": "发布于2026-02-27 11:31",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:09:36.939451",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377209531.md"
+    },
+    "377206299": {
+      "title": "瑞幸咖啡财报：同店销售放缓 整体业绩受外卖影响大 $瑞幸咖啡(LK)$ 一、管理层观点1️⃣ 2025年整体回顾：规模驱动下的高增长– 2025年是公司“打基础 + 快增...",
+      "author": "",
+      "publish_time": "发布于2026-02-27 11:18",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:09:44.967776",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377206299.md"
+    },
+    "377202272": {
+      "title": "D-Wave财报：CEO说他们是唯一一家展示量子优越的公司 管理层观点$D-Wave Quantum(QBTS)$ 总裁、首席执行官兼董事 Alan Baratz 表示，2025 ...",
+      "author": "简单的盈利豪杰",
+      "publish_time": "发布于2026-02-27 11:04",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:09:51.621245",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377202272.md"
+    },
+    "377143551": {
+      "title": "Zoom：4Q26财报和分析师电话会议纪要 管理层观点$Zoom通讯(ZM)$ Eric Yuan（CEO）表示：“2026 财年对 Zoom 和整个行业都是关键一...",
+      "author": "",
+      "publish_time": "发布于2026-02-27 00:26",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:09:58.681083",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377143551.md"
+    },
+    "377143395": {
+      "title": "赛富时：4Q26财报和分析师电话会议纪要 管理层观点$Salesforce(CRM)$ 联合创始人、董事长兼首席执行官 Marc Benioff 强调，这是“公司...",
+      "author": "",
+      "publish_time": "发布于2026-02-27 00:23",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:10:07.167496",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377143395.md"
+    },
+    "377138515": {
+      "title": "携程财报：2025年GMV达到万亿元 入境游客2千万人 一、 管理层核心观点$携程(TCOM)$ 管理层（梁建章、孙洁、王肖璠）重点关注了入境游、AI 技术创新与社会责任三大战...",
+      "author": "盈天",
+      "publish_time": "发布于2026-02-26 23:26",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:10:14.377953",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377138515.md"
+    },
+    "377137670": {
+      "title": "IonQ：4Q25财报和分析师电话会议纪要 管理层观点$IonQ(IONQ)$ 总裁、CEO兼董事长Niccolo de Masi表示，2025年是 IonQ 在战...",
+      "author": "",
+      "publish_time": "发布于2026-02-26 23:20",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:10:22.505299",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377137670.md"
+    },
+    "377127545": {
+      "title": "英伟达财报：营收同比增长73% 代理AI是当下驱动 $英伟达(NVDA)$ 一、管理层观点1️⃣ 总体业绩与核心驱动– Q4收入 680亿美元，同比+73%，再创纪录；全年...",
+      "author": "",
+      "publish_time": "发布于2026-02-26 22:09",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:10:29.396836",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/377127545.md"
+    },
+    "376870739": {
+      "title": "Workday电话会：管理层画长期AI投资的饼 分析师关心落地时间 管理层观点$Workday(WDAY)$ Aneel Bhusri（联合创始人、首席执行官兼执行董事长）宣布，随着 Wo...",
+      "author": "",
+      "publish_time": "发布于2026-02-25 13:23",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-04T02:10:35.805619",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/376870739.md"
+    }
+  },
+  "last_update": "2026-03-04T02:13:16.335887"
+}
