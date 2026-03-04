@@ -464,8 +464,22 @@ class XueqiuCrawler:
                 # 解析文章列表
                 article_list = self._parse_article_list(page, user_id)
                 
-                # 遍历每篇文章获取详情
-                for i, article in enumerate(article_list[:max_articles]):
+                # 获取历史文章ID，用于增量判断
+                history_ids = self._get_history_article_ids(user_id)
+                if history_ids:
+                    self.logger.info(f"历史已爬取 {len(history_ids)} 篇文章")
+                
+                # 过滤出新增文章
+                new_articles = []
+                for article in article_list:
+                    article_id = article.get('article_id', '')
+                    if article_id and article_id not in history_ids:
+                        new_articles.append(article)
+                
+                self.logger.info(f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇）")
+                
+                # 遍历每篇新文章获取详情
+                for i, article in enumerate(new_articles[:max_articles]):
                     if article['link']:
                         self._random_delay()
                         
@@ -500,6 +514,9 @@ class XueqiuCrawler:
                         articles.append(article)
                 
                 self._save_index()
+                
+                # 保存历史快照
+                self._save_history(user_id, articles)
                 
             except Exception as e:
                 self.logger.error(f"爬取用户 {user_id} 失败: {e}")
