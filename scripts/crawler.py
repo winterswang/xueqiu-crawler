@@ -350,9 +350,12 @@ class XueqiuCrawler:
             if content_elem:
                 detail['content'] = content_elem.inner_text().strip()
                 self.logger.info(f"提取正文: {len(detail['content'])} 字符")
+                # 标记为专栏文章
+                detail['is_column'] = True
             else:
                 # 对于短状态，尝试其他选择器
-                self.logger.warning("未找到 .article__bd__detail，尝试备选选择器")
+                self.logger.warning("未找到 .article__bd__detail，非专栏文章")
+                detail['is_column'] = False
                 for sel in ['.status-content', '.article-content', '.status__content', 'article']:
                     elem = page.query_selector(sel)
                     if elem:
@@ -490,6 +493,15 @@ class XueqiuCrawler:
                         # 合并信息
                         article.update(detail)
                         article['crawl_time'] = datetime.now().isoformat()
+                        
+                        # 判断是否是专栏文章（非评论/回复）
+                        is_column = article.get('is_column', False)
+                        title = article.get('title', '')
+                        
+                        # 过滤：标题以"回复@"开头的不是专栏文章
+                        if title.startswith('回复@') or not is_column:
+                            self.logger.info(f"跳过非专栏文章: {title[:30]}...")
+                            continue
                         
                         # 检查是否已存在
                         article_id = article.get('article_id', '')
