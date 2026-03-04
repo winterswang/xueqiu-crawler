@@ -16,10 +16,10 @@ cd "$PROJECT_DIR"
 echo "[1/4] 爬取新文章..." >> "$LOG_FILE"
 /usr/bin/python3 scripts/crawler.py >> "$LOG_FILE" 2>&1
 
-# 2. 生成分析报告
+# 2. 生成分析报告（使用新的分析器）
 echo "[2/4] 生成分析报告..." >> "$LOG_FILE"
 export BAILIAN_API_KEY="sk-727ad633253f477d84255d434826aabd"
-/usr/bin/python3 scripts/generate_report.py >> "$LOG_FILE" 2>&1
+/usr/bin/python3 scripts/generate_report.py --limit 20 >> "$LOG_FILE" 2>&1
 
 # 3. 提交报告到 Gist
 echo "[3/4] 提交报告到 Gist..." >> "$LOG_FILE"
@@ -82,8 +82,10 @@ PYEOF
         # 4. 发送飞书链接
         echo "[4/4] 发送飞书链接..." >> "$LOG_FILE"
         
-        # 写入待发送文件
-        echo "{\"channel\": \"feishu\", \"message\": \"📊 价值投资日报 - $DATE\\n\\n报告已生成，请查看：\\n$GIST_URL\\n\\n*分析模型：智谱 GLM-5*\"}" > /tmp/pending_feishu_daily.json
+        # 写入待发送文件（由心跳检测发送）
+        cat > /tmp/pending_feishu_daily.json << JSONEOF
+{"channel": "feishu", "message": "📊 **价值投资日报 - $DATE**\n\n报告已生成，请查看：\n$GIST_URL\n\n---\n*分析模型：智谱 GLM-5*"}
+JSONEOF
         
         echo "飞书消息已准备" >> "$LOG_FILE"
     else

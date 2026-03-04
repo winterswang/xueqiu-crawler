@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-每日分析报告生成器
+每日分析报告生成器 - 重构版
 
-在爬虫运行后调用，生成每日投研总结
+配合新的 analyzer.py 使用
 """
 
 import os
 import sys
+import json
 from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from analyzer import ArticleAnalyzer, generate_daily_report
-from quality_check import check_article_quality, QualityLogger
+from analyzer import ArticleAnalyzer, check_article_quality, generate_daily_report
 
 
 def get_today_articles(data_dir: str = 'data') -> list:
@@ -24,7 +24,6 @@ def get_today_articles(data_dir: str = 'data') -> list:
     if not index_file.exists():
         return []
     
-    import json
     with open(index_file, 'r', encoding='utf-8') as f:
         index = json.load(f)
     
@@ -41,6 +40,7 @@ def get_today_articles(data_dir: str = 'data') -> list:
                 
                 articles.append({
                     'article_id': article_id,
+                    'user_id': info.get('user_id', ''),
                     'title': info.get('title', ''),
                     'author': info.get('author', ''),
                     'publish_time': info.get('publish_time', ''),
@@ -58,7 +58,8 @@ def main():
     parser = argparse.ArgumentParser(description='生成每日投研分析报告')
     parser.add_argument('--data-dir', default='data', help='数据目录')
     parser.add_argument('--output', default=None, help='输出路径')
-    parser.add_argument('--api-key', default=None, help='GLM-5 API Key')
+    parser.add_argument('--api-key', default=None, help='百炼 API Key')
+    parser.add_argument('--limit', type=int, default=20, help='最大分析文章数')
     
     args = parser.parse_args()
     
@@ -71,52 +72,54 @@ def main():
     
     print(f"今日新增文章: {len(articles)} 篇")
     
-    # 初始化质量检测日志
-    quality_logger = QualityLogger(f'{args.data_dir}/../logs/quality_check')
+    # 限制分析数量
+    if len(articles) > args.limit:
+        print(f"限制分析前 {args.limit} 篇（共 {len(articles)} 篇）")
+        articles = articles[:args.limit]
     
     # 初始化分析器
     analyzer = ArticleAnalyzer(api_key=args.api_key)
     
     # 分析每篇文章
-    analyses = []
-    passed_articles = []
-    
+    results = []
     for i, article in enumerate(articles):
-        print(f"检测文章 [{i+1}/{len(articles)}]: {article.get('title', '')[:30]}...")
+        title = article.get('title', '')[:30]
+        print(f"分析 [{i+1}/{len(articles)}]: {title}...")
         
-        # 质量检测
-        passed, issues = check_article_quality(article)
-        quality_logger.log_article(article, passed, issues)
+        result = analyzer.analyze_article(article)
+        results.append(result)
         
-        if passed:
-            print(f"  ✅ 质量检测通过")
-            analysis = analyzer.analyze_article(article)
-            analyses.append(analysis)
-            passed_articles.append(article)
+        # 输出状态
+        if result.get('quality_passed'):
+            priority = result.get('priority', 'reference')
+            priority_emoji = {'must_read': '🔴', 'worth_reading': '🟡', 'reference': '🔵'}
+            print(f"  ✅ {priority_emoji.get(priority, '🔵')} {priority}")
         else:
-            print(f"  ❌ 质量检测失败: {issues}")
-    
-    # 保存质量检测日志
-    quality_logger.save()
-    
-    if not passed_articles:
-        print("没有通过质量检测的文章，无法生成报告")
-        return
+            issues = result.get('issues', [])
+            print(f"  ⚠️ 跳过: {', '.join(issues)}")
     
     # 生成报告
     today = datetime.now().strftime('%Y-%m-%d')
     output_path = args.output or f"{args.data_dir}/daily_reports/{today}.md"
     
-    report = generate_daily_report(passed_articles, analyses, output_path)
+    report = generate_daily_report(articles, results, output_path)
     
     print("\n" + "="*50)
     print("报告预览:")
     print("="*50)
-    print(report[:500] + "...")
+    print(report[:1000] + "...")
     
-    # 输出质量摘要
+    # 输出统计
+    passed = sum(1 for r in results if r.get('quality_passed'))
+    must_read = sum(1 for r in results if r.get('priority') == 'must_read')
+    worth_reading = sum(1 for r in results if r.get('priority') == 'worth_reading')
+    
     print("\n" + "="*50)
-    print(quality_logger.get_summary())
+    print("统计:")
+    print(f"  总文章: {len(articles)}")
+    print(f"  有效分析: {passed}")
+    print(f"  必读: {must_read}")
+    print(f"  值得关注: {worth_reading}")
 
 
 if __name__ == '__main__':
