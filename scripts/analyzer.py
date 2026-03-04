@@ -49,7 +49,7 @@ class ArticleAnalyzer:
         
         try:
             completion = self.client.chat.completions.create(
-                model="qwen-plus",
+                model="glm-5",
                 messages=[{"role": "user", "content": prompt}],
             )
             response = completion.choices[0].message.content
@@ -166,7 +166,7 @@ def generate_daily_report(articles: List[dict], analyses: List[dict], output_pat
     lines.extend([
         "---",
         f"*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
-        "*分析模型：GLM-5 (qwen-plus)*"
+        "*分析模型：智谱 GLM-5*"
     ])
     
     report = '\n'.join(lines)
