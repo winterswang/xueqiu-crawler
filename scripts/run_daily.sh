@@ -32,8 +32,8 @@ import urllib.request
 import os
 
 # 读取报告
-report_file = "/root/.openclaw/workspace/xueqiu-crawler/data/daily_reports/" + os.popen('date +%Y-%m-%d').read().strip()
 date = os.popen('date +%Y-%m-%d').read().strip()
+report_file = f"/root/.openclaw/workspace/xueqiu-crawler/data/daily_reports/{date}.md"
 
 with open(report_file, 'r') as f:
     content = f.read()
