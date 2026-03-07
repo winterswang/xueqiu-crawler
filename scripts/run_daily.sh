@@ -83,9 +83,9 @@ PYEOF
         echo "[4/4] 发送飞书链接..." >> "$LOG_FILE"
         
         # 写入待发送文件（由心跳检测发送）
-        cat > /tmp/pending_feishu_daily.json << JSONEOF
-{"channel": "feishu", "message": "📊 **价值投资日报 - $DATE**\n\n报告已生成，请查看：\n$GIST_URL\n\n---\n*分析模型：智谱 GLM-5*"}
-JSONEOF
+        # 使用 printf 避免变量展开问题
+        MESSAGE=$(printf '📊 **价值投资日报 - %s**\n\n报告已生成，请查看：\n%s\n\n---\n*分析模型：智谱 GLM-5*' "$DATE" "$GIST_URL")
+        printf '{"channel": "feishu", "message": "%s"}\n' "$MESSAGE" > /tmp/pending_feishu_daily.json
         
         echo "飞书消息已准备" >> "$LOG_FILE"
     else
