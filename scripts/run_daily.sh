@@ -82,10 +82,32 @@ PYEOF
         # 4. 发送飞书链接
         echo "[4/4] 发送飞书链接..." >> "$LOG_FILE"
         
-        # 写入待发送文件（由心跳检测发送）
-        # 使用 printf 避免变量展开问题
-        MESSAGE=$(printf '📊 **价值投资日报 - %s**\n\n报告已生成，请查看：\n%s\n\n---\n*分析模型：智谱 GLM-5*' "$DATE" "$GIST_URL")
-        printf '{"channel": "feishu", "message": "%s"}\n' "$MESSAGE" > /tmp/pending_feishu_daily.json
+        # 使用 Python 构建 JSON，避免 shell 换行符问题
+        /usr/bin/python3 << PYEOF
+import json
+
+date = "$DATE"
+gist_url = "$GIST_URL"
+
+message = f"""📊 **价值投资日报 - {date}**
+
+报告已生成，请查看：
+{gist_url}
+
+---
+*分析模型：智谱 GLM-5*"""
+
+data = {
+    "channel": "feishu",
+    "target": "user:ou_ee151ea315a2f4bce49f9e235fcebcfd",
+    "message": message
+}
+
+with open("/tmp/pending_feishu_daily.json", "w") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+
+print("飞书消息已准备")
+PYEOF
         
         echo "飞书消息已准备" >> "$LOG_FILE"
     else

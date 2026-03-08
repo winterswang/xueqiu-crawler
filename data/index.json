@@ -1543,8 +1543,160 @@
       "user_id": "3181890538",
       "crawl_time": "2026-03-07T02:17:33.084342",
       "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378299712.md"
+    },
+    "378427861": {
+      "title": "学习",
+      "author": "@挚爱子洲",
+      "publish_time": "发布于2026-03-07 10:58",
+      "user_id": "5739488179",
+      "crawl_time": "2026-03-08T02:00:30.495807",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/5739488179/378427861.md"
+    },
+    "378422596": {
+      "title": "油价的短中长期变化逻辑 之前主要分析了未来油价的中长期趋势。过去20年布油均价70美元每桶，中长期油价上涨的逻辑是，1，随着每年370亿桶巨大的...",
+      "author": "czy710的雪球专栏",
+      "publish_time": "浙江",
+      "user_id": "6308001210",
+      "crawl_time": "2026-03-08T02:03:27.693553",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/6308001210/378422596.md"
+    },
+    "378466321": {
+      "title": "做空美股和美国：数据中心为何在战争中会成为目标 $亚马逊(AMZN)$ $CoreWeave(CRWV)$ $英伟达(NVDA)$ 卡内基国际和平基金会技术与国际事务项...",
+      "author": "",
+      "publish_time": "发布于2026-03-07 23:23",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-08T02:07:54.797220",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/378466321.md"
+    },
+    "378451775": {
+      "title": "Booking访谈：对抗LLM的最好策略是开发自己的Agentic工具 $Booking Holdings(BKNG)$ 摩根士丹利科技、媒体与电信大会 2026时间：2026年3月3日 19...",
+      "author": "",
+      "publish_time": "发布于2026-03-07 18:26",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-08T02:08:02.137442",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/378451775.md"
+    },
+    "378443470": {
+      "title": "微软：26年摩根士丹利TMT大会全文记录 $微软(MSFT)$ 公司参会人员萨提亚·纳德拉电话会议参会人员基思·韦斯 - 摩根士丹利 研究部演示环节基思·韦斯太好...",
+      "author": "泡第三杯茶",
+      "publish_time": "发布于2026-03-07 15:42",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-08T02:08:08.769894",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/378443470.md"
+    },
+    "378430440": {
+      "title": "IonQ：2026年摩根士丹利TMT大会访谈全文 $IonQ(IONQ)$ 2026年 摩根士丹利 科技、媒体与电信大会时间： 2026年3月4日，美国东部时间晚上8:3...",
+      "author": "",
+      "publish_time": "发布于2026-03-07 11:37",
+      "user_id": "9951187724",
+      "crawl_time": "2026-03-08T02:08:17.828225",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/9951187724/378430440.md"
+    },
+    "378428546": {
+      "title": "$心动公司(02400)$还是谈一下，主要看到不少朋友对于明明1-2月小镇国际服和火炬的成绩这么好（现在第三方数据也出来...",
+      "author": "火山父卩",
+      "publish_time": "浙江",
+      "user_id": "1936609590",
+      "crawl_time": "2026-03-08T02:10:54.379538",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/1936609590/378428546.md"
+    },
+    "378469112": {
+      "title": "美国 FTC控诉 Meta 垄断 202504 对理解 Meta 商业模式与护城河（垄断）相关的所有内容  商业模式：  社交网络的核心体验： Meta 的核心是“连接...",
+      "author": "",
+      "publish_time": "美国",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:13:52.638054",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378469112.md"
+    },
+    "378469109": {
+      "title": "Meta 在 FTC 反垄断听证会上的文件理解 Meta 的商业模式、护城河（垄断）相关内容的梳理不构成垄断的直接证据：...",
+      "author": "@无烟炭-七分饱",
+      "publish_time": "美国",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:13:59.480638",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378469109.md"
+    },
+    "378466231": {
+      "title": "AI 对 Meta 2025Q4 广告业务的影响广告量价齐升：2025年全年广告展示量（Impressions）同比增长...",
+      "author": "@林文丰",
+      "publish_time": "发布于2026-03-07 23:20",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:14:05.327910",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378466231.md"
+    },
+    "378466213": {
+      "title": "Meta 2025全年财报和电话会 梳理 Meta 的商业模式 Meta 的使命是构建人类连接的未来及实现这一目标的底层技术。其业务主要分为两大核心板块（S...",
+      "author": "林文丰",
+      "publish_time": "发布于2026-03-07 23:20",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:14:13.246774",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378466213.md"
+    },
+    "378461599": {
+      "title": "高盛对于腾讯长青游戏的分析 如果按行阅读，该图表显示特定年份推出的游戏及其贡献随时间的衰减情况，例如，2019行表示2019年推出的游戏（主要是和平...",
+      "author": "没事瞎开心",
+      "publish_time": "发布于2026-03-07 21:44",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:14:19.455794",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378461599.md"
+    },
+    "378457660": {
+      "title": "抖音电商UE 模型 毛利率 48%普遍高于 拼多多 主站，也高于淘天里内容驱动商家的水平。原因是抖音更适合冲动型消费、非强搜索型商品，售价和...",
+      "author": "云山1",
+      "publish_time": "发布于2026-03-07 20:33",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:14:39.184224",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378457660.md"
+    },
+    "378456048": {
+      "title": "亚马逊 2025 财年报告截止 202512 一、 亚马逊 的商业模型与 UE 模型（单位经济模型）拆解 亚马逊 的商业愿景是“成为地球上最以客户为中心的公司”，其商...",
+      "author": "",
+      "publish_time": "发布于2026-03-07 20:01",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:14:47.481131",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378456048.md"
+    },
+    "378454753": {
+      "title": "Costco 2025 财年报告截止 202508 一、 商业模型与 UE（单位经济）模型拆解核心商业模型 Costco 的商业模式建立在“会员制仓储”的概念之上。其核心逻...",
+      "author": "",
+      "publish_time": "发布于2026-03-07 19:36",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:14:56.173812",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378454753.md"
+    },
+    "378454653": {
+      "title": "沃尔玛 2025 财年报告截止 202503 一、 沃尔玛 的商业模型与 UE 模型（单位经济模型）拆解 沃尔玛 商业模型的核心基石是“天天平价 (EDLP)”和“天...",
+      "author": "",
+      "publish_time": "发布于2026-03-07 19:34",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:15:01.926416",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378454653.md"
+    },
+    "378453684": {
+      "title": "哈萨比斯最新传记：谷歌AI之脑 背景全球同步发布，于 2026年3月 正式面世。该书作者为 塞巴斯蒂安·马拉比 (Sebastian Mallaby)，...",
+      "author": "",
+      "publish_time": "发布于2026-03-07 19:11",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:15:08.962768",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378453684.md"
+    },
+    "378445862": {
+      "title": "拼多多、亚马逊、淘天的 UE 模型和效率差距 $亚马逊(AMZN)$ $拼多多(PDD)$ $阿里巴巴(BABA)$",
+      "author": "林文丰的雪球专栏",
+      "publish_time": "发布于2026-03-07 16:30",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:15:15.418084",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378445862.md"
+    },
+    "378438522": {
+      "title": "Shopee更类似亚马逊模式而不是拼多多模式、更不是天猫模式 @黑黑无常 的分享：Shopee 是基于关键词权重的，同时他注重价格，导致的结果就是整体价格低，但是每个品类都被早期进入...",
+      "author": "",
+      "publish_time": "发布于2026-03-07 14:04",
+      "user_id": "3181890538",
+      "crawl_time": "2026-03-08T02:15:22.766944",
+      "filepath": "/root/.openclaw/workspace/xueqiu-crawler/data/3181890538/378438522.md"
     }
   },
-  "last_update": "2026-03-07T02:17:40.074372",
+  "last_update": "2026-03-08T02:15:38.281868",
   "history": {}
 }
