@@ -44,3 +44,13 @@ accounts:
   id: '3181890538'
   name: 林文丰
   url: https://xueqiu.com/u/3181890538
+- description: 价值投资分析
+  enabled: true
+  id: '6865675576'
+  name: 永庆好公司
+  url: https://xueqiu.com/u/6865675576
+- description: 港股专业分析
+  enabled: true
+  id: '3075122481'
+  name: 港股解码
+  url: https://xueqiu.com/u/3075122481
