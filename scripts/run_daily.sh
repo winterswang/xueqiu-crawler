@@ -1,5 +1,5 @@
 #!/bin/bash
-# 雪球爬虫完整流程：爬取 -> 分析 -> 提交Gist -> 发送链接
+# 雪球爬虫完整流程：爬取 -> 分析 -> 入库Link-Collector -> 提交Gist -> 发送链接
 
 set -e
 
@@ -13,16 +13,20 @@ echo "[$(date)] 开始执行雪球爬虫流程" >> "$LOG_FILE"
 cd "$PROJECT_DIR"
 
 # 1. 爬取新文章
-echo "[1/4] 爬取新文章..." >> "$LOG_FILE"
+echo "[1/5] 爬取新文章..." >> "$LOG_FILE"
 /usr/bin/python3 scripts/crawler.py >> "$LOG_FILE" 2>&1
 
-# 2. 生成分析报告（使用新的分析器）
-echo "[2/4] 生成分析报告..." >> "$LOG_FILE"
+# 2. 同步到 Link-Collector 知识库
+echo "[2/5] 同步到 Link-Collector..." >> "$LOG_FILE"
+/usr/bin/python3 scripts/import_to_link_collector.py --today >> "$LOG_FILE" 2>&1 || echo "同步失败（继续执行）" >> "$LOG_FILE"
+
+# 3. 生成分析报告（使用新的分析器）
+echo "[3/5] 生成分析报告..." >> "$LOG_FILE"
 export BAILIAN_API_KEY="sk-727ad633253f477d84255d434826aabd"
 /usr/bin/python3 scripts/generate_report.py --limit 20 >> "$LOG_FILE" 2>&1
 
-# 3. 提交报告到 Gist
-echo "[3/4] 提交报告到 Gist..." >> "$LOG_FILE"
+# 4. 提交报告到 Gist
+echo "[4/5] 提交报告到 Gist..." >> "$LOG_FILE"
 
 REPORT_FILE="$PROJECT_DIR/data/daily_reports/$DATE.md"
 if [ -f "$REPORT_FILE" ]; then
@@ -99,7 +103,7 @@ message = f"""📊 **价值投资日报 - {date}**
 
 data = {
     "channel": "feishu",
-    "target": "user:ou_ee151ea315a2f4bce49f9e235fcebcfd",
+    "target": "user:ou_fe2703d663d6cf1d433b37414b098877",
     "message": message
 }
 
