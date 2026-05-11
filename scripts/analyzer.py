@@ -19,10 +19,16 @@ from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from openai import OpenAI
+    from anthropic import Anthropic
+except ImportError:
+    print("请安装 anthropic: pip install anthropic")
+    Anthropic = None
+
+try:
+    from openai import OpenAI as OpenAIClient
 except ImportError:
     print("请安装 openai: pip install openai")
-    OpenAI = None
+    OpenAIClient = None
 
 
 # ============ 质量检测 ============
@@ -193,12 +199,28 @@ def classify_priority(article: dict, analysis: dict = None) -> str:
 class ArticleAnalyzer:
     """文章分析器 - GLM-5 深度分析"""
     
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, provider: str = None):
+        # 支持 minimax / aliyun 双 provider
+        self.provider = provider or os.environ.get('ANALYZER_PROVIDER', 'minimax')
         self.api_key = api_key or os.environ.get('BAILIAN_API_KEY', '')
         self.client = None
-        
-        if self.api_key and OpenAI:
-            self.client = OpenAI(
+
+        if self.provider == 'minimax':
+            minimax_key = os.environ.get('MINIMAX_API_KEY', '')
+            minimax_base = os.environ.get('MINIMAX_BASE_URL', 'https://api.minimaxi.com/anthropic')
+            self.api_key = api_key or minimax_key
+            if self.api_key and Anthropic:
+                self.client = Anthropic(
+                    api_key=self.api_key,
+                    base_url=minimax_base,
+                )
+        elif self.provider == 'aliyun' and self.api_key:
+            self.client = OpenAIClient(
+                api_key=self.api_key,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            )
+        elif self.api_key and OpenAIClient:
+            self.client = OpenAIClient(
                 api_key=self.api_key,
                 base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             )
@@ -223,11 +245,28 @@ class ArticleAnalyzer:
         prompt = self._build_prompt(article)
         
         try:
-            completion = self.client.chat.completions.create(
-                model="glm-5",
-                messages=[{"role": "user", "content": prompt}],
-            )
-            response = completion.choices[0].message.content
+            if self.provider == 'minimax':
+                resp = self.client.messages.create(
+                    model="MiniMax-M2.7",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=8192,
+                )
+                # MiniMax returns ThinkingBlock + TextBlock; extract both
+                texts = []
+                for block in resp.content:
+                    if hasattr(block, 'text') and block.text:
+                        texts.append(block.text)
+                    elif hasattr(block, 'thinking') and block.thinking:
+                        # ThinkingBlock: extract raw thinking text after signature
+                        thinking = block.thinking
+                        texts.append(thinking)
+                response = '\n'.join(texts)
+            else:
+                completion = self.client.chat.completions.create(
+                    model="glm-5",
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                response = completion.choices[0].message.content
             analysis = self._parse_response(response)
             
             # 计算优先级和评分详情
@@ -517,7 +556,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         "---",
         "",
         f"*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
-        f"*分析模型：智谱 GLM-5*"
+        "*分析模型：MiniMax M2.7*"
     ])
     
     report = '\n'.join(lines)
@@ -561,7 +600,7 @@ def _format_article(index: int, article: dict, result: dict) -> List[str]:
             lines.append(f"- **相关股票**：{', '.join(stocks)}")
         
         lines.append("")
-        lines.append("**GLM-5 分析：**")
+        lines.append("**MiniMax M2.7 分析：**")
         lines.append("")
         
         # 主题归类
