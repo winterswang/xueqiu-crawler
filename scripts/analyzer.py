@@ -218,8 +218,8 @@ def classify_priority(article: dict, analysis: dict = None) -> str:
     total = scores['total']
     
     # 根据总分确定优先级
-    # 必读：70+ 分（高质量价值投资分析）
-    # 值得关注：40-69 分（有价值的分析）
+    # 必读：60+ 分（高质量价值投资分析）
+    # 值得关注：30-59 分（有价值的分析）
     # 参考：40 分以下
     if total >= 60:
         return 'must_read'
@@ -380,17 +380,37 @@ class ArticleAnalyzer:
 - 请确保输出是有效的 JSON"""
     
     def _parse_response(self, response: str) -> dict:
-        """解析 LLM 响应"""
+        """解析 LLM 响应 - 精确提取 JSON 对象"""
+        # Strategy 1: fenced code block with json
         try:
             json_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(1))
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-        except Exception as e:
-            print(f"解析响应失败: {e}")
-        
+        except Exception:
+            pass
+
+        # Strategy 2: raw_decode — extracts valid JSON from first valid char onward
+        # Handles truncated/malformed JSON by taking the first complete object
+        try:
+            decoder = json.JSONDecoder()
+            # Find the first '{'
+            start = response.find('{')
+            if start != -1:
+                obj, end = decoder.raw_decode(response[start:])
+                return obj
+        except Exception:
+            pass
+
+        # Strategy 3: strip markdown artifacts and retry
+        cleaned = re.sub(r'^[\s\S]*?```json\s*', '', response)
+        cleaned = re.sub(r'\s*```[\s\S]*$', '', cleaned)
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            pass
+
+        # All strategies failed — log and return graceful fallback
+        print(f"解析响应失败: {e}" if 'e' in dir() else "解析响应失败: unknown error")
         return {
             'category': '其他',
             'related_stocks': [],
