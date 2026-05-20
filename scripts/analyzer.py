@@ -19,11 +19,46 @@ from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from openai import OpenAI
+    from anthropic import Anthropic
+except ImportError:
+    print("请安装 anthropic: pip install anthropic")
+    Anthropic = None
+
+try:
+    from openai import OpenAI as OpenAIClient
 except ImportError:
     print("请安装 openai: pip install openai")
-    OpenAI = None
+    OpenAIClient = None
 
+
+# ============ 市场分类 ============
+def classify_stock_market(stock: str) -> str:
+    """判断股票所属市场"""
+    stock_clean = stock.strip()
+    # 港股格式: 00883.HK, 09988.HK, 3690.HK
+    if '.HK' in stock_clean.upper() or '港股' in stock_clean:
+        return '港股'
+    # 美股格式: BMBM, MTCH, AAPL, TSLA
+    if any(s in stock_clean for s in ['(', ')', '.']):
+        return '美股'
+    if stock_clean.replace('-', '').replace('.', '').isupper() and len(stock_clean) <= 5:
+        return '美股'
+    # A股: 6位数字, 000xxx, 300xxx, 688xxx
+    import re
+    if re.match(r'^[0-9]{6}', stock_clean):
+        return 'A股'
+    # 日股: 4-5位数字 + .T
+    if '.T' in stock_clean.upper() or '日股' in stock_clean:
+        return '日股'
+    return '其他'
+
+def group_stocks_by_market(stocks: List[str]) -> dict:
+    """将股票列表按市场分组"""
+    groups = {'A股': [], '港股': [], '美股': [], '其他': []}
+    for stock in stocks:
+        market = classify_stock_market(stock)
+        groups[market].append(stock)
+    return {k: v for k, v in groups.items() if v}
 
 # ============ 质量检测 ============
 
@@ -50,29 +85,148 @@ def check_article_quality(article: dict) -> Tuple[bool, List[str]]:
     return len(issues) == 0, issues
 
 
-def classify_priority(article: dict, analysis: dict = None) -> str:
+def calculate_priority_score(article: dict, analysis: dict = None) -> dict:
     """
-    优先级分类
+    计算优先级评分详情
     
     Returns:
-        'must_read' | 'worth_reading' | 'reference'
+        {
+            'total': 总分,
+            'content_depth': 内容深度分,
+            'keywords': 关键词分,
+            'value_alignment': 价值投资相关性分,
+            'safety_margin': 安全边际分,
+            'category': 主题归类分,
+            'core_points': 核心观点分,
+            'title_quality': 标题质量分
+        }
     """
     content = article.get('content', '')
     title = article.get('title', '')
     
-    # 基于内容长度
-    if len(content) > 3000:
+    scores = {
+        'content_depth': 0,
+        'keywords': 0,
+        'value_alignment': 0,
+        'safety_margin': 0,
+        'category': 0,
+        'core_points': 0,
+        'title_quality': 0,
+        'total': 0
+    }
+    
+    # 1. 内容深度评分（最高 30 分）
+    content_len = len(content)
+    if content_len > 5000:
+        scores['content_depth'] = 30
+    elif content_len > 3000:
+        scores['content_depth'] = 25
+    elif content_len > 1500:
+        scores['content_depth'] = 15
+    elif content_len > 500:
+        scores['content_depth'] = 5
+    
+    # 2. 价值投资关键词评分（最高 25 分）
+    deep_keywords = [
+        '估值', 'PE', 'PB', 'ROE', 'ROIC', 'DCF', '自由现金流',
+        '护城河', '安全边际', '商业模式', '竞争优势', '壁垒',
+        '财报', '年报', '季报', '业绩',
+        '内在价值', '价值投资',
+        '毛利率', '净利率', '利润率', '周转率',
+        '管理层', '资本配置', '股东回报'
+    ]
+    keyword_hits = sum(1 for kw in deep_keywords if kw in title + content)
+    scores['keywords'] = min(keyword_hits * 2, 25)
+    
+    # 3. GLM-5 分析结果评分
+    if analysis:
+        # 3.1 价值投资相关性（最高 20 分）
+        vi = analysis.get('value_investment', {})
+        alignment = vi.get('alignment', '')
+        if alignment == '是':
+            scores['value_alignment'] = 20
+        elif alignment == '部分':
+            scores['value_alignment'] = 10
+        elif alignment == '不确定':
+            scores['value_alignment'] = 5
+        elif alignment == '否':
+            scores['value_alignment'] = 0
+        
+        # 3.2 安全边际评估（最高 15 分）
+        margin = vi.get('margin_of_safety', '')
+        if margin == '高':
+            scores['safety_margin'] = 15
+        elif margin == '中':
+            scores['safety_margin'] = 8
+        elif margin == '不确定':
+            scores['safety_margin'] = 3
+        elif margin == '低':
+            scores['safety_margin'] = 0
+        
+        # 3.3 主题归类（最高 10 分）
+        category = analysis.get('category', '')
+        if category == '公司研究':
+            scores['category'] = 10
+        elif category == '行业分析':
+            scores['category'] = 7
+        elif category == '投资理念':
+            scores['category'] = 5
+        
+        # 3.4 核心观点数量（每个 2 分，最高 10 分）
+        core_points = analysis.get('core_points', [])
+        scores['core_points'] = min(len(core_points) * 2, 10)
+    
+    # 4. 标题质量（最高 10 分）
+    title_keywords = ['深度', '分析', '研究', '估值', '财报', '年报', '护城河']
+    if any(kw in title for kw in title_keywords):
+        scores['title_quality'] = 10
+    elif len(title) > 20:
+        scores['title_quality'] = 5
+    
+    # 计算总分
+    scores['total'] = sum([
+        scores['content_depth'],
+        scores['keywords'],
+        scores['value_alignment'],
+        scores['safety_margin'],
+        scores['category'],
+        scores['core_points'],
+        scores['title_quality']
+    ])
+    
+    return scores
+
+
+def classify_priority(article: dict, analysis: dict = None) -> str:
+    """
+    优先级分类 V2 - 基于内容质量与价值投资相关性综合评分
+    
+    评分维度：
+    1. 内容深度（字数）- 最高 30 分
+    2. 价值投资关键词 - 最高 25 分
+    3. 价值投资相关性 - 最高 20 分
+    4. 安全边际评估 - 最高 15 分
+    5. 主题归类 - 最高 10 分
+    6. 核心观点数量 - 最高 10 分
+    7. 标题质量 - 最高 10 分
+    总分：最高 120 分
+    
+    Returns:
+        'must_read' | 'worth_reading' | 'reference'
+    """
+    scores = calculate_priority_score(article, analysis)
+    total = scores['total']
+    
+    # 根据总分确定优先级
+    # 必读：60+ 分（高质量价值投资分析）
+    # 值得关注：30-59 分（有价值的分析）
+    # 参考：40 分以下
+    if total >= 60:
         return 'must_read'
-    elif len(content) > 1000:
+    elif total >= 30:
         return 'worth_reading'
-    
-    # 基于关键词
-    deep_keywords = ['估值', '分析', '研究', '财报', '商业模式', '护城河', '安全边际']
-    if any(kw in title + content for kw in deep_keywords):
-        if len(content) > 500:
-            return 'worth_reading'
-    
-    return 'reference'
+    else:
+        return 'reference'
 
 
 # ============ 文章分析器 ============
@@ -80,12 +234,28 @@ def classify_priority(article: dict, analysis: dict = None) -> str:
 class ArticleAnalyzer:
     """文章分析器 - GLM-5 深度分析"""
     
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, provider: str = None):
+        # 支持 minimax / aliyun 双 provider
+        self.provider = provider or os.environ.get('ANALYZER_PROVIDER', 'minimax')
         self.api_key = api_key or os.environ.get('BAILIAN_API_KEY', '')
         self.client = None
-        
-        if self.api_key and OpenAI:
-            self.client = OpenAI(
+
+        if self.provider == 'minimax':
+            minimax_key = os.environ.get('MINIMAX_API_KEY', '')
+            minimax_base = os.environ.get('MINIMAX_BASE_URL', 'https://api.minimaxi.com/anthropic')
+            self.api_key = api_key or minimax_key
+            if self.api_key and Anthropic:
+                self.client = Anthropic(
+                    api_key=self.api_key,
+                    base_url=minimax_base,
+                )
+        elif self.provider == 'aliyun' and self.api_key:
+            self.client = OpenAIClient(
+                api_key=self.api_key,
+                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            )
+        elif self.api_key and OpenAIClient:
+            self.client = OpenAIClient(
                 api_key=self.api_key,
                 base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             )
@@ -110,20 +280,39 @@ class ArticleAnalyzer:
         prompt = self._build_prompt(article)
         
         try:
-            completion = self.client.chat.completions.create(
-                model="glm-5",
-                messages=[{"role": "user", "content": prompt}],
-            )
-            response = completion.choices[0].message.content
+            if self.provider == 'minimax':
+                resp = self.client.messages.create(
+                    model="MiniMax-M2.7",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=8192,
+                )
+                # MiniMax returns ThinkingBlock + TextBlock; extract both
+                texts = []
+                for block in resp.content:
+                    if hasattr(block, 'text') and block.text:
+                        texts.append(block.text)
+                    elif hasattr(block, 'thinking') and block.thinking:
+                        # ThinkingBlock: extract raw thinking text after signature
+                        thinking = block.thinking
+                        texts.append(thinking)
+                response = '\n'.join(texts)
+            else:
+                completion = self.client.chat.completions.create(
+                    model="glm-5",
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                response = completion.choices[0].message.content
             analysis = self._parse_response(response)
             
-            # 计算优先级
+            # 计算优先级和评分详情
+            scores = calculate_priority_score(article, analysis)
             priority = classify_priority(article, analysis)
             
             return {
                 'quality_passed': True,
                 'issues': [],
                 'priority': priority,
+                'scores': scores,
                 'analysis': analysis
             }
         except Exception as e:
@@ -132,6 +321,7 @@ class ArticleAnalyzer:
                 'quality_passed': True,
                 'issues': [f"分析失败: {e}"],
                 'priority': 'reference',
+                'scores': calculate_priority_score(article),
                 'analysis': None
             }
     
@@ -145,109 +335,94 @@ class ArticleAnalyzer:
         # 截取内容（保留最多 4000 字符）
         content_text = content[:4000]
         
-        return f"""你是一位专业的价值投资研究专家，擅长深度分析投资文章。
+        return f"""你是一位专业的价值投资研究专家，专注于从年报、季报、行业分析中挖掘被低估的信息。
 
 ## 分析任务
 
-请对以下投资文章进行深度结构化分析。
+对以下文章进行深度分析，结构分为两部分：【信息提炼】和【深度评价】。
 
 ## 文章信息
-
 - **标题**：{title}
 - **作者**：{author}
 - **字数**：{word_count} 字
 
 ## 正文内容
-
 {content_text}
 
 ---
 
-## 分析要求
-
-请严格按照以下 JSON 格式输出分析结果：
+## 输出格式（严格 JSON）
 
 ```json
 {{
-    "category": "主题归类",
-    "related_stocks": ["股票1", "股票2"],
+    "summary": "一句话总结这篇文章的核心结论（30字以内）",
+    "category": "行业分析 | 公司研究 | 投资理念 | 宏观经济 | 其他",
+    "related_stocks": ["股票名称(code)", "..."],
     "core_points": [
-        "核心观点1（50字以上）",
-        "核心观点2（50字以上）",
-        "核心观点3（50字以上）"
+        "核心观点1：内容要饱满，不少于50字，完整呈现论点",
+        "核心观点2：内容要饱满，不少于50字，完整呈现论点",
+        "核心观点3：内容要饱满，不少于50字，完整呈现论点"
     ],
-    "value_investment": {{
-        "alignment": "是否符合价值投资原则（是/否/部分）",
-        "margin_of_safety": "安全边际评估（高/中/低/不确定）",
-        "analysis": "详细分析（100字以上）"
-    }},
-    "insights": [
-        "投资启示1（30字以上）",
-        "投资启示2（30字以上）"
-    ],
-    "summary": "一句话总结（30字以内）"
+    "deep_analysis": {{
+        "business_quality": "商业模式判断：从价值投资角度评价公司靠什么赚钱、护城河强弱、是否容易产生自由现金流（100字以上）",
+        "management": "管理层评估：管理层是否诚信、资本配置能力如何、过往承诺是否兑现（80字以上）",
+        "key_risks": "关键风险：列出1-3个最大不确定性，说明为什么重要（80字以上）",
+        "competitive_position": "竞争格局：与同行相比，竞争优势还是劣势，差距在拉开还是缩小（80字以上）",
+        "outlook": "后续关注点：下一个需要观察的时间窗口或指标是什么（60字以上）"
+    }}
 }}
 ```
 
-## 输出规范
-
-1. **category**：从以下选项中选择
-   - 行业分析：行业趋势、竞争格局、发展前景
-   - 公司研究：个股分析、估值研究、商业模式
-   - 投资理念：价值投资、安全边际、长期主义
-   - 宏观经济：经济周期、政策影响、市场环境
-   - 其他：不属于以上类别
-
-2. **related_stocks**：提取文中提及的具体股票名称
-   - 例如：["中海油(00883.HK)", "携程(TCOM)"]
-   - 如果没有提及股票，返回空数组 []
-
-3. **core_points**：提取 3-5 条核心观点
-   - 每条观点至少 50 字
-   - 观点要有深度，不是简单复述
-
-4. **value_investment**：
-   - alignment：判断文章是否符合价值投资原则
-   - margin_of_safety：评估安全边际
-   - analysis：详细分析原因（100字以上）
-
-5. **insights**：提炼 2-3 条投资启示
-   - 每条至少 30 字
-   - 要有实操价值
-
-6. **summary**：一句话总结
-   - 30 字以内
-   - 突出核心要点
-
-请确保输出是有效的 JSON 格式。"""
+## 写作要求
+- core_points 要有观点、有数据支撑，不是复述原文
+- deep_analysis 的五个维度要充分利用文章中已有的信息，不要泛泛而谈
+- 语言简洁专业，直接切入要点
+- 请确保输出是有效的 JSON"""
     
     def _parse_response(self, response: str) -> dict:
-        """解析 GLM-5 响应"""
+        """解析 LLM 响应 - 精确提取 JSON 对象"""
+        # Strategy 1: fenced code block with json
         try:
-            # 尝试提取 JSON
             json_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(1))
-            
-            # 尝试直接解析
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-        except Exception as e:
-            print(f"解析响应失败: {e}")
-        
-        # 返回默认结构
+        except Exception:
+            pass
+
+        # Strategy 2: raw_decode — extracts valid JSON from first valid char onward
+        # Handles truncated/malformed JSON by taking the first complete object
+        try:
+            decoder = json.JSONDecoder()
+            # Find the first '{'
+            start = response.find('{')
+            if start != -1:
+                obj, end = decoder.raw_decode(response[start:])
+                return obj
+        except Exception:
+            pass
+
+        # Strategy 3: strip markdown artifacts and retry
+        cleaned = re.sub(r'^[\s\S]*?```json\s*', '', response)
+        cleaned = re.sub(r'\s*```[\s\S]*$', '', cleaned)
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            pass
+
+        # All strategies failed — log and return graceful fallback
+        print(f"解析响应失败: {e}" if 'e' in dir() else "解析响应失败: unknown error")
         return {
             'category': '其他',
             'related_stocks': [],
             'core_points': ['解析失败，请查看原文'],
-            'value_investment': {
-                'alignment': '不确定',
-                'margin_of_safety': '不确定',
-                'analysis': '解析失败'
-            },
-            'insights': ['解析失败'],
-            'summary': response[:50] if response else '解析失败'
+            'summary': response[:50] if response else '解析失败',
+            'deep_analysis': {
+                'business_quality': '解析失败',
+                'management': '解析失败',
+                'key_risks': '解析失败',
+                'competitive_position': '解析失败',
+                'outlook': '解析失败'
+            }
         }
     
     def _mock_analysis(self, article: dict) -> dict:
@@ -262,21 +437,25 @@ class ArticleAnalyzer:
         elif any(kw in content for kw in ['巴菲特', '价值投资', '安全边际', '护城河']):
             category = '投资理念'
         
+        scores = calculate_priority_score(article)
+        
         return {
             'quality_passed': True,
             'issues': ['未配置 API Key'],
             'priority': classify_priority(article),
+            'scores': scores,
             'analysis': {
                 'category': category,
                 'related_stocks': [],
                 'core_points': ['需配置 API Key 进行完整分析'],
-                'value_investment': {
-                    'alignment': '待分析',
-                    'margin_of_safety': '待分析',
-                    'analysis': '请配置 BAILIAN_API_KEY 环境变量'
-                },
-                'insights': ['配置 API Key 后可获取完整分析'],
-                'summary': article.get('title', '')[:30]
+                'summary': article.get('title', '')[:30],
+                'deep_analysis': {
+                    'business_quality': '请配置 API Key 后获取完整分析',
+                    'management': '请配置 API Key 后获取完整分析',
+                    'key_risks': '请配置 API Key 后获取完整分析',
+                    'competitive_position': '请配置 API Key 后获取完整分析',
+                    'outlook': '请配置 API Key 后获取完整分析'
+                }
             }
         }
 
@@ -285,12 +464,7 @@ class ArticleAnalyzer:
 
 def generate_daily_report(articles: List[dict], results: List[dict], output_path: str = None) -> str:
     """
-    生成每日投研分析报告
-    
-    Args:
-        articles: 文章列表
-        results: 分析结果列表
-        output_path: 输出路径
+    生成每日投研分析报告 v2 - 市场分组 + 操作参考
     """
     today = datetime.now().strftime('%Y-%m-%d')
     
@@ -303,17 +477,38 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
     worth_reading = sum(1 for r in results if r.get('priority') == 'worth_reading')
     reference = sum(1 for r in results if r.get('priority') == 'reference')
     
-    # 股票汇总
+    # 收集所有股票并按市场分组
     stock_mentions = {}
+    all_stocks = []
     for article, result in zip(articles, results):
         if result.get('analysis'):
             for stock in result['analysis'].get('related_stocks', []):
+                all_stocks.append(stock)
                 if stock not in stock_mentions:
                     stock_mentions[stock] = []
                 stock_mentions[stock].append({
                     'title': article.get('title', ''),
                     'url': f"https://xueqiu.com/{article.get('user_id', '')}/{article.get('article_id', '')}"
                 })
+    
+    market_groups = group_stocks_by_market(all_stocks)
+    
+    # 收集操作信号
+    operation_signals = []
+    for article, result in zip(articles, results):
+        if result.get('analysis'):
+            insights = result['analysis'].get('insights', [])
+            vi = result['analysis'].get('value_investment', {})
+            margin = vi.get('margin_of_safety', '')
+            alignment = vi.get('alignment', '')
+            
+            signal = {'article': article.get('title', ''), 'insights': insights,
+                      'margin': margin, 'alignment': alignment}
+            operation_signals.append(signal)
+    
+    # 今日覆盖的市场
+    markets_covered = [m for m in market_groups.keys() if m != '其他']
+    market_desc = '、'.join(markets_covered) if markets_covered else '暂无股票覆盖'
     
     # 构建报告
     lines = [
@@ -329,6 +524,8 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         f"- **有效分析**：{passed} 篇（内容 > 200 字）",
         f"- **无效文章**：{failed} 篇（短状态/评论）",
         "",
+        f"- **市场覆盖**：{market_desc}",
+        "",
         "---",
         "",
         "## 二、优先级分类",
@@ -337,68 +534,113 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         f"|--------|------|------|",
         f"| 🔴 必读 | {must_read} | 高质量长文，深度分析 |",
         f"| 🟡 值得关注 | {worth_reading} | 有价值的观点和分析 |",
-        f"| 🔵 参考 | {reference} | 短状态、预告类 |",
+        f"| 🔵 参考 | {reference} | 短状态/预告类 |",
         "",
         "---",
         "",
-        "## 三、文章集合",
+        "## 三、相关股票（按市场分组）",
         ""
     ]
     
-    # 按优先级分组
+    if market_groups:
+        for market, stocks in market_groups.items():
+            lines.append(f"### {market} ({len(stocks)} 只)")
+            lines.append("")
+            for stock in stocks:
+                mentions = stock_mentions.get(stock, [])
+                article_links = ', '.join([f"[{m['title'][:20]}]({m['url']})" for m in mentions[:2]])
+                lines.append(f"- **{stock}**：{len(mentions)} 次 · {article_links}")
+            lines.append("")
+    else:
+        lines.append("暂无股票覆盖")
+        lines.append("")
+    
+    # 操作参考
+    lines.append("---")
+    lines.append("")
+    lines.append("## 四、今日操作参考")
+    lines.append("")
+    
+    has_signals = False
+    for article, result in zip(articles, results):
+        if result.get('quality_passed') and result.get('analysis'):
+            analysis = result['analysis']
+            da = analysis.get('deep_analysis', {})
+            core_points = analysis.get('core_points', [])
+            stocks = analysis.get('related_stocks', [])
+            
+            title = article.get('title', '')[:40]
+            stock_str = ', '.join(stocks[:2]) if stocks else ''
+            
+            # 从核心观点提炼一句话
+            top_point = core_points[0][:80] + '...' if core_points else ''
+            
+            lines.append(f"**{title}**")
+            if stock_str:
+                lines.append(f"  📌 {stock_str}")
+            if top_point:
+                lines.append(f"  → {top_point}")
+            
+            # 显示关键风险或后续关注
+            key_risk = da.get('key_risks', '')
+            outlook = da.get('outlook', '')
+            if key_risk:
+                lines.append(f"  ⚠️ {key_risk[:100]}{'...' if len(key_risk)>100 else ''}")
+            elif outlook:
+                lines.append(f"  🔭 {outlook[:100]}{'...' if len(outlook)>100 else ''}")
+            
+            lines.append("")
+            has_signals = True
+    
+    if not has_signals:
+        lines.append("暂无有效分析")
+        lines.append("")
+    
+    # 文章集合（按优先级排序）
+    lines.append("---")
+    lines.append("")
+    lines.append("## 五、文章详情")
+    lines.append("")
+    
     priorities = {'must_read': [], 'worth_reading': [], 'reference': []}
     for article, result in zip(articles, results):
         priority = result.get('priority', 'reference')
         priorities[priority].append((article, result))
     
-    # 必读文章
     if priorities['must_read']:
-        lines.append("### 🔴 必读文章")
+        lines.append("### 🔴 必读")
         lines.append("")
         for i, (article, result) in enumerate(priorities['must_read'], 1):
             lines.extend(_format_article(i, article, result))
     
-    # 值得关注
     if priorities['worth_reading']:
         lines.append("### 🟡 值得关注")
         lines.append("")
         for i, (article, result) in enumerate(priorities['worth_reading'], 1):
             lines.extend(_format_article(i, article, result))
     
-    # 参考
     if priorities['reference']:
-        lines.append("### 🔵 参考文章")
+        lines.append("### 🔵 参考")
         lines.append("")
         for i, (article, result) in enumerate(priorities['reference'], 1):
             lines.extend(_format_article_brief(i, article, result))
     
-    # 相关股票汇总
-    if stock_mentions:
-        lines.append("---")
-        lines.append("")
-        lines.append("## 四、相关股票汇总")
-        lines.append("")
-        lines.append("| 股票 | 出现次数 | 相关文章 |")
-        lines.append("|------|----------|----------|")
-        
-        for stock, mentions in sorted(stock_mentions.items(), key=lambda x: -len(x[1])):
-            article_links = ', '.join([f"[{m['title'][:15]}]({m['url']})" for m in mentions[:3]])
-            lines.append(f"| {stock} | {len(mentions)} | {article_links} |")
-    
     # 总结
+    categories = set(r['analysis']['category'] for r in results if r.get('analysis'))
+    hot_stocks = list(stock_mentions.keys())[:5]
     lines.extend([
         "",
         "---",
         "",
-        "## 五、今日总结",
+        "## 六、今日总结",
         "",
-        f"- **主要话题**：{', '.join(set(r['analysis']['category'] for r in results if r.get('analysis')))}",
-        f"- **热门股票**：{', '.join(list(stock_mentions.keys())[:5]) if stock_mentions else '无'}",
+        f"- **主要话题**：{', '.join(categories) if categories else '暂无'}",
+        f"- **热门股票**：{', '.join(hot_stocks) if hot_stocks else '无'}",
         "",
         "---",
         "",
         f"*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
-        f"*分析模型：智谱 GLM-5*"
+        "*分析模型：MiniMax M2.7*"
     ])
     
     report = '\n'.join(lines)
@@ -429,6 +671,11 @@ def _format_article(index: int, article: dict, result: dict) -> List[str]:
     lines.append(f"- **链接**：{url}")
     lines.append(f"- **字数**：{word_count} 字")
     
+    # 显示评分信息
+    scores = result.get('scores')
+    if scores:
+        lines.append(f"- **评分**：{scores.get('total', 0)} 分（内容{scores.get('content_depth', 0)}+关键词{scores.get('keywords', 0)}+归类{scores.get('category', 0)}+观点{scores.get('core_points', 0)}+标题{scores.get('title_quality', 0)}）")
+    
     analysis = result.get('analysis')
     if analysis:
         # 相关股票
@@ -437,7 +684,7 @@ def _format_article(index: int, article: dict, result: dict) -> List[str]:
             lines.append(f"- **相关股票**：{', '.join(stocks)}")
         
         lines.append("")
-        lines.append("**GLM-5 分析：**")
+        lines.append("**MiniMax M2.7 分析：**")
         lines.append("")
         
         # 主题归类
@@ -451,23 +698,41 @@ def _format_article(index: int, article: dict, result: dict) -> List[str]:
             for j, point in enumerate(core_points[:5], 1):
                 lines.append(f"  {j}. {point}")
         
-        # 价值投资评估
-        vi = analysis.get('value_investment', {})
-        if vi:
+        # 深度分析
+        da = analysis.get('deep_analysis', {})
+        if da:
             lines.append("")
-            lines.append("**价值投资评估：**")
-            lines.append(f"  - 符合价值投资原则：{vi.get('alignment', '不确定')}")
-            lines.append(f"  - 安全边际：{vi.get('margin_of_safety', '不确定')}")
-            if vi.get('analysis'):
-                lines.append(f"  - 分析：{vi['analysis']}")
-        
-        # 投资启示
-        insights = analysis.get('insights', [])
-        if insights:
-            lines.append("")
-            lines.append("**投资启示：**")
-            for insight in insights:
-                lines.append(f"  - {insight}")
+            lines.append("**深度评价（价值投资视角）：**")
+            
+            bq = da.get('business_quality', '')
+            if bq:
+                lines.append("")
+                lines.append("📍 **商业模式**")
+                lines.append(f"  {bq}")
+            
+            mgmt = da.get('management', '')
+            if mgmt:
+                lines.append("")
+                lines.append("👔 **管理层**")
+                lines.append(f"  {mgmt}")
+            
+            risks = da.get('key_risks', '')
+            if risks:
+                lines.append("")
+                lines.append("⚠️ **关键风险**")
+                lines.append(f"  {risks}")
+            
+            cp = da.get('competitive_position', '')
+            if cp:
+                lines.append("")
+                lines.append("🏔️ **竞争格局**")
+                lines.append(f"  {cp}")
+            
+            outlook = da.get('outlook', '')
+            if outlook:
+                lines.append("")
+                lines.append("🔭 **后续关注**")
+                lines.append(f"  {outlook}")
         
         # 一句话总结
         summary = analysis.get('summary', '')

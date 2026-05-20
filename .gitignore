@@ -27,4 +27,11 @@ logs/
 
 # OS
 .DS_Store
-Thumbs.dbdata/
+Thumbs.db
+
+# Crawled data (generated files)
+data/*.json
+data/index.json
+data/*/
+data/daily_reports/
+data/history/
