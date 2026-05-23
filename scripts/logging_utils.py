@@ -3,7 +3,7 @@
 统一日志模块
 
 提供两个日志通道:
-- main_log:   主流程日志 (info/debug/error) → logs/cron_xcrawl.log
+- main_log:   主流程日志 (info/debug/error) → logs/cron_daily.log
 - parse_log:  JSON 解析失败诊断日志 → logs/parse_failures.log
 - stats_log:  执行统计日志 → logs/execution_stats.log
 """
@@ -31,7 +31,7 @@ def _init_main_logger():
     _main_logger.propagate = False
     # 文件 handler（自动轮转，最大 5MB × 3 个备份）
     fh = RotatingFileHandler(
-        LOG_DIR / "cron_xcrawl.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        LOG_DIR / "cron_daily.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
     )
     fh.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(module)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")

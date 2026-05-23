@@ -29,12 +29,9 @@ cd "$PROJECT_DIR"
 echo "[1/4] 检查登录态..." >> "$LOG_FILE"
 /usr/bin/python3 scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（Playwright 将直接尝试）" >> "$LOG_FILE"
 
-# 2. 爬取新文章（Playwright 版本，主用）
+# 2. 爬取新文章（Playwright）
 echo "[2/4] 爬取新文章（Playwright）..." >> "$LOG_FILE"
-/usr/bin/python3 scripts/crawler.py --all --max 20 >> "$LOG_FILE" 2>&1 || {
-    echo "⚠️  Playwright 爬取失败，尝试 XCrawl fallback" >> "$LOG_FILE"
-    /usr/bin/python3 scripts/crawler_xcrawl.py --all --max 20 -d >> "$LOG_FILE" 2>&1 || true
-}
+/usr/bin/python3 scripts/crawler.py --all --max 20 >> "$LOG_FILE" 2>&1
 
 # 3. 生成分析报告（MINIMAX_API_KEY 从 .env 或环境变量读取）
 echo "[3/4] 生成分析报告..." >> "$LOG_FILE"
