@@ -1,7 +1,7 @@
 # 雪球专栏文章爬虫 — 项目记录
 
 > 本文件作为项目的结构化知识库，用于后续迭代、调试和升级。  
-> 最后更新：2026-05-23 | 版本：2.10（PR #6+#7 合并：A5 作者修复 + C3/C5/C6/A1 高优四项）
+> 最后更新：2026-05-23 | 版本：2.11（PR #10：Playwright 主用，XCrawl 退为 fallback）
 
 ---
 
@@ -154,7 +154,7 @@ run_daily_xcrawl.sh (凌晨 2:00 cron 触发)
 | 文件 | LOC | 状态 | 类/函数 | 说明 |
 |------|-----|------|---------|------|
 | `crawler_xcrawl.py` | 737 | ✅ 主用 | `XCrawlClient` / `XueqiuXCrawlCrawler` | XCrawl API 云端爬取，含重试装饰器、cookies、增量更新 |
-| `crawler.py` | 673 | ⛔ 备用 | `XueqiuCrawler` | Playwright 本地浏览器，仅 fallback |
+| `crawler.py` | ~820 → ~880 | ✅ 主用 | Playwright 爬取（主用），含 crawl_all_users + 爬取统计 | Playwright 本地浏览器，仅 fallback |
 | `cookies.py` | 262 | ✅ 在用 | `CookieManager` | 登录态：检查/导入/刷新/过期 (30天) |
 
 ### 3.2 分析层
@@ -599,3 +599,5 @@ crontab：
 ---
 
 *本文件在每次重要迭代后更新。*
+
+| 2026-05-23 | 2.11 | System | PR #10：Playwright 主用，XCrawl 退为 fallback；crawler.py 补齐 crawl_all_users + crawl_stats + author 修复 |

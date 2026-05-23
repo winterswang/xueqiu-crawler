@@ -18,6 +18,7 @@ import logging
 import hashlib
 import re
 import time
+from functools import wraps
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -30,6 +31,35 @@ try:
 except ImportError:
     print("请先安装 playwright: pip install playwright && playwright install chromium")
     sys.exit(1)
+
+
+# 默认常量
+DEFAULT_MAX_ARTICLES = 20
+MAX_RETRIES = 3
+RETRY_DELAYS = [1, 2, 5]
+
+
+# ============================================================
+# 重试装饰器
+# ============================================================
+def retry(max_retries: int = MAX_RETRIES, delays: List[int] = RETRY_DELAYS):
+    """重试装饰器"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for i in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    if i < max_retries - 1:
+                        delay = delays[i] if i < len(delays) else delays[-1]
+                        logging.warning(f"第 {i+1} 次重试，等待 {delay} 秒... 错误: {e}")
+                        time.sleep(delay)
+            raise last_error
+        return wrapper
+    return decorator
 
 
 # 配置日志
@@ -336,9 +366,25 @@ class XueqiuCrawler:
                 self.logger.info(f"提取标题: {title[:50]}...")
             
             # 获取作者
-            author_elem = page.query_selector('.article__bd__from a, .user-name, .author-name, .status-content a[href*="/u/"]')
+            author_elem = page.query_selector('.article__bd__from a, .author-name, .status-content a[href*="/u/"]')
             if author_elem:
-                detail['author'] = author_elem.inner_text().strip()
+                author = author_elem.inner_text().strip()
+                # 清理：去掉 "的雪球专栏" 等后缀
+                for suffix in ['的雪球专栏', '的专栏']:
+                    if suffix in author:
+                        author = author.split(suffix)[0]
+                        break
+                detail['author'] = author
+            if not detail['author']:
+                # Fallback: 使用用户主页名字
+                user_name_elem = page.query_selector('.user-name')
+                if user_name_elem:
+                    name = user_name_elem.inner_text().strip()
+                    for suffix in ['的雪球专栏', '的专栏']:
+                        if suffix in name:
+                            name = name.split(suffix)[0]
+                            break
+                    detail['author'] = name
             
             # 获取时间
             time_elem = page.query_selector('.article__bd__from .date, .time, .date, .status-content .time')
@@ -586,13 +632,16 @@ class XueqiuCrawler:
                         filepath = self._save_as_markdown(article, user_id)
                         article['filepath'] = filepath
                         
-                        # 更新索引
-                        self.index['articles'][article_id] = {
+                        # 更新索引（统一用 user_id_article_id 作为 key）
+                        index_key = f"{user_id}_{article_id}"
+                        self.index['articles'][index_key] = {
+                            'article_id': article_id,
+                            'user_id': user_id,
                             'title': article.get('title', ''),
                             'author': article.get('author', ''),
                             'publish_time': article.get('publish_time', ''),
-                            'user_id': user_id,
                             'crawl_time': article.get('crawl_time'),
+                            'file_path': filepath,
                             'filepath': filepath,
                         }
                         
@@ -614,43 +663,106 @@ class XueqiuCrawler:
         self.logger.info(f"用户 {user_id} 爬取完成，获取 {len(articles)} 篇新文章")
         return articles
     
-    def run(self):
-        """运行爬虫"""
-        self.logger.info("="*50)
-        self.logger.info("雪球爬虫启动")
-        self.logger.info("="*50)
+    def crawl_all_users(self, max_articles: int = None, fetch_detail: bool = True) -> dict:
+        """
+        爬取所有配置用户（Playwright）
         
-        all_articles = []
+        Args:
+            max_articles: 每个用户最大文章数
+            fetch_detail: 是否爬取详情
+        
+        Returns:
+            爬取统计
+        """
+        max_articles = max_articles or self.config.get('crawler', {}).get('max_articles', 20)
+        
+        stats = {
+            'total_users': len(self.accounts),
+            'total_new': 0,
+            'total_saved': 0,
+            'users': []
+        }
         
         for account in self.accounts:
             user_id = account.get('id')
-            url = account.get('url')
+            user_name = account.get('name', user_id)
+            url = account.get('url', f'https://xueqiu.com/u/{user_id}')
             
-            if not user_id or not url:
+            if not user_id:
                 self.logger.warning(f"账号配置不完整: {account}")
                 continue
             
-            articles = self.crawl_user(user_id, url)
-            all_articles.extend(articles)
+            self.logger.info(f"\n{'='*50}")
+            self.logger.info(f"爬取用户: {user_name} ({user_id})")
+            
+            try:
+                articles = self.crawl_user(user_id, url)
+                stats['total_new'] += len(articles)
+                stats['total_saved'] += len(articles)
+                stats['users'].append({
+                    'user_id': user_id,
+                    'name': user_name,
+                    'new_articles': len(articles),
+                    'saved_articles': len(articles)
+                })
+                
+            except Exception as e:
+                self.logger.error(f"爬取用户 {user_id} 失败: {e}")
+                stats['users'].append({
+                    'user_id': user_id,
+                    'name': user_name,
+                    'error': str(e)
+                })
             
             # 用户间延迟
             if account != self.accounts[-1]:
                 self._random_delay()
         
-        self.logger.info("="*50)
-        self.logger.info(f"爬取完成，共获取 {len(all_articles)} 篇新文章")
-        self.logger.info("="*50)
+        # 打印统计
+        self.logger.info(f"\n{'='*50}")
+        self.logger.info(f"爬取完成！")
+        self.logger.info(f"总用户数: {stats['total_users']}")
+        self.logger.info(f"新文章数: {stats['total_new']}")
+        self.logger.info(f"保存文章数: {stats['total_saved']}")
         
-        return all_articles
+        # 保存爬取统计供日报使用
+        successful = sum(1 for u in stats['users'] if 'saved_articles' in u)
+        failed = sum(1 for u in stats['users'] if 'error' in u)
+        crawl_stats = {
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'total_users': stats['total_users'],
+            'successful': successful,
+            'failed': failed,
+            'new_articles': stats['total_new'],
+        }
+        stats_file = self.data_dir / '.last_crawl_stats.json'
+        try:
+            with open(stats_file, 'w', encoding='utf-8') as f:
+                json.dump(crawl_stats, f, ensure_ascii=False)
+            self.logger.info(f"爬取统计已保存: {stats_file}")
+        except OSError as e:
+            self.logger.warning(f"保存爬取统计失败: {e}")
+        
+        return stats
+    
+    def run(self):
+        """运行爬虫（兼容旧接口）"""
+        self.logger.info("="*50)
+        self.logger.info("雪球爬虫启动")
+        self.logger.info("="*50)
+        return self.crawl_all_users()
 
 
 def main():
     """主函数"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='雪球专栏文章爬虫')
+    parser = argparse.ArgumentParser(description='雪球专栏文章爬虫 (Playwright)')
     parser.add_argument('--config', '-c', help='配置文件路径')
     parser.add_argument('--user', '-u', help='指定用户ID')
+    parser.add_argument('-a', '--all', action='store_true', help='爬取所有用户')
+    parser.add_argument('-m', '--max', type=int, default=20, help='最大文章数')
+    parser.add_argument('-d', '--detail', action='store_true', help='爬取文章详情（默认已启用）')
     
     args = parser.parse_args()
     
@@ -666,7 +778,7 @@ def main():
             print(f"未找到用户: {args.user}")
     else:
         # 爬取所有用户
-        crawler.run()
+        crawler.crawl_all_users(max_articles=args.max)
 
 
 if __name__ == '__main__':
