@@ -319,13 +319,35 @@ class ArticleAnalyzer:
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=8192,
                 )
-                # MiniMax returns ThinkingBlock + TextBlock
-                # 只取 TextBlock，忽略 ThinkingBlock（那是模型的思考过程而非最终输出）
+                # MiniMax returns ThinkingBlock + TextBlock (or only ThinkingBlock in thinking mode)
+                # 优先取 TextBlock，如果没有则 fallback 到 ThinkingBlock.thinking
                 texts = []
+                thinking_texts = []
                 for block in resp.content:
                     if hasattr(block, 'text') and block.text:
                         texts.append(block.text)
-                response = '\n'.join(texts)
+                    elif hasattr(block, 'thinking') and block.thinking:
+                        thinking_texts.append(block.thinking)
+                
+                if texts:
+                    response = '\n'.join(texts)
+                elif thinking_texts:
+                    # No TextBlock — MiniMax thinking mode: JSON 可能嵌入在 thinking 输出末尾
+                    # ThinkingBlock 的思考过程末尾往往包含实际输出
+                    raw_thinking = '\n'.join(thinking_texts)
+                    self.logger.warning(
+                        f"MiniMax 只返回 ThinkingBlock (无 TextBlock), "
+                        f"长度={len(raw_thinking)}, 尝试从 thinking 提取 JSON"
+                    )
+                    # 策略：找 thinking 内容中最后一个完整 JSON 对象
+                    json_start = raw_thinking.rfind('{')
+                    if json_start != -1:
+                        response = raw_thinking[json_start:]
+                        self.logger.info(f"从 ThinkingBlock 末尾提取到 JSON 候选 (起始偏移={json_start})")
+                    else:
+                        response = raw_thinking
+                else:
+                    response = ""
             else:
                 completion = self.client.chat.completions.create(
                     model=self.model_name,
