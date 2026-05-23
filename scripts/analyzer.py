@@ -12,13 +12,14 @@ import os
 import sys
 import json
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from logging_utils import get_logger, log_parse_failure
+from logging_utils import get_logger, log_parse_failure, log_api_call
 
 try:
     from anthropic import Anthropic
@@ -234,13 +235,23 @@ class ArticleAnalyzer:
         self.api_key = api_key or os.environ.get('BAILIAN_API_KEY', '')
         self.client = None
         self.logger = get_logger()
-        self.stats = {"total_calls": 0, "parse_success": 0, "parse_failed": 0, "api_errors": 0}
+        self.stats = {"total_calls": 0, "parse_success": 0, "parse_failed": 0, "api_errors": 0,
+                       "retry_count": 0, "total_latency_ms": 0, "success_calls": 0}
 
         # 从 config 读取模型名和截断阈值
         analysis_cfg = (config or {}).get('analysis', {})
         models_cfg = analysis_cfg.get('models', {})
         self.model_name = models_cfg.get(self.provider, 'MiniMax-M2.7')
         self.max_content_chars = analysis_cfg.get('max_content_chars', 8000)
+        
+        # 重试配置
+        retry_cfg = analysis_cfg.get('retry', {})
+        self.retry_max = retry_cfg.get('max_retries', 3)
+        self.retry_base_delay = retry_cfg.get('base_delay_ms', 2000) / 1000.0
+        self.retry_max_delay = retry_cfg.get('max_delay_ms', 30000) / 1000.0
+        self.retry_backoff = retry_cfg.get('backoff_multiplier', 2.0)
+        self.retry_http_codes = retry_cfg.get('retry_on_http_codes', [429, 529, 502, 503, 504])
+        self.request_timeout = retry_cfg.get('request_timeout_ms', 120000) / 1000.0
 
         if self.provider == 'minimax':
             minimax_key = os.environ.get('MINIMAX_API_KEY', '')
@@ -250,6 +261,13 @@ class ArticleAnalyzer:
                 self.client = Anthropic(
                     api_key=self.api_key,
                     base_url=minimax_base,
+                    max_retries=0,       # 我们自己控制重试（SDK 内置重试不透明）
+                    timeout=self.request_timeout,
+                )
+                self.logger.info(
+                    f"MiniMax 客户端初始化: model={self.model_name}, "
+                    f"timeout={self.request_timeout}s, retry_max={self.retry_max}, "
+                    f"base_url={minimax_base}"
                 )
         elif self.provider == 'aliyun' and self.api_key:
             self.client = OpenAIClient(
@@ -261,6 +279,166 @@ class ArticleAnalyzer:
                 api_key=self.api_key,
                 base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             )
+    
+    def _call_minimax_with_retry(self, prompt: str, title: str) -> Optional[str]:
+        """
+        调用 MiniMax API，带指数退避重试和详细日志
+        
+        重试策略:
+        - 529 (overloaded): 指数退避 2s → 4s → 8s → ... → max 30s
+        - 429/502/503/504: 同上
+        - NetworkError / Timeout: 同上
+        - 其他错误 (4xx): 不重试
+        
+        Returns:
+            成功返回 response text，失败返回 None
+        """
+        last_error = None
+        
+        for attempt in range(self.retry_max + 1):  # 首次 + 重试
+            t0 = time.time()
+            
+            log_api_call(
+                "start",
+                title=title[:60],
+                model=self.model_name,
+                attempt=attempt,
+                max_attempts=self.retry_max + 1,
+                prompt_chars=len(prompt),
+            )
+            
+            try:
+                resp = self.client.messages.create(
+                    model=self.model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=8192,
+                )
+                latency_ms = int((time.time() - t0) * 1000)
+                
+                # 提取文本
+                texts = []
+                thinking_texts = []
+                input_tokens = getattr(resp.usage, 'input_tokens', 0) if hasattr(resp, 'usage') else 0
+                output_tokens = getattr(resp.usage, 'output_tokens', 0) if hasattr(resp, 'usage') else 0
+                stop_reason = getattr(resp, 'stop_reason', 'unknown') if hasattr(resp, 'stop_reason') else 'unknown'
+                
+                for block in resp.content:
+                    if hasattr(block, 'text') and block.text:
+                        texts.append(block.text)
+                    elif hasattr(block, 'thinking') and block.thinking:
+                        thinking_texts.append(block.thinking)
+                
+                if texts:
+                    response = '\n'.join(texts)
+                elif thinking_texts:
+                    raw_thinking = '\n'.join(thinking_texts)
+                    self.logger.warning(
+                        f"MiniMax 只返回 ThinkingBlock (无 TextBlock), "
+                        f"长度={len(raw_thinking)}, 尝试从 thinking 提取 JSON"
+                    )
+                    json_start = raw_thinking.rfind('{')
+                    if json_start != -1:
+                        response = raw_thinking[json_start:]
+                        self.logger.info(f"从 ThinkingBlock 末尾提取到 JSON 候选 (起始偏移={json_start})")
+                    else:
+                        response = raw_thinking
+                else:
+                    response = ""
+                
+                log_api_call(
+                    "success",
+                    title=title[:60],
+                    model=self.model_name,
+                    attempt=attempt,
+                    latency_ms=latency_ms,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    response_chars=len(response),
+                    stop_reason=str(stop_reason),
+                )
+                
+                self.stats["total_latency_ms"] += latency_ms
+                self.stats["success_calls"] += 1
+                return response
+                
+            except Exception as e:
+                latency_ms = int((time.time() - t0) * 1000)
+                error_type = type(e).__name__
+                error_str = str(e)[:200]
+                
+                # 判断是否可重试
+                retryable = False
+                error_code = None
+                
+                # Anthropic SDK 异常分类
+                if hasattr(e, 'status_code'):
+                    error_code = e.status_code
+                    retryable = error_code in self.retry_http_codes
+                elif hasattr(e, 'response') and hasattr(e.response, 'status_code'):
+                    error_code = e.response.status_code
+                    retryable = error_code in self.retry_http_codes
+                elif isinstance(error_str, str):
+                    # 从错误消息中提取 HTTP 状态码
+                    for code in self.retry_http_codes:
+                        if str(code) in error_str:
+                            error_code = code
+                            retryable = True
+                            break
+                    # Network/timeout 错误也可重试
+                    if any(kw in error_type.lower() for kw in ('timeout', 'connection', 'network', 'apierror')):
+                        retryable = True
+                    if any(kw in error_str.lower() for kw in ('timeout', 'connection refused', 'reset by peer')):
+                        retryable = True
+                
+                log_api_call(
+                    "failure",
+                    title=title[:60],
+                    model=self.model_name,
+                    attempt=attempt,
+                    latency_ms=latency_ms,
+                    error_type=error_type,
+                    error_code=error_code,
+                    error_message=error_str,
+                    retryable=retryable,
+                    is_last_attempt=(attempt >= self.retry_max),
+                )
+                
+                last_error = e
+                
+                if not retryable or attempt >= self.retry_max:
+                    break
+                
+                # 计算退避延迟
+                delay = min(
+                    self.retry_base_delay * (self.retry_backoff ** attempt),
+                    self.retry_max_delay
+                )
+                self.stats["retry_count"] += 1
+                
+                log_api_call(
+                    "retry",
+                    title=title[:60],
+                    attempt=attempt,
+                    next_attempt=attempt + 1,
+                    delay_ms=int(delay * 1000),
+                    reason=error_type,
+                    error_code=error_code,
+                )
+                
+                self.logger.warning(
+                    f"MiniMax 调用失败 (attempt={attempt}, retryable={retryable}): "
+                    f"{title[:40]}, {error_type}"
+                    + (f"(HTTP {error_code})" if error_code else "")
+                    + f", {delay:.1f}s 后重试"
+                )
+                time.sleep(delay)
+        
+        # 所有重试耗尽
+        self.logger.error(
+            f"MiniMax 调用最终失败 (共 {self.retry_max + 1} 次尝试): "
+            f"{title[:40]}, last_error={type(last_error).__name__}: {str(last_error)[:100]}"
+        )
+        raise last_error
     
     def analyze_article(self, article: dict) -> dict:
         """分析单篇文章"""
@@ -280,43 +458,11 @@ class ArticleAnalyzer:
             return self._mock_analysis(article)
         
         prompt = self._build_prompt(article)
+        title = article.get('title', 'N/A')
         
         try:
             if self.provider == 'minimax':
-                resp = self.client.messages.create(
-                    model=self.model_name,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=8192,
-                )
-                # MiniMax returns ThinkingBlock + TextBlock (or only ThinkingBlock in thinking mode)
-                # 优先取 TextBlock，如果没有则 fallback 到 ThinkingBlock.thinking
-                texts = []
-                thinking_texts = []
-                for block in resp.content:
-                    if hasattr(block, 'text') and block.text:
-                        texts.append(block.text)
-                    elif hasattr(block, 'thinking') and block.thinking:
-                        thinking_texts.append(block.thinking)
-                
-                if texts:
-                    response = '\n'.join(texts)
-                elif thinking_texts:
-                    # No TextBlock — MiniMax thinking mode: JSON 可能嵌入在 thinking 输出末尾
-                    # ThinkingBlock 的思考过程末尾往往包含实际输出
-                    raw_thinking = '\n'.join(thinking_texts)
-                    self.logger.warning(
-                        f"MiniMax 只返回 ThinkingBlock (无 TextBlock), "
-                        f"长度={len(raw_thinking)}, 尝试从 thinking 提取 JSON"
-                    )
-                    # 策略：找 thinking 内容中最后一个完整 JSON 对象
-                    json_start = raw_thinking.rfind('{')
-                    if json_start != -1:
-                        response = raw_thinking[json_start:]
-                        self.logger.info(f"从 ThinkingBlock 末尾提取到 JSON 候选 (起始偏移={json_start})")
-                    else:
-                        response = raw_thinking
-                else:
-                    response = ""
+                response = self._call_minimax_with_retry(prompt, title)
             else:
                 completion = self.client.chat.completions.create(
                     model=self.model_name,
@@ -346,7 +492,17 @@ class ArticleAnalyzer:
             }
         except Exception as e:
             self.stats["api_errors"] += 1
-            self.logger.error(f"LLM 调用失败: {article.get('title', 'N/A')[:40]}, error={e}", exc_info=True)
+            error_type = type(e).__name__
+            error_str = str(e)[:200]
+            self.logger.error(
+                f"LLM 调用最终失败: {article.get('title', 'N/A')[:40]}, "
+                f"type={error_type}, message={error_str}, "
+                f"总重试={self.stats['retry_count']}次",
+                exc_info=False
+            )
+            # 仅对未知异常输出完整 traceback
+            if 'Overloaded' not in error_type and 'RateLimit' not in error_type and 'Timeout' not in error_type:
+                self.logger.debug(f"异常详情: {e}", exc_info=True)
             return {
                 'quality_passed': True,
                 'issues': [f"分析失败: {e}"],
