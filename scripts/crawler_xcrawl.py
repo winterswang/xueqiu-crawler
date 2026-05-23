@@ -17,6 +17,7 @@ import sys
 import json
 import yaml
 import time
+import filelock
 import logging
 import hashlib
 from datetime import datetime
@@ -211,6 +212,7 @@ class XueqiuXCrawlCrawler:
         
         # 索引文件
         self.index_file = self.data_dir / 'index.json'
+        self.index_lock = self.data_dir / 'index.json.lock'
         self.index = self._load_index()
         
         # Cookies 管理
@@ -242,17 +244,21 @@ class XueqiuXCrawlCrawler:
         return []
     
     def _load_index(self) -> dict:
-        """加载索引"""
-        if self.index_file.exists():
-            with open(self.index_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+        """加载索引（带文件锁）"""
+        lock = filelock.FileLock(self.index_lock, timeout=5)
+        with lock:
+            if self.index_file.exists():
+                with open(self.index_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
         return {'articles': {}, 'last_update': None, 'history': {}}
     
     def _save_index(self):
-        """保存索引"""
-        self.index['last_update'] = datetime.now().isoformat()
-        with open(self.index_file, 'w', encoding='utf-8') as f:
-            json.dump(self.index, f, ensure_ascii=False, indent=2)
+        """保存索引（带文件锁）"""
+        lock = filelock.FileLock(self.index_lock, timeout=10)
+        with lock:
+            self.index['last_update'] = datetime.now().isoformat()
+            with open(self.index_file, 'w', encoding='utf-8') as f:
+                json.dump(self.index, f, ensure_ascii=False, indent=2)
     
     # --------------------------------------------------------
     # Cookies 管理

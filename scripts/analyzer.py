@@ -35,16 +35,23 @@ except ImportError:
 def classify_stock_market(stock: str) -> str:
     """判断股票所属市场"""
     stock_clean = stock.strip()
+    import re
+
     # 港股格式: 00883.HK, 09988.HK, 3690.HK
     if '.HK' in stock_clean.upper() or '港股' in stock_clean:
         return '港股'
-    # 美股格式: BMBM, MTCH, AAPL, TSLA
-    if any(s in stock_clean for s in ['(', ')', '.']):
+    # 美股格式: AAPL, TSLA, BMBM, HOOD — 已知美股代码白名单
+    us_stock_pattern = re.compile(
+        r'^('
+        r'AAPL|MSFT|GOOGL|GOOG|AMZN|META|TSLA|NVDA|AMD|INTC|NFLX|DIS|BA|CAT|JPM|GS|MS|V|MA|JNJ|PFE|UNH|HD|MCD|KO|PEP|WMT|COST|TGT|SBUX|NKE|UPS|FDX|CSCO|ORCL|IBM|CRM|ADBE|ACN|QCOM|TXN|AVGO|BMBM|MTCH|HOOD|COIN|MSTR|SQ|SHOP|DDOG|SNOW|CRWD|ZM|ROKU|PYPL|SNAP|UBER|LYFT|ABNB|RIVN|LCID|PLTR|SOFI|UPST|AFRM'
+        r')$'
+    )
+    if us_stock_pattern.match(stock_clean.upper()):
         return '美股'
-    if stock_clean.replace('-', '').replace('.', '').isupper() and len(stock_clean) <= 5:
+    # 美股宽泛检测：纯大写字母（2-5字符）但排除已知 A 股拼音缩写
+    if re.match(r'^[A-Z][A-Z.]{1,4}$', stock_clean.replace('-', '')) and not re.match(r'^[0-9]', stock_clean):
         return '美股'
     # A股: 6位数字, 000xxx, 300xxx, 688xxx
-    import re
     if re.match(r'^[0-9]{6}', stock_clean):
         return 'A股'
     # 日股: 4-5位数字 + .T
@@ -64,7 +71,7 @@ def group_stocks_by_market(stocks: List[str]) -> dict:
 
 def check_article_quality(article: dict) -> Tuple[bool, List[str]]:
     """
-    质量检测
+    质量检测（综合版，合并 quality_check.py 的 4 项检测）
     
     Returns:
         (passed, issues): 是否通过，问题列表
@@ -75,14 +82,26 @@ def check_article_quality(article: dict) -> Tuple[bool, List[str]]:
     content = article.get('content', '')
     
     # 标题检测
-    if len(title) < 3:
-        issues.append("标题过短")
+    if not title or len(title.strip()) < 3:
+        issues.append("标题为空或过短")
     
     # 内容检测
-    if len(content) < 200:
-        issues.append(f"内容过短({len(content)}字)")
+    if not content or len(content.strip()) < 200:
+        issues.append(f"正文为空或过短({len(content)}字符)")
     
-    return len(issues) == 0, issues
+    # 作者检测
+    if not article.get('author'):
+        issues.append("作者为空")
+    
+    # 发布时间检测
+    if not article.get('publish_time'):
+        issues.append("发布时间为空")
+    
+    # 关键检测：标题和正文必须合格
+    critical_issues = ['标题为空或过短', '正文为空或过短']
+    has_critical = any(any(ci in i for ci in critical_issues) for i in issues)
+    
+    return (not has_critical, issues)
 
 
 def calculate_priority_score(article: dict, analysis: dict = None) -> dict:
@@ -234,11 +253,21 @@ def classify_priority(article: dict, analysis: dict = None) -> str:
 class ArticleAnalyzer:
     """文章分析器 - GLM-5 深度分析"""
     
-    def __init__(self, api_key: str = None, provider: str = None):
+    def __init__(self, api_key: str = None, provider: str = None, config: dict = None):
+        """
+        Args:
+            config: 从 config.yaml 读取的配置 dict（含 analysis.models）
+        """
         # 支持 minimax / aliyun 双 provider
         self.provider = provider or os.environ.get('ANALYZER_PROVIDER', 'minimax')
         self.api_key = api_key or os.environ.get('BAILIAN_API_KEY', '')
         self.client = None
+
+        # 从 config 读取模型名和截断阈值
+        analysis_cfg = (config or {}).get('analysis', {})
+        models_cfg = analysis_cfg.get('models', {})
+        self.model_name = models_cfg.get(self.provider, 'MiniMax-M2.7')
+        self.max_content_chars = analysis_cfg.get('max_content_chars', 4000)
 
         if self.provider == 'minimax':
             minimax_key = os.environ.get('MINIMAX_API_KEY', '')
@@ -282,23 +311,20 @@ class ArticleAnalyzer:
         try:
             if self.provider == 'minimax':
                 resp = self.client.messages.create(
-                    model="MiniMax-M2.7",
+                    model=self.model_name,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=8192,
                 )
-                # MiniMax returns ThinkingBlock + TextBlock; extract both
+                # MiniMax returns ThinkingBlock + TextBlock
+                # 只取 TextBlock，忽略 ThinkingBlock（那是模型的思考过程而非最终输出）
                 texts = []
                 for block in resp.content:
                     if hasattr(block, 'text') and block.text:
                         texts.append(block.text)
-                    elif hasattr(block, 'thinking') and block.thinking:
-                        # ThinkingBlock: extract raw thinking text after signature
-                        thinking = block.thinking
-                        texts.append(thinking)
                 response = '\n'.join(texts)
             else:
                 completion = self.client.chat.completions.create(
-                    model="glm-5",
+                    model=self.model_name,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 response = completion.choices[0].message.content
@@ -332,8 +358,11 @@ class ArticleAnalyzer:
         content = article.get('content', '')
         word_count = len(content)
         
-        # 截取内容（保留最多 4000 字符）
-        content_text = content[:4000]
+        # 截取内容（从 config 读取最大字符数）
+        truncated = len(content) > self.max_content_chars
+        content_text = content[:self.max_content_chars]
+        if truncated:
+            content_text += "\n\n[注：原文较长，已截断至前 {} 字符]".format(self.max_content_chars)
         
         return f"""你是一位专业的价值投资研究专家，专注于从年报、季报、行业分析中挖掘被低估的信息。
 
@@ -380,20 +409,19 @@ class ArticleAnalyzer:
 - 请确保输出是有效的 JSON"""
     
     def _parse_response(self, response: str) -> dict:
-        """解析 LLM 响应 - 精确提取 JSON 对象"""
-        # Strategy 1: fenced code block with json
+        """解析 LLM 响应 - 精确提取 JSON 对象（4 层 fallback）"""
         try:
+            # Strategy 1: fenced code block with json
             json_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(1))
         except Exception:
             pass
 
-        # Strategy 2: raw_decode — extracts valid JSON from first valid char onward
-        # Handles truncated/malformed JSON by taking the first complete object
         try:
+            # Strategy 2: raw_decode — first complete JSON object
+            # Handles truncated/malformed JSON gracefully
             decoder = json.JSONDecoder()
-            # Find the first '{'
             start = response.find('{')
             if start != -1:
                 obj, end = decoder.raw_decode(response[start:])
@@ -401,16 +429,16 @@ class ArticleAnalyzer:
         except Exception:
             pass
 
-        # Strategy 3: strip markdown artifacts and retry
-        cleaned = re.sub(r'^[\s\S]*?```json\s*', '', response)
-        cleaned = re.sub(r'\s*```[\s\S]*$', '', cleaned)
         try:
+            # Strategy 3: strip markdown artifacts and retry
+            cleaned = re.sub(r'^[\s\S]*?```json\s*', '', response)
+            cleaned = re.sub(r'\s*```[\s\S]*$', '', cleaned)
             return json.loads(cleaned)
         except Exception:
             pass
 
         # All strategies failed — log and return graceful fallback
-        print(f"解析响应失败: {e}" if 'e' in dir() else "解析响应失败: unknown error")
+        print(f"完整解析失败，返回 fallback。（响应预览: {response[:80]}...）")
         return {
             'category': '其他',
             'related_stocks': [],

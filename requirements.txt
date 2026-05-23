@@ -1,3 +1,14 @@
-playwright>=1.40.0
-pyyaml>=6.0
+# 核心依赖
 requests>=2.28.0
+pyyaml>=6.0
+filelock>=3.0.0
+
+# AI 分析（analyzer.py / value_analyzer.py）
+anthropic>=0.30.0
+openai>=1.0.0
+
+# 凭证管理
+python-dotenv>=1.0.0
+
+# 爬虫备用（Playwright 本地浏览器，仅 XCrawl 失败时 fallback）
+playwright>=1.40.0
