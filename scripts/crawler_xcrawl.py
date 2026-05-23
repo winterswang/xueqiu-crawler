@@ -708,6 +708,23 @@ class XueqiuXCrawlCrawler:
         self.logger.info(f"新文章数: {stats['total_new']}")
         self.logger.info(f"保存文章数: {stats['total_saved']}")
         
+        # 保存爬取统计供日报使用
+        successful = sum(1 for u in stats['users'] if 'saved_articles' in u)
+        failed = sum(1 for u in stats['users'] if 'error' in u)
+        crawl_stats = {
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'total_users': stats['total_users'],
+            'successful': successful,
+            'failed': failed,
+            'new_articles': stats['total_new'],
+        }
+        stats_file = self.data_dir / '.last_crawl_stats.json'
+        try:
+            with open(stats_file, 'w', encoding='utf-8') as f:
+                json.dump(crawl_stats, f, ensure_ascii=False)
+        except OSError as e:
+            self.logger.warning(f"保存爬取统计失败: {e}")
+        
         return stats
 
 
