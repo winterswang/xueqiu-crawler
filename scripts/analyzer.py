@@ -240,7 +240,7 @@ class ArticleAnalyzer:
         analysis_cfg = (config or {}).get('analysis', {})
         models_cfg = analysis_cfg.get('models', {})
         self.model_name = models_cfg.get(self.provider, 'MiniMax-M2.7')
-        self.max_content_chars = analysis_cfg.get('max_content_chars', 4000)
+        self.max_content_chars = analysis_cfg.get('max_content_chars', 8000)
 
         if self.provider == 'minimax':
             minimax_key = os.environ.get('MINIMAX_API_KEY', '')
@@ -326,6 +326,12 @@ class ArticleAnalyzer:
             self.stats["total_calls"] += 1
             self.logger.debug(f"LLM 调用成功: {article.get('title', 'N/A')[:40]}, provider={self.provider}, model={self.model_name}")
             analysis = self._parse_response(response, article)
+
+            # 校验 LLM 响应完整性
+            if not self._validate_analysis(analysis):
+                missing = self._missing_fields(analysis)
+                self.logger.warning(f"LLM 响应字段不完整, 缺失={missing}, title={article.get('title', 'N/A')[:40]}")
+                analysis = self._repair_analysis(analysis, article)
             
             # 计算优先级和评分详情
             scores = calculate_priority_score(article, analysis)
@@ -491,6 +497,59 @@ class ArticleAnalyzer:
         """获取分析统计"""
         return dict(self.stats)
     
+    REQUIRED_ANALYSIS_FIELDS = ['summary', 'category', 'core_points', 'deep_analysis']
+
+    def _validate_analysis(self, analysis: dict) -> bool:
+        """校验 LLM 分析响应是否包含所有必需字段"""
+        if not analysis:
+            return False
+        for field in self.REQUIRED_ANALYSIS_FIELDS:
+            if field not in analysis or analysis[field] is None:
+                return False
+        # core_points 必须是非空列表
+        if not isinstance(analysis.get('core_points'), list) or len(analysis['core_points']) == 0:
+            return False
+        # deep_analysis 必须是非空 dict
+        if not isinstance(analysis.get('deep_analysis'), dict) or len(analysis['deep_analysis']) == 0:
+            return False
+        return True
+
+    def _missing_fields(self, analysis: dict) -> list:
+        """返回缺失的字段列表"""
+        missing = []
+        if not analysis:
+            return self.REQUIRED_ANALYSIS_FIELDS
+        for field in self.REQUIRED_ANALYSIS_FIELDS:
+            if field not in analysis or analysis[field] is None:
+                missing.append(field)
+        if not isinstance(analysis.get('core_points'), list) or len(analysis.get('core_points', [])) == 0:
+            missing.append('core_points(非空)')
+        if not isinstance(analysis.get('deep_analysis'), dict) or len(analysis.get('deep_analysis', {})) == 0:
+            missing.append('deep_analysis(非空)')
+        return missing
+
+    def _repair_analysis(self, analysis: dict, article: dict) -> dict:
+        """修复不完整的分析响应，填充缺失字段"""
+        if not analysis:
+            analysis = {}
+        defaults = {
+            'summary': article.get('title', '')[:30],
+            'category': '其他',
+            'related_stocks': [],
+            'core_points': ['[解析异常] LLM 返回不完整，请查看原文'],
+            'deep_analysis': {
+                'business_quality': 'LLM 返回不完整，无法生成深度分析',
+                'management': 'LLM 返回不完整，无法生成深度分析',
+                'key_risks': 'LLM 返回不完整，无法生成深度分析',
+                'competitive_position': 'LLM 返回不完整，无法生成深度分析',
+                'outlook': 'LLM 返回不完整，无法生成深度分析',
+            },
+        }
+        for key, default in defaults.items():
+            if key not in analysis or not analysis[key]:
+                analysis[key] = default
+        return analysis
+    
     def _mock_analysis(self, article: dict) -> dict:
         """模拟分析（无 API Key 时）"""
         content = article.get('content', '')
@@ -507,6 +566,7 @@ class ArticleAnalyzer:
         
         return {
             'quality_passed': True,
+            'mock': True,  # 标记为非完整分析
             'issues': ['未配置 API Key'],
             'priority': classify_priority(article),
             'scores': scores,
@@ -528,9 +588,13 @@ class ArticleAnalyzer:
 
 # ============ 报告生成器 ============
 
-def generate_daily_report(articles: List[dict], results: List[dict], output_path: str = None) -> str:
+def generate_daily_report(articles: List[dict], results: List[dict], output_path: str = None,
+                          crawl_stats: dict = None) -> str:
     """
     生成每日投研分析报告 v2 - 市场分组 + 操作参考
+    
+    Args:
+        crawl_stats: 可选，爬取统计（含覆盖率信息）
     """
     today = datetime.now().strftime('%Y-%m-%d')
     
@@ -563,12 +627,28 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
     markets_covered = [m for m in market_groups.keys() if m != '其他']
     market_desc = '、'.join(markets_covered) if markets_covered else '暂无股票覆盖'
     
+    # 检查是否有 mock 分析
+    has_mock = any(r.get('mock') for r in results)
+
     # 构建报告
     lines = [
         f"# 📊 价值投资日报",
         "",
         f"**日期**：{today}",
         "",
+    ]
+
+    # Mock 分析警告（仅当检测到时显示）
+    if has_mock:
+        lines.extend([
+            "## ⚠️ 分析警告",
+            "",
+            "❗ **未配置 API Key**，当前分析为模拟结果，不反映真实文章质量。",
+            "   请在 `.env` 中配置 `BAILIAN_API_KEY` 或 `MINIMAX_API_KEY` 后重试。",
+            "",
+        ])
+
+    lines.extend([
         "---",
         "",
         "## 一、概览",
@@ -593,7 +673,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         "",
         "## 三、相关股票（按市场分组）",
         ""
-    ]
+    ])
     
     if market_groups:
         for market, stocks in market_groups.items():
@@ -693,8 +773,23 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         "---",
         "",
         f"*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
-        "*分析模型：MiniMax M2.7*"
+        "*分析模型：MiniMax M2.7*",
+        "",
     ])
+
+    # 爬取覆盖率（当 crawl_stats 可用时）
+    if crawl_stats:
+        total = crawl_stats.get('total_users', 0)
+        ok = crawl_stats.get('successful', 0)
+        fail = crawl_stats.get('failed', 0)
+        if fail:
+            status = f"⚠️ {ok}/{total} 账号成功，{fail} 个失败"
+        else:
+            status = f"✅ {ok}/{total} 账号全部成功"
+        lines.extend([
+            f"*爬取状态：{status}*",
+            f"*新增文章：{crawl_stats.get('new_articles', 0)} 篇*",
+        ])
     
     report = '\n'.join(lines)
     

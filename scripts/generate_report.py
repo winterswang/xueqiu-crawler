@@ -120,7 +120,17 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
     today = datetime.now().strftime('%Y-%m-%d')
     output_path = output_path or f"{data_dir}/daily_reports/{today}.md"
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    report = generate_daily_report(articles, results, output_path)
+    # 读取爬取统计（如有）
+    crawl_stats = None
+    stats_file = Path(data_dir) / '.last_crawl_stats.json'
+    if stats_file.exists():
+        try:
+            crawl_stats = json.loads(stats_file.read_text(encoding='utf-8'))
+            logger.info(f"爬取统计: {crawl_stats.get('successful', 0)}/{crawl_stats.get('total_users', 0)} 账号成功")
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"读取爬取统计失败: {e}")
+
+    report = generate_daily_report(articles, results, output_path, crawl_stats=crawl_stats)
     
     # 输出统计
     passed = sum(1 for r in results if r.get('quality_passed'))
