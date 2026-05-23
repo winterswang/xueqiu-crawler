@@ -139,21 +139,32 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
     
     # 记录分析器统计
     analyzer_stats = analyzer.get_stats()
+    
+    total_latency_ms = analyzer_stats.get("total_latency_ms", 0)
+    success_calls = analyzer_stats.get("success_calls", 0)
+    avg_latency = f"{total_latency_ms / success_calls / 1000:.1f}s" if success_calls else "N/A"
+    
     summary = {
         "total_articles": len(articles),
         "passed_analysis": passed,
         "must_read": must_read,
         "worth_reading": worth_reading,
         "llm_calls": analyzer_stats.get("total_calls", 0),
+        "success_calls": analyzer_stats.get("success_calls", 0),
+        "retry_count": analyzer_stats.get("retry_count", 0),
+        "avg_latency": avg_latency,
         "parse_success": analyzer_stats.get("parse_success", 0),
         "parse_failed": analyzer_stats.get("parse_failed", 0),
         "api_errors": analyzer_stats.get("api_errors", 0),
+        "total_latency_ms": total_latency_ms,
         "output_path": output_path,
     }
     log_execution_summary(summary)
     logger.info(
         f"报告生成完成: {len(articles)}篇, 有效{passed}篇, 必读{must_read}篇, "
         f"LLM调用{analyzer_stats.get('total_calls',0)}次, "
+        f"成功{analyzer_stats.get('success_calls',0)}次, 重试{analyzer_stats.get('retry_count',0)}次, "
+        f"平均延迟{avg_latency}, "
         f"解析成功{analyzer_stats.get('parse_success',0)}次, 解析失败{analyzer_stats.get('parse_failed',0)}次"
     )
     

@@ -27,6 +27,14 @@ analysis:
     minimax: "MiniMax-M2.7"     # MiniMax 模型名
     aliyun: "glm-5"             # 阿里云/百炼 模型名
   max_content_chars: 8000       # 传给 LLM 的最大字符数（长文分析完整性）
+  # MiniMax API 重试策略
+  retry:
+    max_retries: 3              # 最大重试次数（不含首次）
+    base_delay_ms: 2000         # 初始等待（ms）
+    max_delay_ms: 30000         # 最大等待（ms）
+    backoff_multiplier: 2.0     # 退避倍数
+    retry_on_http_codes: [429, 529, 502, 503, 504]  # 重试的错误码
+    request_timeout_ms: 120000   # 单次 API 调用超时（ms）
 
 # 反爬策略
 anti_detect:

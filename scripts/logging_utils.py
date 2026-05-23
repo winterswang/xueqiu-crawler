@@ -122,3 +122,38 @@ def log_execution_summary(summary: dict):
     """记录执行总结"""
     slog = get_stats_logger()
     slog.info(f"EXECUTION_SUMMARY: {summary}")
+
+
+# MiniMax API 调用专用 logger（结构化 JSON 日志）
+_api_logger = None
+
+def _init_api_logger():
+    global _api_logger
+    if _api_logger:
+        return _api_logger
+    _api_logger = logging.getLogger("xueqiu.api")
+    _api_logger.setLevel(logging.DEBUG)
+    _api_logger.propagate = False
+    fh = RotatingFileHandler(
+        LOG_DIR / "minimax_api.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    fh.setLevel(logging.DEBUG)
+    fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    fh.setFormatter(fmt)
+    _api_logger.addHandler(fh)
+    return _api_logger
+
+
+def log_api_call(event: str, **kwargs):
+    """
+    记录 MiniMax API 调用事件（结构化 JSON）
+    
+    Args:
+        event: start / success / retry / failure
+        **kwargs: 调用上下文（model, attempt, latency_ms, error_type, etc.）
+    """
+    alog = _init_api_logger()
+    import json as _json
+    payload = {"event": event}
+    payload.update(kwargs)
+    alog.info(_json.dumps(payload, ensure_ascii=False, default=str))
