@@ -20,6 +20,14 @@ logging:
   level: INFO
   file: logs/crawler.log
 
+# AI 分析配置
+analysis:
+  provider: "minimax"           # 默认 provider: minimax / aliyun
+  models:
+    minimax: "MiniMax-M2.7"     # MiniMax 模型名
+    aliyun: "glm-5"             # 阿里云/百炼 模型名
+  max_content_chars: 4000       # 传给 LLM 的最大字符数
+
 # 反爬策略
 anti_detect:
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"

@@ -267,8 +267,8 @@ def load_accounts(xueqiu_dir: Path) -> list:
 
 
 def main():
-    # xueqiu-crawler 目录
-    xueqiu_dir = Path("/root/.openclaw/workspace/xueqiu-crawler")
+    # xueqiu-crawler 目录（基于脚本位置自动推断）
+    xueqiu_dir = Path(__file__).resolve().parent.parent
     xueqiu_data_dir = xueqiu_dir / "data"
     
     # 加载账号配置

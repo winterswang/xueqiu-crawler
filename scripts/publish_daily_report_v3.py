@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 # 配置
-PROJECT_DIR = Path("/root/.openclaw/workspace/xueqiu-crawler")
+PROJECT_DIR = Path(__file__).resolve().parent.parent
 REPORT_DIR = PROJECT_DIR / "data" / "daily_reports"
 OUTPUT_DIR = PROJECT_DIR / "output"
 
