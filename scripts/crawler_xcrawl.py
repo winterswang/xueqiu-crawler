@@ -19,14 +19,13 @@ import yaml
 import time
 import filelock
 import logging
-import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from functools import wraps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from logging_utils import get_logger, log_execution_stage
+from logging_utils import get_logger
 
 # 添加项目根目录到 path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -302,9 +301,7 @@ class XueqiuXCrawlCrawler:
         data = {
             'cookies': cookies,
             'created_at': datetime.now().isoformat(),
-            'expires_at': datetime.now().replace(
-                day=datetime.now().day + expire_days
-            ).isoformat()
+            'expires_at': (datetime.now() + timedelta(days=expire_days)).isoformat()
         }
         
         with open(self.cookies_file, 'w') as f:
