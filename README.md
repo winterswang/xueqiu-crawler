@@ -4,7 +4,6 @@
 
 ## 功能
 
-- ✅ XCrawl API 云端爬取（替代本地 Playwright）
 - ✅ 自动过滤专栏文章，排除评论和短状态
 - ✅ AI 质量分析 + 多维度评分
 - ✅ 增量更新，避免重复爬取
@@ -17,7 +16,7 @@
 ```
 accounts.yaml (账号配置)
         ↓
-crawler_xcrawl.py (XCrawl API 爬文章列表)
+crawler.py (Playwright 爬文章列表 + 详情)
         ↓
 index.json (文章索引: article_id → filepath)
         ↓
@@ -39,7 +38,6 @@ xueqiu-crawler/
 │   └── config.yaml        # 爬虫配置（延迟、超时、调度）
 ├── scripts/
 │   ├── crawler.py         # Playwright 版本（备用）
-│   ├── crawler_xcrawl.py  # XCrawl 云端爬虫（主用）
 │   ├── analyzer.py         # AI 质量分析 + 评分
 │   ├── generate_report.py  # 日报 Markdown 生成
 │   ├── quality_check.py    # 文章质量检测
@@ -92,19 +90,11 @@ schedule:
   cron: "0 2 * * *"  # 每日凌晨2点
 ```
 
-### XCrawl
-
-XCrawl API Key 需配置在 `~/.xcrawl/config.json`：
-
-```json
-{"XCRAWL_API_KEY": "xc-xxx"}
-```
-
 ## 使用
 
 ```bash
 # 爬取所有用户
-python scripts/crawler_xcrawl.py
+python scripts/crawler.py --all
 
 # 生成今日日报
 python scripts/generate_report.py
@@ -116,7 +106,7 @@ python scripts/publish_daily_report_v3.py
 ## 定时任务
 
 ```bash
-0 2 * * * cd /root/.openclaw/workspace/xueqiu-crawler && python scripts/crawler_xcrawl.py >> logs/cron.log 2>&1
+0 2 * * * cd /root/code/xueqiu-crawler && bash scripts/run_daily.sh >> logs/cron_daily.log 2>&1
 ```
 
 ## 代码质量评估（2026-05-22）
@@ -140,13 +130,13 @@ python scripts/publish_daily_report_v3.py
 #### P1 重要
 
 4. **硬编码路径** — `publish_daily_report_v3.py` 第38行固定 `/root/.openclaw/workspace/xueqiu-crawler`
-5. **凭证分散** — IMA 凭证在脚本中硬编码，XCrawl key 在 `~/.xcrawl/config.json`，应统一到 `config/`
+5. **凭证分散** — IMA 凭证在脚本中硬编码（已通过 ~/.config/ima/ 文件读取解决）
 6. **零测试** — 关键函数（`classify_stock_market`、`check_article_quality`）无单元测试
 
 #### P2 可改进
 
 7. **`generate_report.py` 不可导入** — 只能 `python scripts/generate_report.py` 运行，不能被其他模块 import
-9. **README 与实际代码脱节** — README 说用 Playwright，实际主流程是 XCrawl
+
 
 ### 修复建议优先级
 
