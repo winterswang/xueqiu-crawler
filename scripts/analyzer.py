@@ -115,8 +115,6 @@ def calculate_priority_score(article: dict, analysis: dict = None) -> dict:
             'total': 总分,
             'content_depth': 内容深度分,
             'keywords': 关键词分,
-            'value_alignment': 价值投资相关性分,
-            'safety_margin': 安全边际分,
             'category': 主题归类分,
             'core_points': 核心观点分,
             'title_quality': 标题质量分
@@ -128,8 +126,6 @@ def calculate_priority_score(article: dict, analysis: dict = None) -> dict:
     scores = {
         'content_depth': 0,
         'keywords': 0,
-        'value_alignment': 0,
-        'safety_margin': 0,
         'category': 0,
         'core_points': 0,
         'title_quality': 0,
@@ -161,30 +157,7 @@ def calculate_priority_score(article: dict, analysis: dict = None) -> dict:
     
     # 3. GLM-5 分析结果评分
     if analysis:
-        # 3.1 价值投资相关性（最高 20 分）
-        vi = analysis.get('value_investment', {})
-        alignment = vi.get('alignment', '')
-        if alignment == '是':
-            scores['value_alignment'] = 20
-        elif alignment == '部分':
-            scores['value_alignment'] = 10
-        elif alignment == '不确定':
-            scores['value_alignment'] = 5
-        elif alignment == '否':
-            scores['value_alignment'] = 0
-        
-        # 3.2 安全边际评估（最高 15 分）
-        margin = vi.get('margin_of_safety', '')
-        if margin == '高':
-            scores['safety_margin'] = 15
-        elif margin == '中':
-            scores['safety_margin'] = 8
-        elif margin == '不确定':
-            scores['safety_margin'] = 3
-        elif margin == '低':
-            scores['safety_margin'] = 0
-        
-        # 3.3 主题归类（最高 10 分）
+        # 3.1 主题归类（最高 10 分）
         category = analysis.get('category', '')
         if category == '公司研究':
             scores['category'] = 10
@@ -208,8 +181,6 @@ def calculate_priority_score(article: dict, analysis: dict = None) -> dict:
     scores['total'] = sum([
         scores['content_depth'],
         scores['keywords'],
-        scores['value_alignment'],
-        scores['safety_margin'],
         scores['category'],
         scores['core_points'],
         scores['title_quality']
@@ -225,12 +196,10 @@ def classify_priority(article: dict, analysis: dict = None) -> str:
     评分维度：
     1. 内容深度（字数）- 最高 30 分
     2. 价值投资关键词 - 最高 25 分
-    3. 价值投资相关性 - 最高 20 分
-    4. 安全边际评估 - 最高 15 分
-    5. 主题归类 - 最高 10 分
-    6. 核心观点数量 - 最高 10 分
-    7. 标题质量 - 最高 10 分
-    总分：最高 120 分
+    3. 主题归类 - 最高 10 分
+    4. 核心观点数量 - 最高 10 分
+    5. 标题质量 - 最高 10 分
+    总分：最高 85 分
     
     Returns:
         'must_read' | 'worth_reading' | 'reference'
@@ -567,19 +536,6 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
                 })
     
     market_groups = group_stocks_by_market(all_stocks)
-    
-    # 收集操作信号
-    operation_signals = []
-    for article, result in zip(articles, results):
-        if result.get('analysis'):
-            insights = result['analysis'].get('insights', [])
-            vi = result['analysis'].get('value_investment', {})
-            margin = vi.get('margin_of_safety', '')
-            alignment = vi.get('alignment', '')
-            
-            signal = {'article': article.get('title', ''), 'insights': insights,
-                      'margin': margin, 'alignment': alignment}
-            operation_signals.append(signal)
     
     # 今日覆盖的市场
     markets_covered = [m for m in market_groups.keys() if m != '其他']
