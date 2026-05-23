@@ -51,13 +51,13 @@ def save_cookies(cookies: list, browser_context):
     print(f"   Cookies 数量: {len(cookies_dict)}")
 
 
-def login_auto(username: str, password: str):
+def login_auto(username: str, password: str, headless: bool = False):
     """账号密码登录（需人工过验证码）"""
-    print(f"🌐 启动浏览器，账号: {username}")
+    print(f"🌐 启动浏览器，账号: {username}, {'headless' if headless else '有头'}")
     
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=False,  # 必须非无头，需要人工过验证码
+            headless=headless,  # 服务器环境用 headless=True
             args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
         )
         context = browser.new_context(
@@ -262,6 +262,7 @@ def main():
     parser = argparse.ArgumentParser(description="雪球 Playwright 登录获取 Cookies")
     parser.add_argument("--auto", action="store_true", help="账号密码自动登录")
     parser.add_argument("--scan", action="store_true", help="扫码登录")
+    parser.add_argument("--headless", action="store_true", help="无头模式（服务器环境）")
     parser.add_argument("--username", "-u", help="雪球手机号/账号")
     parser.add_argument("--password", "-p", help="雪球密码")
     
@@ -278,7 +279,7 @@ def main():
             print("   方式2: export XUEQIU_USERNAME=手机号 && export XUEQIU_PASSWORD=密码")
             print("   方式3: python scripts/login.py --scan（扫码登录）")
             sys.exit(1)
-        login_auto(username, password)
+        login_auto(username, password, headless=args.headless)
     elif args.scan:
         login_scan()
     else:

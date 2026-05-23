@@ -172,6 +172,25 @@ class XueqiuCrawler:
         
         return article_ids
     
+    def _load_cookies(self, context):
+        """加载已保存的 cookies 到浏览器上下文"""
+        cookies_file = self.project_root / 'config' / 'xueqiu_cookies.json'
+        if not cookies_file.exists():
+            return
+        try:
+            with open(cookies_file, 'r') as f:
+                data = json.load(f)
+            cookies = data.get('cookies', {})
+            if cookies:
+                cookie_list = [
+                    {"name": k, "value": v, "domain": ".xueqiu.com", "path": "/"}
+                    for k, v in cookies.items()
+                ]
+                context.add_cookies(cookie_list)
+                self.logger.info(f"已加载 {len(cookie_list)} 个 cookies")
+        except Exception as e:
+            self.logger.warning(f"加载 cookies 失败: {e}")
+    
     def _random_delay(self):
         """随机延迟"""
         delay_min = self.config.get('crawler', {}).get('delay_min', 2)
@@ -564,6 +583,9 @@ class XueqiuCrawler:
             page = context.new_page()
             
             try:
+                # 加载已保存的 cookies
+                self._load_cookies(context)
+                
                 # 先访问首页建立 cookies
                 self.logger.info("访问雪球首页...")
                 page.goto('https://xueqiu.com', timeout=self.timeout)
