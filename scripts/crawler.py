@@ -120,7 +120,12 @@ class XueqiuCrawler:
         """加载索引"""
         if self.index_file.exists():
             with open(self.index_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+            # 确保必需键存在
+            data.setdefault('articles', {})
+            data.setdefault('last_update', None)
+            data.setdefault('history', {})
+            return data
         return {'articles': {}, 'last_update': None, 'history': {}}
     
     def _save_index(self):
@@ -219,8 +224,9 @@ class XueqiuCrawler:
         viewport['width'] += random.randint(-10, 10)
         
         browser = playwright.chromium.launch(
-            headless="new",  # Chromium new headless mode, harder to detect
+            headless=True,
             args=[
+                '--headless=new',
                 '--disable-blink-features=AutomationControlled',
                 '--disable-features=IsolateOrigins,site-per-process',
                 '--no-sandbox',
