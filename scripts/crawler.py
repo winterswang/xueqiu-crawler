@@ -93,6 +93,7 @@ class XueqiuCrawler:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.index_file = self.data_dir / 'index.json'
         self.index = self._load_index()
+        self.timeout = self.config.get('crawler', {}).get('timeout', 60) * 1000  # ms
         
     def _load_config(self, config_path: str = None) -> dict:
         """加载配置"""
@@ -340,7 +341,7 @@ class XueqiuCrawler:
         
         try:
             # 先导航到文章页面
-            page.goto(url, timeout=30000)
+            page.goto(url, timeout=self.timeout)
             page.wait_for_load_state('networkidle', timeout=15000)
             page.wait_for_timeout(2000)  # 额外等待
             
@@ -565,12 +566,12 @@ class XueqiuCrawler:
             try:
                 # 先访问首页建立 cookies
                 self.logger.info("访问雪球首页...")
-                page.goto('https://xueqiu.com', timeout=30000)
+                page.goto('https://xueqiu.com', timeout=self.timeout)
                 page.wait_for_timeout(2000)
                 
                 # 访问用户主页
                 self.logger.info(f"访问用户主页: {url}")
-                page.goto(url, timeout=30000)
+                page.goto(url, timeout=self.timeout)
                 page.wait_for_timeout(3000)
                 
                 # 检查是否需要登录/验证
