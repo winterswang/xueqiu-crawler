@@ -4,7 +4,7 @@ crawler:
   delay_min: 2              # 最小请求间隔(秒)
   delay_max: 5              # 最大请求间隔(秒)
   timeout: 60               # 页面超时(秒)
-  headless: true            # 无头模式
+  headless: "new"            # 无头模式
   max_articles: 20          # 每次最多爬取文章数
   max_retries: 3            # 最大重试次数
 

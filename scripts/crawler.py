@@ -201,30 +201,144 @@ class XueqiuCrawler:
         time.sleep(delay)
     
     def _create_browser_context(self, playwright) -> BrowserContext:
-        """创建浏览器上下文（带反检测）"""
+        """创建浏览器上下文（全面反检测）"""
         anti_detect = self.config.get('anti_detect', {})
         
+        # 随机 User-Agent（降低指纹一致性）
+        ua_pool = anti_detect.get('user_agents', [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0',
+        ])
+        user_agent = random.choice(ua_pool)
+        
+        viewport = anti_detect.get('viewport', {'width': 1920, 'height': 1080})
+        # 随机微调分辨率（真实用户不会精确到 1920x1080）
+        viewport['width'] += random.randint(-10, 10)
+        
         browser = playwright.chromium.launch(
-            headless=self.config.get('crawler', {}).get('headless', True),
+            headless="new",  # Chromium new headless mode, harder to detect
             args=[
                 '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process',
                 '--no-sandbox',
                 '--disable-dev-shm-usage',
+                '--disable-infobars',
+                '--disable-setuid-sandbox',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--ignore-certificate-errors',
+                f'--window-size={viewport["width"]},{viewport["height"]}',
             ]
         )
         
         context = browser.new_context(
-            viewport=anti_detect.get('viewport', {'width': 1920, 'height': 1080}),
-            user_agent=anti_detect.get('user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'),
-            locale=anti_detect.get('locale', 'zh-CN'),
+            viewport=viewport,
+            user_agent=user_agent,
+            locale='zh-CN',
+            timezone_id='Asia/Shanghai',
+            permissions=['geolocation'],
+            geolocation={'latitude': 31.2304, 'longitude': 121.4737},  # 上海
+            extra_http_headers=anti_detect.get('extra_headers', {
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not?A_Brand";v="24"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': '"Windows"',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1',
+            })
         )
         
-        # 绕过 webdriver 检测
+        # 全面反检测脚本
         context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
-            window.chrome = { runtime: {} };
+// ===== 核心反检测 =====
+Object.defineProperty(navigator, 'webdriver', { get: () => false });
+window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+
+// ===== Navigator 伪装 =====
+Object.defineProperty(navigator, 'plugins', { 
+    get: () => {
+        const arr = new Array(5);
+        arr.item = i => arr[i];
+        arr.namedItem = n => null;
+        arr.refresh = () => {};
+        return arr;
+    }
+});
+Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+Object.defineProperty(navigator, 'productSub', { get: () => '20030107' });
+Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+Object.defineProperty(navigator, 'language', { get: () => 'zh-CN' });
+Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+
+// ===== Permissions =====
+const originalQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (parameters) => (
+    parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+);
+Object.defineProperty(Notification, 'permission', { get: () => 'default' });
+
+// ===== WebGL 伪装 (常用指纹向量) =====
+const getParameter = WebGLRenderingContext.prototype.getParameter;
+WebGLRenderingContext.prototype.getParameter = function(parameter) {
+    if (parameter === 37445) return 'Intel Inc.';      // UNMASKED_VENDOR_WEBGL
+    if (parameter === 37446) return 'Intel Iris OpenGL Engine';  // UNMASKED_RENDERER_WEBGL
+    return getParameter.call(this, parameter);
+};
+
+// ===== Canvas 指纹扰动 =====
+const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+HTMLCanvasElement.prototype.toDataURL = function(type) {
+    const context = this.getContext('2d');
+    if (context) {
+        const imageData = context.getImageData(0, 0, this.width, this.height);
+        // 在第一个像素加微小噪声
+        if (imageData.data.length > 0) {
+            imageData.data[0] = imageData.data[0] ^ 1;
+        }
+    }
+    return originalToDataURL.apply(this, arguments);
+};
+
+// ===== 隐藏 Headless 特征 =====
+if (navigator.connection) {
+    Object.defineProperty(navigator.connection, 'rtt', { get: () => 100 });
+}
+
+// ===== 覆盖 iframe contentWindow 检测 =====
+const originalCreateElement = document.createElement.bind(document);
+document.createElement = function(tagName, options) {
+    const element = originalCreateElement(tagName, options);
+    if (tagName.toLowerCase() === 'iframe') {
+        const originalGet = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get;
+        Object.defineProperty(element, 'contentWindow', {
+            get: function() {
+                const win = originalGet.call(this);
+                if (win && !win.chrome) {
+                    win.chrome = { runtime: {} };
+                }
+                return win;
+            }
+        });
+    }
+    return element;
+};
+
+// ===== 屏幕属性 =====
+Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
         """)
         
         return browser, context

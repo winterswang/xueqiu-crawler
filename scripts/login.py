@@ -66,8 +66,11 @@ def login_auto(username: str, password: str, headless: bool = False):
             locale="zh-CN"
         )
         context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
             window.chrome = { runtime: {} };
+Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
         """)
         
         page = context.new_page()
@@ -209,7 +212,7 @@ def login_scan():
             locale="zh-CN"
         )
         context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
         """)
         
         page = context.new_page()
