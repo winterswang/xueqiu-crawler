@@ -26,10 +26,14 @@
 ┌───────────────────────────────────────────────────────────────────┐
 │                      爬虫层 (Crawler Layer)                        │
 │                                                                   │
-│       └─ @retry 重试装饰器 (#175-192)                             │
+│  crawler.py (~880行)     ← 主用，Playwright 本地浏览器爬取        │
+│       └─ XueqiuCrawler: 文章列表爬取、详情爬取、增量更新          │
+│       └─ crawl_all_users: 串行遍历11个账号 + 爬取统计保存         │
 │                                                                   │
-│  crawler.py (673行)        ← 备用，Playwright 本地浏览器         │
-│  cookies.py (262行)        ← 登录态管理：检查/导入/刷新/过期      │
+│  login.py (295行)        ← 新增，雪球自动登录脚本                 │
+│       └─ 通过 OpenClaw browser 自动完成登录、提取 cookies          │
+│                                                                   │
+│  cookies.py (262行)      ← 登录态管理：检查/导入/刷新/过期        │
 └───────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -84,6 +88,7 @@
 ### 2.2 数据流
 
 ```
+雪球网页 ──[Playwright]──→ 文章列表[{id, title, url}]
                                 │
                   ┌── 过滤已存在的 ID (index.json) ──┐
                   │  爬取详情 (可选 --detail)         │
@@ -113,16 +118,17 @@
 ### 2.3 每日执行流
 
 ```
+run_daily.sh (凌晨 2:00 cron 触发)
   │
-  ├─ [1/5] cookies.py --check
-  │         检查 xueqiu_cookies.json 是否存在且未过期 (30天)
+  ├─ [1/4] login.py / cookies.py --check
+  │         检查 cookies 状态，过期则自动登录 (Playwright)
   │
+  ├─ [2/4] crawler.py --all -m 20
   │         ├─ 遍历 11 个账号 (串行)
   │         ├─ 每个账号抓取最多 20 篇文章
   │         ├─ 过滤已有 ID (增量)
   │         ├─ 保存新文章 + 更新索引
-  │         └─ 失败 fallback → crawler.py (Playwright)
-  │
+  │         └─ 保存 crawl_stats 到 data/.last_crawl_stats.json
   │
   ├─ [3/4] generate_report.py --limit 20
   │         ├─ get_today_articles() 读取 index.json
@@ -147,6 +153,7 @@
 |------|-----|------|---------|------|
 | `crawler.py` | ~820 → ~880 | ✅ 唯一 | Playwright 本地浏览器爬取，含 crawl_all_users + crawl_stats |
 | `cookies.py` | 262 | ✅ 在用 | `CookieManager` | 登录态：检查/导入/刷新/过期 (30天) |
+| `login.py` | 295 | ✅ 新增 | Playwright 自动登录 | 浏览器自动化完成雪球登录，提取 cookies |
 
 ### 3.2 分析层
 
