@@ -1,7 +1,7 @@
 # 雪球专栏文章爬虫 — 项目记录
 
 > 本文件作为项目的结构化知识库，用于后续迭代、调试和升级。  
-> 最后更新：2026-05-23 | 版本：2.7（PR #6：A5 作者字段修复）
+> 最后更新：2026-05-23 | 版本：2.10（PR #6+#7 合并：A5 作者修复 + C3/C5/C6/A1 高优四项）
 
 ---
 
@@ -80,7 +80,6 @@
 ┌───────────────────────────────────────────────────────────────────┐
 │                      集成层 (Integration Layer)                    │
 │                                                                   │
-│  import_to_link_collector.py (305行)  与 Link-Collector 知识库同步 │
 │  run_daily_xcrawl.sh                  完整流水线编排 (5步)        │
 │  run_daily.sh                         ⛔ 应删除 (旧版)            │
 └───────────────────────────────────────────────────────────────────┘
@@ -132,15 +131,13 @@ run_daily_xcrawl.sh (凌晨 2:00 cron 触发)
   │         ├─ 保存新文章 + 更新索引
   │         └─ 失败 fallback → crawler.py (Playwright)
   │
-  ├─ [3/5] import_to_link_collector.py --today
-  │         只导入当天爬取的文章到 Link-Collector 知识库
   │
-  ├─ [4/5] generate_report.py --limit 20
+  ├─ [3/4] generate_report.py --limit 20
   │         ├─ get_today_articles() 读取 index.json
   │         ├─ ArticleAnalyzer.analyze_article() 逐篇 AI 分析
   │         └─ generate_daily_report() 写日报文件
   │
-  └─ [5/5] publish_daily_report_v3.py
+  └─ [4/4] publish_daily_report_v3.py
             ├─ 从日报提取必读文章信息
             ├─ 生成 InfoCard HTML (1200×1800)
             ├─ 保存为截图/HTML
@@ -181,7 +178,6 @@ run_daily_xcrawl.sh (凌晨 2:00 cron 触发)
 
 | 文件 | LOC | 状态 | 说明 |
 |------|-----|------|------|
-| `import_to_link_collector.py` | 305 | ✅ 在用 | 导入文章到 Link-Collector（依赖外部 link-collector 包） |
 | `run_daily_xcrawl.sh` | — | ✅ 主用 | 5 步流水线编排 (cookies→爬取→同步→分析→发布) |
 | `run_daily.sh` | — | ⛔ 应删除 | Playwright 旧版流程编排 |
 
@@ -379,7 +375,6 @@ run_daily_xcrawl.sh (凌晨 2:00 cron 触发)
 | 辅助分析 | qwen-plus (阿里云) | value_analyzer 专用 | `value_analyzer.py:59` |
 | 发布渠道 | IMA 知识库 OpenAPI | 腾讯笔记平台 | `publish_daily_report_v3.py:49` |
 | 发布渠道 | 飞书消息 | 写入 /tmp/pending_feishu 文件 | `publish_daily_report_v3.py:419` |
-| 知识库同步 | Link-Collector | 外部队列系统 | `import_to_link_collector.py:19` |
 | 依赖管理 | `requirements.txt` | 仅列出3个包（不全） | 缺少 anthropic, openai |
 | 日志 | Python logging | 文件+控制台双输出 | `crawler_xcrawl.py:58-73` |
 
@@ -597,6 +592,9 @@ crontab：
 | 2026-05-23 | 2.5 | System | PR #4 合入：移除已失效的 value_alignment/safety_margin 评分维度 |
 | 2026-05-23 | 2.6 | System | 同步远程更新：MiniMax ThinkingBlock 修复；PR #4 合入后的文档更新 |
 | 2026-05-23 | 2.7 | System | 修复 A5：index.json 保存时补全 author（PR #6）；A5 状态改为已修复 |
+| 2026-05-23 | 2.8 | System | 更新后续方向梳理：4 项高效果/低投入、2 项中效果/中投入、6 项建议暂缓 |
+| 2026-05-23 | 2.9 | System | PR #7：完成 C3/C5/C6/A1 四项优化；高效果低投入项全部清零 |
+| 2026-05-23 | 2.10 | System | PR #6 + PR #7 双合：A5 作者修复 + 4 项高优优化整合完毕 |
 
 ---
 

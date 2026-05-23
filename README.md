@@ -45,7 +45,6 @@ xueqiu-crawler/
 │   ├── quality_check.py    # 文章质量检测
 │   ├── publish_daily_report_v3.py  # 发布脚本（卡片+IMA+飞书）
 │   ├── value_analyzer.py   # 价值分析辅助
-│   ├── import_to_link_collector.py  # 批量导入工具
 │   └── cookies.py          # Cookie 管理
 ├── data/
 │   ├── {user_id}/          # 按用户分目录存储文章
@@ -147,7 +146,6 @@ python scripts/publish_daily_report_v3.py
 #### P2 可改进
 
 7. **`generate_report.py` 不可导入** — 只能 `python scripts/generate_report.py` 运行，不能被其他模块 import
-8. **`value_analyzer.py` / `import_to_link_collector.py`** — 隐式工具，文档未记录
 9. **README 与实际代码脱节** — README 说用 Playwright，实际主流程是 XCrawl
 
 ### 修复建议优先级
