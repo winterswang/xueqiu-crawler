@@ -461,7 +461,8 @@ def create_ima_note(title: str, content: str) -> str:
             code = result.get("code")
             _logger.info(f"IMA API 响应: code={code}, msg={result.get('message', 'N/A')}")
             if code == 0:
-                doc_id = result.get("data", {}).get("doc_id")
+                note_id = result.get("data", {}).get("note_id")
+                doc_id = note_id  # 保持变量名兼容
                 _logger.info(f"IMA 笔记创建成功: doc_id={doc_id}")
                 return doc_id
             else:
@@ -526,10 +527,10 @@ def main():
     render_infocard(html, card_path)
     
     log("创建 IMA 笔记...")
-    doc_id = create_ima_note(f"价值投资日报 - {date}", content)
-    note_url = f"https://ima.qq.com/note/{doc_id}" if doc_id else None
-    if doc_id:
-        log_execution_stage("ima_push", "success", f"doc_id={doc_id}")
+    note_id = create_ima_note(f"价值投资日报 - {date}", content)
+    note_url = f"https://ima.qq.com/note/{note_id}" if note_id else None
+    if note_id:
+        log_execution_stage("ima_push", "success", f"note_id={note_id}")
     
     log("发送飞书消息...")
     message = f"""📊 **价值投资日报 - {date}**
