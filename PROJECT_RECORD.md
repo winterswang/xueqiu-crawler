@@ -1,7 +1,7 @@
 # 雪球专栏文章爬虫 — 项目记录
 
 > 本文件作为项目的结构化知识库，用于后续迭代、调试和升级。  
-> 最后更新：2026-05-23 | 版本：2.6（PR #4 已合入，文档同步）
+> 最后更新：2026-05-23 | 版本：2.7（PR #6：A5 作者字段修复）
 
 ---
 
@@ -536,10 +536,11 @@ crontab：
 
 > PR #3 合并后，所有问题的当前状态与建议。
 
-### 已修复（Section 八 — 代码问题）
+### 已修复（Section 八 — 代码问题 + Section 九 — 架构问题）
 
 | # | 问题 | 状态 | 说明 |
 |---|------|------|------|
+| A5 | 作者字段传递断裂 | ✅ 已修复 | index.json 保存时补全 author + publish_time（PR #6） |
 | 1 | 三个发布版本并存 | ✅ 已删除 | publish_daily_report.py / v2 已移除 |
 | 2 | check_article_quality 重复 | ✅ 已合并 | 统一到 analyzer.py，quality_check.py 做 wrapper |
 | 3 | index.json 无写入保护 | ✅ filelock | FileLock(timeout=10) 保护读写 |
@@ -576,7 +577,7 @@ crontab：
 | 优 | # | 问题 | 影响 | 难度 |
 |----|---|------|------|------|
 | 🔴 | C1/C2 | ~~评分权重偏机械~~ | 已清理：移除已失效的 value_alignment/safety_margin（PR #4） | ✅ 已修复 |
-| 🔴 | A5 | 作者字段传递断裂 | 日报中作者为空，分析师上下文丢失 | 低 |
+| 🔴 | A5 | ~~作者字段传递断裂~~ | 已修复：index.json 保存时补全 author + publish_time（PR #6） | ✅ 已修复 |
 | 🟡 | C3 | 4000 字符截断影响长文 | 长文分析不完整 | 低 |
 | 🟡 | C7 | 报告按文章排列而非按标的 | 同标的信息分散，阅读效率低 | 中 |
 | 🔵 | A2 | 分析结果无积累 | 无法做历史查询和趋势追踪 | 高 |
@@ -595,6 +596,7 @@ crontab：
 | 2026-05-23 | 2.4 | System | 新增问题修复状态总览（Section 十三） |
 | 2026-05-23 | 2.5 | System | PR #4 合入：移除已失效的 value_alignment/safety_margin 评分维度 |
 | 2026-05-23 | 2.6 | System | 同步远程更新：MiniMax ThinkingBlock 修复；PR #4 合入后的文档更新 |
+| 2026-05-23 | 2.7 | System | 修复 A5：index.json 保存时补全 author（PR #6）；A5 状态改为已修复 |
 
 ---
 
