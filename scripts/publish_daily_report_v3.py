@@ -31,11 +31,17 @@ import sys
 import json
 import subprocess
 import re
+import urllib.request
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from logging_utils import get_logger, log_execution_stage
+
 # 配置
 PROJECT_DIR = Path(__file__).resolve().parent.parent
+_logger = get_logger()
 REPORT_DIR = PROJECT_DIR / "data" / "daily_reports"
 OUTPUT_DIR = PROJECT_DIR / "output"
 
@@ -431,11 +437,14 @@ def check_existing_note(date: str) -> str:
 
 
 def create_ima_note(title: str, content: str) -> str:
-    import urllib.request
     date = datetime.now().strftime("%Y-%m-%d")
+    
+    _logger.info(f"开始推送 IMA: {title}, 内容长度={len(content)}")
+    
     existing_doc_id = check_existing_note(date)
     if existing_doc_id:
         log(f"笔记已存在: {existing_doc_id}")
+        _logger.info(f"IMA 笔记已存在, 跳过: {existing_doc_id}")
         return existing_doc_id
     
     url = "https://ima.qq.com/openapi/note/v1/import_doc"
@@ -449,10 +458,21 @@ def create_ima_note(title: str, content: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read().decode("utf-8"))
-            if result.get("code") == 0:
-                return result.get("data", {}).get("doc_id")
+            code = result.get("code")
+            _logger.info(f"IMA API 响应: code={code}, msg={result.get('message', 'N/A')}")
+            if code == 0:
+                doc_id = result.get("data", {}).get("doc_id")
+                _logger.info(f"IMA 笔记创建成功: doc_id={doc_id}")
+                return doc_id
+            else:
+                _logger.error(f"IMA 笔记创建失败: code={code}, response={json.dumps(result, ensure_ascii=False)[:500]}")
+                log_execution_stage("ima_push", "failed", f"code={code}")
+    except urllib.error.HTTPError as e:
+        _logger.error(f"IMA HTTP 错误: {e.code} {e.reason}, body={e.read().decode('utf-8', errors='replace')[:500]}")
+        log_execution_stage("ima_push", "failed", f"HTTP {e.code}")
     except Exception as e:
-        log(f"IMA 请求异常: {e}")
+        _logger.error(f"IMA 请求异常: {e}", exc_info=True)
+        log_execution_stage("ima_push", "failed", str(e)[:100])
     return None
 
 
@@ -474,18 +494,30 @@ def send_feishu_with_image(message: str, image_path: str = None):
 
 def main():
     date = datetime.now().strftime("%Y-%m-%d")
+    _logger.info("=" * 50)
+    _logger.info(f"开始发布价值投资日报 - {date}")
     log(f"开始发布价值投资日报 - {date}")
     
     log("读取日报内容...")
     try:
         content = get_daily_report(date)
+        _logger.info(f"日报读取成功: {len(content)} 字符")
+        # 统计日报中的解析异常数量
+        parse_error_count = content.count('[解析异常]')
+        old_parse_fail_count = content.count('解析失败')
+        if parse_error_count > 0:
+            _logger.warning(f"日报中有 {parse_error_count} 处解析异常标记")
+        if old_parse_fail_count > 0:
+            _logger.warning(f"日报中有 {old_parse_fail_count} 处旧版'解析失败'标记")
     except FileNotFoundError as e:
+        _logger.error(f"日报文件不存在: {e}")
         log(f"错误: {e}")
         return 1
     
     log("提取卡片信息...")
     card_info = extract_card_info(content)
     log(f"今日新增: {card_info['total_articles']}, 必读: {card_info['must_read']}")
+    _logger.info(f"卡片提取: 新增{card_info['total_articles']}篇, 有效{card_info['valid_analysis']}篇, 必读{card_info['must_read']}篇")
     
     log("生成信息卡片...")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -496,6 +528,8 @@ def main():
     log("创建 IMA 笔记...")
     doc_id = create_ima_note(f"价值投资日报 - {date}", content)
     note_url = f"https://ima.qq.com/note/{doc_id}" if doc_id else None
+    if doc_id:
+        log_execution_stage("ima_push", "success", f"doc_id={doc_id}")
     
     log("发送飞书消息...")
     message = f"""📊 **价值投资日报 - {date}**

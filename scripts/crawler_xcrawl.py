@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from functools import wraps
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from logging_utils import get_logger, log_execution_stage
+
 # 添加项目根目录到 path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -245,20 +248,34 @@ class XueqiuXCrawlCrawler:
     
     def _load_index(self) -> dict:
         """加载索引（带文件锁）"""
-        lock = filelock.FileLock(self.index_lock, timeout=5)
-        with lock:
-            if self.index_file.exists():
-                with open(self.index_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+        try:
+            lock = filelock.FileLock(self.index_lock, timeout=5)
+            with lock:
+                if self.index_file.exists():
+                    with open(self.index_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    self.logger.info(f"索引加载成功: {len(data.get('articles', {}))} 篇")
+                    return data
+            self.logger.info("索引文件不存在，创建新索引")
+        except filelock.Timeout as e:
+            self.logger.error(f"加载索引时获取锁超时: {e}")
+        except Exception as e:
+            self.logger.error(f"加载索引失败: {e}", exc_info=True)
         return {'articles': {}, 'last_update': None, 'history': {}}
     
     def _save_index(self):
         """保存索引（带文件锁）"""
-        lock = filelock.FileLock(self.index_lock, timeout=10)
-        with lock:
-            self.index['last_update'] = datetime.now().isoformat()
-            with open(self.index_file, 'w', encoding='utf-8') as f:
-                json.dump(self.index, f, ensure_ascii=False, indent=2)
+        try:
+            lock = filelock.FileLock(self.index_lock, timeout=10)
+            with lock:
+                self.index['last_update'] = datetime.now().isoformat()
+                with open(self.index_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.index, f, ensure_ascii=False, indent=2)
+            self.logger.debug(f"索引保存成功: {len(self.index.get('articles', {}))} 篇")
+        except filelock.Timeout as e:
+            self.logger.error(f"保存索引时获取锁超时: {e}")
+        except Exception as e:
+            self.logger.error(f"保存索引失败: {e}", exc_info=True)
     
     # --------------------------------------------------------
     # Cookies 管理

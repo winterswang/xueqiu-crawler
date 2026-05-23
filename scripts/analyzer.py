@@ -18,6 +18,8 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from logging_utils import get_logger, log_parse_failure, log_execution_stage
+
 try:
     from anthropic import Anthropic
 except ImportError:
@@ -262,6 +264,8 @@ class ArticleAnalyzer:
         self.provider = provider or os.environ.get('ANALYZER_PROVIDER', 'minimax')
         self.api_key = api_key or os.environ.get('BAILIAN_API_KEY', '')
         self.client = None
+        self.logger = get_logger()
+        self.stats = {"total_calls": 0, "parse_success": 0, "parse_failed": 0, "api_errors": 0}
 
         # 从 config 读取模型名和截断阈值
         analysis_cfg = (config or {}).get('analysis', {})
@@ -328,7 +332,9 @@ class ArticleAnalyzer:
                     messages=[{"role": "user", "content": prompt}],
                 )
                 response = completion.choices[0].message.content
-            analysis = self._parse_response(response)
+            self.stats["total_calls"] += 1
+            self.logger.debug(f"LLM 调用成功: {article.get('title', 'N/A')[:40]}, provider={self.provider}, model={self.model_name}")
+            analysis = self._parse_response(response, article)
             
             # 计算优先级和评分详情
             scores = calculate_priority_score(article, analysis)
@@ -342,7 +348,8 @@ class ArticleAnalyzer:
                 'analysis': analysis
             }
         except Exception as e:
-            print(f"分析文章失败: {e}")
+            self.stats["api_errors"] += 1
+            self.logger.error(f"LLM 调用失败: {article.get('title', 'N/A')[:40]}, error={e}", exc_info=True)
             return {
                 'quality_passed': True,
                 'issues': [f"分析失败: {e}"],
@@ -408,15 +415,21 @@ class ArticleAnalyzer:
 - 语言简洁专业，直接切入要点
 - 请确保输出是有效的 JSON"""
     
-    def _parse_response(self, response: str) -> dict:
+    def _parse_response(self, response: str, article: dict = None) -> dict:
         """解析 LLM 响应 - 精确提取 JSON 对象（4 层 fallback）"""
+        title = (article or {}).get('title', '未知文章')
+        strategies_failed = []
+        
         try:
             # Strategy 1: fenced code block with json
             json_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL)
             if json_match:
-                return json.loads(json_match.group(1))
-        except Exception:
-            pass
+                result = json.loads(json_match.group(1))
+                self.stats["parse_success"] += 1
+                self.logger.debug(f"JSON解析成功(strategy=code_block): {title[:40]}")
+                return result
+        except Exception as e:
+            strategies_failed.append(f"code_block: {e}")
 
         try:
             # Strategy 2: raw_decode — first complete JSON object
@@ -425,33 +438,67 @@ class ArticleAnalyzer:
             start = response.find('{')
             if start != -1:
                 obj, end = decoder.raw_decode(response[start:])
+                self.stats["parse_success"] += 1
+                self.logger.debug(f"JSON解析成功(strategy=raw_decode): {title[:40]}")
                 return obj
-        except Exception:
-            pass
+        except Exception as e:
+            strategies_failed.append(f"raw_decode: {e}")
 
         try:
             # Strategy 3: strip markdown artifacts and retry
             cleaned = re.sub(r'^[\s\S]*?```json\s*', '', response)
             cleaned = re.sub(r'\s*```[\s\S]*$', '', cleaned)
-            return json.loads(cleaned)
-        except Exception:
-            pass
+            result = json.loads(cleaned)
+            self.stats["parse_success"] += 1
+            self.logger.debug(f"JSON解析成功(strategy=cleaned): {title[:40]}")
+            return result
+        except Exception as e:
+            strategies_failed.append(f"cleaned: {e}")
 
-        # All strategies failed — log and return graceful fallback
-        print(f"完整解析失败，返回 fallback。（响应预览: {response[:80]}...）")
+        # All strategies failed — log full diagnostics and return graceful fallback
+        self.stats["parse_failed"] += 1
+        strategy_detail = "; ".join(strategies_failed)
+        log_parse_failure(title, response, strategy_detail)
+        
+        # 改进 fallback：尽量从 response 中提取有用信息
+        fallback_summary = self._extract_summary_from_raw(response)
         return {
             'category': '其他',
-            'related_stocks': [],
-            'core_points': ['解析失败，请查看原文'],
-            'summary': response[:50] if response else '解析失败',
+            'related_stocks': self._extract_stocks_from_raw(response),
+            'core_points': ['[解析异常] 请查看原文获取完整分析'],
+            'summary': fallback_summary,
             'deep_analysis': {
-                'business_quality': '解析失败',
-                'management': '解析失败',
-                'key_risks': '解析失败',
-                'competitive_position': '解析失败',
-                'outlook': '解析失败'
+                'business_quality': '[解析异常] 请查看原文',
+                'management': '[解析异常] 请查看原文',
+                'key_risks': '[解析异常] 请查看原文',
+                'competitive_position': '[解析异常] 请查看原文',
+                'outlook': '[解析异常] 请查看原文'
             }
         }
+    
+    def _extract_summary_from_raw(self, response: str) -> str:
+        """从原始响应中尝试提取 summary 字段"""
+        m = re.search(r'"summary"\s*:\s*"([^"]+)"', response)
+        if m:
+            return m.group(1)[:100]
+        lines = [l.strip() for l in response.split('\n') if l.strip() and not l.strip().startswith('```')]
+        for line in lines[:5]:
+            if len(line) > 10 and ('{' not in line or '}' not in line):
+                return line[:80]
+        return response[:80].replace('\n', ' ') if response else '响应为空'
+    
+    def _extract_stocks_from_raw(self, response: str) -> list:
+        """从原始响应中尝试提取 related_stocks"""
+        stocks = []
+        m = re.search(r'"related_stocks"\s*:\s*\[([^\]]+)\]', response)
+        if m:
+            items = re.findall(r'"([^"]+)"', m.group(1))
+            stocks.extend(items[:5])
+        return stocks
+    
+    def get_stats(self) -> dict:
+        """获取分析统计"""
+        return dict(self.stats)
     
     def _mock_analysis(self, article: dict) -> dict:
         """模拟分析（无 API Key 时）"""

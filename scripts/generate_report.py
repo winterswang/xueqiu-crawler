@@ -12,8 +12,9 @@ import yaml
 from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
 
+from logging_utils import get_logger, log_execution_stage, log_execution_summary
 from analyzer import ArticleAnalyzer, check_article_quality, generate_daily_report
 
 
@@ -74,29 +75,33 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
     Returns:
         报告 Markdown 文本
     """
+    logger = get_logger()
+    logger.info("=" * 50)
+    logger.info("开始生成每日分析报告")
+    
     # 获取今日文章
     articles = get_today_articles(data_dir)
 
     if not articles:
-        print("今日无新增文章")
+        logger.info("今日无新增文章")
         return ""
 
-    print(f"今日新增文章: {len(articles)} 篇")
+    logger.info(f"今日新增文章: {len(articles)} 篇")
 
     if len(articles) > limit:
-        print(f"限制分析前 {limit} 篇（共 {len(articles)} 篇）")
+        logger.info(f"限制分析前 {limit} 篇（共 {len(articles)} 篇）")
         articles = articles[:limit]
 
     # 初始化分析器（从 config.yaml 读取模型配置）
-    config_path = Path(__file__).parent.parent / 'config' / 'config.yaml'
+    config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.yaml'
     cfg = yaml.safe_load(config_path.read_text(encoding='utf-8')) if config_path.exists() else {}
     analyzer = ArticleAnalyzer(api_key=api_key, config=cfg)
 
     # 分析每篇文章
     results = []
     for i, article in enumerate(articles):
-        title = article.get('title', '')[:30]
-        print(f"分析 [{i+1}/{len(articles)}]: {title}...")
+        title = article.get('title', '')[:40]
+        logger.debug(f"分析 [{i+1}/{len(articles)}]: {title}")
 
         result = analyzer.analyze_article(article)
         results.append(result)
@@ -105,33 +110,43 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
         if result.get('quality_passed'):
             priority = result.get('priority', 'reference')
             priority_emoji = {'must_read': '🔴', 'worth_reading': '🟡', 'reference': '🔵'}
-            print(f"  ✅ {priority_emoji.get(priority, '🔵')} {priority}")
+            status = f"{priority_emoji.get(priority, '🔵')} {priority}"
+            logger.debug(f"  ✅ {title}: {status}")
         else:
             issues = result.get('issues', [])
-            print(f"  ⚠️ 跳过: {', '.join(issues)}")
+            logger.debug(f"  ⚠️ {title}: 跳过 - {', '.join(issues)}")
 
     # 生成报告
     today = datetime.now().strftime('%Y-%m-%d')
     output_path = output_path or f"{data_dir}/daily_reports/{today}.md"
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     report = generate_daily_report(articles, results, output_path)
-    
-    print("\n" + "="*50)
-    print("报告预览:")
-    print("="*50)
-    print(report[:1000] + "...")
     
     # 输出统计
     passed = sum(1 for r in results if r.get('quality_passed'))
     must_read = sum(1 for r in results if r.get('priority') == 'must_read')
     worth_reading = sum(1 for r in results if r.get('priority') == 'worth_reading')
     
-    print("\n" + "="*50)
-    print("统计:")
-    print(f"  总文章: {len(articles)}")
-    print(f"  有效分析: {passed}")
-    print(f"  必读: {must_read}")
-    print(f"  值得关注: {worth_reading}")
-
+    # 记录分析器统计
+    analyzer_stats = analyzer.get_stats()
+    summary = {
+        "total_articles": len(articles),
+        "passed_analysis": passed,
+        "must_read": must_read,
+        "worth_reading": worth_reading,
+        "llm_calls": analyzer_stats.get("total_calls", 0),
+        "parse_success": analyzer_stats.get("parse_success", 0),
+        "parse_failed": analyzer_stats.get("parse_failed", 0),
+        "api_errors": analyzer_stats.get("api_errors", 0),
+        "output_path": output_path,
+    }
+    log_execution_summary(summary)
+    logger.info(
+        f"报告生成完成: {len(articles)}篇, 有效{passed}篇, 必读{must_read}篇, "
+        f"LLM调用{analyzer_stats.get('total_calls',0)}次, "
+        f"解析成功{analyzer_stats.get('parse_success',0)}次, 解析失败{analyzer_stats.get('parse_failed',0)}次"
+    )
+    
     return report
 
 

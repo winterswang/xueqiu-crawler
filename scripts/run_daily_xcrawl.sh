@@ -20,6 +20,9 @@ fi
 echo "========================================" >> "$LOG_FILE"
 echo "[$(date)] 开始执行雪球爬虫流程 v2 (XCrawl)" >> "$LOG_FILE"
 
+# 确保日志目录存在
+mkdir -p "$PROJECT_DIR/logs"
+
 cd "$PROJECT_DIR"
 
 # 1. 检查登录态
