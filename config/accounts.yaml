@@ -54,3 +54,8 @@ accounts:
   id: '3075122481'
   name: 港股解码
   url: https://xueqiu.com/u/3075122481
+- description: 价值投资新经济
+  enabled: true
+  id: '7680894870'
+  name: 价值投资新经济
+  url: https://xueqiu.com/u/7680894870
