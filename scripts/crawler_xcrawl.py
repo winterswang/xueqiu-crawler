@@ -560,10 +560,21 @@ class XueqiuXCrawlCrawler:
                 
                 # 更新索引
                 article_key = f"{user_id}_{article['article_id']}"
+
+                # 从 accounts 中查找作者名
+                author_name = article.get('author', '')
+                if not author_name:
+                    for acc in self.accounts:
+                        if acc.get('id') == user_id:
+                            author_name = acc.get('name', '')
+                            break
+
                 self.index['articles'][article_key] = {
                     'article_id': article['article_id'],
                     'user_id': user_id,
                     'title': article['title'],
+                    'author': author_name,
+                    'publish_time': article.get('publish_time', ''),
                     'crawl_time': article['crawl_time'],
                     'file_path': f"data/{user_id}/{article['article_id']}.md"
                 }
