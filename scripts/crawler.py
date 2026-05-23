@@ -658,7 +658,10 @@ class XueqiuCrawler:
                 traceback.print_exc()
                 
             finally:
-                browser.close()
+                try:
+                    browser.close()
+                except Exception:
+                    pass  # EPIPE / 浏览器已崩溃
         
         self.logger.info(f"用户 {user_id} 爬取完成，获取 {len(articles)} 篇新文章")
         return articles
