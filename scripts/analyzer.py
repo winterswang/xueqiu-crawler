@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from logging_utils import get_logger, log_parse_failure, log_execution_stage
+from logging_utils import get_logger, log_parse_failure
 
 try:
     from anthropic import Anthropic
