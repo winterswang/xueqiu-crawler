@@ -1,7 +1,7 @@
 # 雪球专栏文章爬虫 — 项目记录
 
 > 本文件作为项目的结构化知识库，用于后续迭代、调试和升级。  
-> 最后更新：2026-05-23 | 架构切换：XCrawl → Playwright + login.py  
+> 最后更新：2026-05-24 | 反检测增强 + headless 新模式  
 
 ---
 
@@ -548,7 +548,8 @@ crontab：
 | 2026-05-23 | 2.8 | System | 更新后续方向梳理：4 项高效果/低投入、2 项中效果/中投入、6 项建议暂缓 |
 | 2026-05-23 | 2.9 | System | PR #7：完成 C3/C5/C6/A1 四项优化；高效果低投入项全部清零 |
 | 2026-05-23 | 2.10 | System | PR #6 + PR #7 双合
-| 2026-05-23 | 2.11 | System | PR #10：Playwright 主用 + crawl_stats；PR #11：废弃 XCrawl，删除全部 XCrawl 代码与引用 |：A5 作者修复 + 4 项高优优化整合完毕 |
+| 2026-05-23 | 2.11 | System | PR #10：Playwright 主用 + crawl_stats；PR #11：废弃 XCrawl |
+| 2026-05-24 | 2.12 | System | 反检测增强 + Chromium new headless 模式 + _load_index 健壮性修复 |
 
 ---
 
