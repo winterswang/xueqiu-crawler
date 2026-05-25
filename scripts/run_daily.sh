@@ -1,13 +1,8 @@
 #!/bin/bash
-# 雪球爬虫完整流程 v6 - Playwright 版本（4 步流水线 + 资源清理 + 内存限制）
+# 雪球爬虫完整流程 v6 - Playwright 版本（4 步流水线 + 资源清理）
 # 凭证通过 .env 文件或环境变量加载（见 .env.example）
 
 set -e
-
-# ===== 内存安全 =====
-# 虚拟内存上限 5GB：防止 Chromium 泄漏导致整机 OOM
-# 触发时子进程 malloc 失败 → 优雅退出 → trap 清理 Chromium
-ulimit -v 5000000
 
 # 根据脚本位置自动推断项目目录
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -35,7 +30,7 @@ if [ -f "$PROJECT_DIR/.env" ]; then
 fi
 
 echo "========================================" >> "$LOG_FILE"
-echo "[$(date)] 开始执行雪球爬虫流程 v5 (Playwright)" >> "$LOG_FILE"
+echo "[$(date)] 开始执行雪球爬虫流程 v6 (Playwright)" >> "$LOG_FILE"
 
 # 确保日志目录存在
 mkdir -p "$PROJECT_DIR/logs"
