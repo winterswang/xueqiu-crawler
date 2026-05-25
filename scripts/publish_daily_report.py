@@ -2,7 +2,7 @@
 """
 价值投资日报发布脚本
 
-流程: 读取日报 → 推送到 IMA 笔记 → 飞书通知（含 IMA 链接）
+流程: 读取日报 → 推送到 IMA 笔记
 
 IMPORTANT: IMA 凭证配置
 - 优先读取环境变量: IMA_OPENAPI_CLIENTID / IMA_OPENAPI_APIKEY
@@ -142,63 +142,6 @@ def create_ima_note(title: str, content: str) -> str | None:
     return None
 
 
-def notify_feishu(date: str, note_url: str | None):
-    """发送飞书通知（写入 JSON 文件，由 Gateway 处理）"""
-    pending_file = Path("/tmp/pending_feishu_daily.json")
-
-    message_parts = [
-        f"📊 **价值投资日报 - {date}**",
-    ]
-    if note_url:
-        message_parts.append(f"📖 [查看完整日报]({note_url})")
-
-    target = os.environ.get(
-        "FEISHU_DAILY_TARGET",
-        "user:ou_10fd623ef35ada42d7ad772c34c216af"
-    )
-    data = {
-        "channel": "feishu",
-        "account": "engineer",
-        "target": target,
-        "message": "\n\n".join(message_parts)
-    }
-    pending_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-    log(f"飞书通知已写入: {pending_file}")
-
-
-def extract_summary(content: str) -> dict:
-    """从日报中提取简要统计信息"""
-    import re
-    lines = content.split("\n")
-
-    stats = {
-        "total": 0,
-        "valid": 0,
-        "must_read": 0,
-        "worth_reading": 0,
-    }
-
-    for line in lines:
-        if "今日新增" in line:
-            m = re.search(r'(\d+)\s*篇', line)
-            if m:
-                stats["total"] = int(m.group(1))
-        if "有效分析" in line:
-            m = re.search(r'(\d+)\s*篇', line)
-            if m:
-                stats["valid"] = int(m.group(1))
-        if "| 🔴 必读" in line:
-            m = re.search(r'\|\s*(\d+)\s*\|', line)
-            if m:
-                stats["must_read"] = int(m.group(1))
-        if "| 🟡 值得关注" in line:
-            m = re.search(r'\|\s*(\d+)\s*\|', line)
-            if m:
-                stats["worth_reading"] = int(m.group(1))
-
-    return stats
-
-
 def main():
     date = datetime.now().strftime("%Y-%m-%d")
     _logger.info("=" * 50)
@@ -218,13 +161,10 @@ def main():
     note_url = f"https://ima.qq.com/note/{note_id}" if note_id else None
     if note_id:
         log_execution_stage("ima_push", "success", f"note_id={note_id}")
-
-    # 3. 提取摘要信息
-    stats = extract_summary(content)
-    log(f"推送完成 — 新增: {stats['total']}篇, 必读: {stats['must_read']}篇, IMA: {'✅' if note_id else '❌'}")
-
-    # 4. 飞书通知
-    notify_feishu(date, note_url)
+        log(f"📖 IMA 笔记: {note_url}")
+    else:
+        log("❌ IMA 推送失败")
+        return 1
 
     return 0
 
