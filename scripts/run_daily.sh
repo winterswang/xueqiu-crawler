@@ -55,7 +55,7 @@ echo "[3/4] 生成分析报告..." >> "$LOG_FILE"
 
 # 4. 发布到 IMA 笔记并发送链接
 echo "[4/4] 发布到 IMA 笔记..." >> "$LOG_FILE"
-/usr/bin/python3 scripts/publish_daily_report_v3.py >> "$LOG_FILE" 2>&1
+/usr/bin/python3 scripts/publish_daily_report.py >> "$LOG_FILE" 2>&1
 
 echo "[$(date)] 流程执行完成" >> "$LOG_FILE"
 echo "========================================" >> "$LOG_FILE"
