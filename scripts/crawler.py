@@ -240,7 +240,7 @@ class XueqiuCrawler:
                 '--disable-features=VizDisplayCompositor',
                 '--ignore-certificate-errors',
                 f'--window-size={viewport["width"]},{viewport["height"]}',
-            ]
+            ] + anti_detect.get('chromium_args', [])
         )
         
         context = browser.new_context(
