@@ -152,9 +152,14 @@ def notify_feishu(date: str, note_url: str | None):
     if note_url:
         message_parts.append(f"📖 [查看完整日报]({note_url})")
 
+    target = os.environ.get(
+        "FEISHU_DAILY_TARGET",
+        "user:ou_10fd623ef35ada42d7ad772c34c216af"
+    )
     data = {
         "channel": "feishu",
         "account": "engineer",
+        "target": target,
         "message": "\n\n".join(message_parts)
     }
     pending_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
