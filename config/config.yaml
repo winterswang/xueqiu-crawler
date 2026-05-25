@@ -41,5 +41,15 @@ anti_detect:
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   locale: "zh-CN"
   viewport:
-    width: 1920
-    height: 1080
+    width: 1280    # 缩小视口降低 Chromium 内存占用（实测 ~14MB，并更接近真实用户分辨率分布）
+    height: 720
+  # Chromium 额外启动参数：禁用 headless 下无用的模块，减少进程数
+  chromium_args:
+    - "--disable-gpu"
+    - "--disable-extensions"
+    - "--disable-sync"
+    - "--disable-translate"
+    - "--disable-background-networking"
+    - "--disable-default-apps"
+    - "--disable-component-update"
+    - "--mute-audio"
