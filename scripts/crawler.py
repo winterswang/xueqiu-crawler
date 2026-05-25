@@ -129,10 +129,13 @@ class XueqiuCrawler:
         return {'articles': {}, 'last_update': None, 'history': {}}
     
     def _save_index(self):
-        """保存索引"""
+        """保存索引（原子写入：先写临时文件，再原子替换）"""
         self.index['last_update'] = datetime.now().isoformat()
-        with open(self.index_file, 'w', encoding='utf-8') as f:
+        tmp_path = self.index_file.with_suffix('.json.tmp')
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(self.index, f, ensure_ascii=False, indent=2)
+        # POSIX os.replace 是原子操作，保证不会出现半截文件
+        os.replace(tmp_path, self.index_file)
     
     def _save_history(self, user_id: str, articles: List[dict]):
         """保存历史快照"""

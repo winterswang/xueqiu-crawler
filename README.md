@@ -40,8 +40,7 @@ xueqiu-crawler/
 │   ├── crawler.py         # Playwright 版本（备用）
 │   ├── analyzer.py         # AI 质量分析 + 评分
 │   ├── generate_report.py  # 日报 Markdown 生成
-│   ├── quality_check.py    # 文章质量检测
-│   ├── publish_daily_report_v3.py  # 发布脚本（卡片+IMA+飞书）
+│   ├── publish_daily_report.py  # 发布脚本（卡片+IMA+飞书）
 │   ├── value_analyzer.py   # 价值分析辅助
 │   └── cookies.py          # Cookie 管理
 ├── data/
@@ -121,15 +120,15 @@ python scripts/publish_daily_report_v3.py
 
 ### 主要问题
 
-#### P0 必须修复
+#### P0 必须修复（🟢 已修复）
 
-1. **三个发布版本并存** — `publish_daily_report.py`(155行)、`v2`(558行)、`v3`(515行) 功能重叠，应删除旧版
-2. **`check_article_quality` 重复定义** — `analyzer.py`（2项检测）和 `quality_check.py`（4项检测+作者+发布时间）逻辑不一致，应合并
-3. **`index.json` 无写入保护** — 2447篇文章索引（1.5MB），并发写入会损坏数据
+1. ~~**三个发布版本并存**~~ ✅ 已删除旧版，v3 重命名为 `publish_daily_report.py`
+2. ~~**`check_article_quality` 重复定义**~~ ✅ 已统一到 `analyzer.py`，删除 `quality_check.py`
+3. ~~**`index.json` 无写入保护**~~ ✅ 原子写入 (tmp + os.replace)
 
 #### P1 重要
 
-4. **硬编码路径** — `publish_daily_report_v3.py` 第38行固定 `/root/.openclaw/workspace/xueqiu-crawler`
+4. **硬编码路径** — `publish_daily_report.py` 中固定路径需迁移到 config
 5. **凭证分散** — IMA 凭证在脚本中硬编码（已通过 ~/.config/ima/ 文件读取解决）
 6. **零测试** — 关键函数（`classify_stock_market`、`check_article_quality`）无单元测试
 
@@ -140,11 +139,11 @@ python scripts/publish_daily_report_v3.py
 
 ### 修复建议优先级
 
-1. 删除 `publish_daily_report.py` 和 `publish_daily_report_v2.py`
-2. 合并 `analyzer.py` 和 `quality_check.py` 的 `check_article_quality`
+1. ~~删除旧版 publish~~ ✅
+2. ~~合并 check_article_quality~~ ✅
 3. 所有路径和凭证移到 `config/config.yaml`
 4. 给 `classify_stock_market` / `check_article_quality` 写单元测试
-5. `index.json` 加写入锁或迁移到 SQLite
+5. ~~`index.json` 原子写入~~ ✅
 
 ### 整体评分
 
