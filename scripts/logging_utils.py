@@ -10,6 +10,7 @@
 
 import logging
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -27,7 +28,6 @@ def _init_main_logger():
         return _main_logger
     _main_logger = logging.getLogger("xueqiu.main")
     _main_logger.setLevel(logging.DEBUG)
-    # 不传播到 root logger
     _main_logger.propagate = False
     # 文件 handler（自动轮转，最大 5MB × 3 个备份）
     fh = RotatingFileHandler(
@@ -37,11 +37,12 @@ def _init_main_logger():
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(module)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     fh.setFormatter(fmt)
     _main_logger.addHandler(fh)
-    # 控制台 handler
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(fmt)
-    _main_logger.addHandler(ch)
+    # 控制台 handler：仅在交互终端时添加（避免 shell 重定向到同名日志文件时双写）
+    if sys.stdout.isatty():
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        ch.setFormatter(fmt)
+        _main_logger.addHandler(ch)
     return _main_logger
 
 def get_logger(name: str = "xueqiu.main"):

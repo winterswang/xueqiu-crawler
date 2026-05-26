@@ -230,13 +230,13 @@ class ArticleAnalyzer:
         Args:
             config: 从 config.yaml 读取的配置 dict（含 analysis.models）
         """
-        # 支持 minimax / aliyun 双 provider
-        self.provider = provider or os.environ.get('ANALYZER_PROVIDER', 'minimax')
-        self.api_key = api_key or os.environ.get('BAILIAN_API_KEY', '')
-        self.client = None
         self.logger = get_logger()
+        self.client = None
         self.stats = {"total_calls": 0, "parse_success": 0, "parse_failed": 0, "api_errors": 0,
                        "retry_count": 0, "total_latency_ms": 0, "success_calls": 0}
+
+        # 支持 minimax / aliyun 双 provider
+        self.provider = provider or os.environ.get('ANALYZER_PROVIDER', 'minimax')
 
         # 从 config 读取模型名和截断阈值
         analysis_cfg = (config or {}).get('analysis', {})
@@ -253,21 +253,46 @@ class ArticleAnalyzer:
         self.retry_http_codes = retry_cfg.get('retry_on_http_codes', [429, 529, 502, 503, 504])
         self.request_timeout = retry_cfg.get('request_timeout_ms', 120000) / 1000.0
 
+        # API Key 解析：优先传入的 api_key > 环境变量
+        if api_key:
+            self.api_key = api_key
+        elif self.provider == 'minimax':
+            self.api_key = os.environ.get('MINIMAX_API_KEY', '')
+        else:
+            self.api_key = os.environ.get('BAILIAN_API_KEY', '')
+
+        # 兜底：provider=minimax 时也尝试 BAILIAN_API_KEY，反之亦然
+        if not self.api_key and self.provider == 'minimax':
+            self.api_key = os.environ.get('BAILIAN_API_KEY', '')
+            if self.api_key:
+                self.logger.warning("MINIMAX_API_KEY 未设置，回退使用 BAILIAN_API_KEY")
+        if not self.api_key and self.provider != 'minimax':
+            self.api_key = os.environ.get('MINIMAX_API_KEY', '')
+            if self.api_key:
+                self.logger.warning("BAILIAN_API_KEY 未设置，回退使用 MINIMAX_API_KEY")
+
         if self.provider == 'minimax':
-            minimax_key = os.environ.get('MINIMAX_API_KEY', '')
             minimax_base = os.environ.get('MINIMAX_BASE_URL', 'https://api.minimaxi.com/anthropic')
-            self.api_key = api_key or minimax_key
             if self.api_key and Anthropic:
-                self.client = Anthropic(
-                    api_key=self.api_key,
-                    base_url=minimax_base,
-                    max_retries=0,       # 我们自己控制重试（SDK 内置重试不透明）
-                    timeout=self.request_timeout,
-                )
-                self.logger.info(
-                    f"MiniMax 客户端初始化: model={self.model_name}, "
-                    f"timeout={self.request_timeout}s, retry_max={self.retry_max}, "
-                    f"base_url={minimax_base}"
+                try:
+                    self.client = Anthropic(
+                        api_key=self.api_key,
+                        base_url=minimax_base,
+                        max_retries=0,
+                        timeout=self.request_timeout,
+                    )
+                    self.logger.info(
+                        f"MiniMax 客户端初始化成功: model={self.model_name}, "
+                        f"timeout={self.request_timeout}s, retry_max={self.retry_max}, "
+                        f"base_url={minimax_base}"
+                    )
+                except Exception as e:
+                    self.logger.error(f"MiniMax 客户端初始化失败: {e}")
+                    self.client = None
+            else:
+                self.logger.warning(
+                    f"MiniMax 客户端未初始化: api_key={"有" if self.api_key else "无"}, "
+                    f"Anthropic={"可用" if Anthropic else "不可用"}"
                 )
         elif self.provider == 'aliyun' and self.api_key:
             self.client = OpenAIClient(

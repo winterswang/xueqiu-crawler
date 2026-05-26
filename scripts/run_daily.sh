@@ -1,5 +1,5 @@
 #!/bin/bash
-# 雪球爬虫完整流程 v6 - Playwright 版本（4 步流水线 + 资源清理）
+# 雪球爬虫完整流程 v7 - Playwright 版本（4 步流水线 + 资源清理 + 内存防护）
 # 凭证通过 .env 文件或环境变量加载（见 .env.example）
 
 set -e
@@ -19,18 +19,41 @@ cleanup_chromium() {
     sleep 1
 }
 
-# trap 确保即使脚本被中断也清理资源
-trap cleanup_chromium EXIT
-
-# 加载 .env 文件（如有）
+# 加载 .env 文件（如有）— 强制导出所有变量
 if [ -f "$PROJECT_DIR/.env" ]; then
     set -a
     source "$PROJECT_DIR/.env"
     set +a
+    # 显式导出关键变量（防御性）
+    export MINIMAX_API_KEY MINIMAX_BASE_URL BAILIAN_API_KEY 2>/dev/null || true
 fi
 
+# 内存检查：低于 500MB 可用时告警
+AVAILABLE_MEM=$(awk '/^MemAvailable:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo "unknown")
+echo "[$(date)] 可用内存: ${AVAILABLE_MEM}MB" >> "$LOG_FILE"
+if [ "$AVAILABLE_MEM" != "unknown" ] && [ "$AVAILABLE_MEM" -lt 500 ]; then
+    echo "[$(date)] ⚠️ 可用内存不足 500MB (${AVAILABLE_MEM}MB)，先清理缓存..." >> "$LOG_FILE"
+    sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+    cleanup_chromium
+fi
+
+# 防止并发执行（lockfile）
+LOCKFILE="$PROJECT_DIR/.cron_running.lock"
+if [ -f "$LOCKFILE" ]; then
+    LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null)
+    if kill -0 "$LOCK_PID" 2>/dev/null; then
+        echo "[$(date)] ⚠️ 前一次执行尚未完成 (PID=$LOCK_PID)，跳过本次" >> "$LOG_FILE"
+        exit 0
+    else
+        echo "[$(date)] 🔧 清理过期锁文件 (PID=$LOCK_PID 已不存在)" >> "$LOG_FILE"
+        rm -f "$LOCKFILE"
+    fi
+fi
+echo $$ > "$LOCKFILE"
+trap 'rm -f "$LOCKFILE"; cleanup_chromium' EXIT
+
 echo "========================================" >> "$LOG_FILE"
-echo "[$(date)] 开始执行雪球爬虫流程 v6 (Playwright)" >> "$LOG_FILE"
+echo "[$(date)] 开始执行雪球爬虫流程 v7 (Playwright)" >> "$LOG_FILE"
 
 # 确保日志目录存在
 mkdir -p "$PROJECT_DIR/logs"

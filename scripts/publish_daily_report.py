@@ -41,11 +41,6 @@ IMA_CLIENT_ID = _read_ima_credential("IMA_OPENAPI_CLIENTID", "~/.config/ima/clie
 IMA_API_KEY = _read_ima_credential("IMA_OPENAPI_APIKEY", "~/.config/ima/api_key")
 
 
-def log(message: str):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
-
-
 def get_daily_report(date: str = None) -> str:
     """读取日报 Markdown 内容"""
     if not date:
@@ -92,7 +87,7 @@ def check_existing_note(date: str) -> str | None:
                         except (ValueError, OSError):
                             pass
     except Exception as e:
-        log(f"搜索笔记异常: {e}")
+        _logger.warning(f"搜索笔记异常: {e}")
     return None
 
 
@@ -104,7 +99,6 @@ def create_ima_note(title: str, content: str) -> str | None:
 
     existing_doc_id = check_existing_note(date)
     if existing_doc_id:
-        log(f"笔记已存在: {existing_doc_id}")
         _logger.info(f"IMA 笔记已存在, 跳过: {existing_doc_id}")
         return existing_doc_id
 
@@ -153,7 +147,6 @@ def main():
         _logger.info(f"日报读取成功: {len(content)} 字符")
     except FileNotFoundError as e:
         _logger.error(f"日报文件不存在: {e}")
-        log(f"错误: {e}")
         return 1
 
     # 2. 推送到 IMA
@@ -161,9 +154,9 @@ def main():
     note_url = f"https://ima.qq.com/note/{note_id}" if note_id else None
     if note_id:
         log_execution_stage("ima_push", "success", f"note_id={note_id}")
-        log(f"📖 IMA 笔记: {note_url}")
+        _logger.info(f"IMA 笔记: {note_url}")
     else:
-        log("❌ IMA 推送失败")
+        _logger.error("IMA 推送失败")
         return 1
 
     return 0

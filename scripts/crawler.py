@@ -239,6 +239,8 @@ class XueqiuCrawler:
                 '--disable-web-security',
                 '--disable-features=VizDisplayCompositor',
                 '--ignore-certificate-errors',
+                '--js-flags=--max-old-space-size=256',   # 限制 JS heap 256MB
+                '--renderer-process-limit=1',             # 限制渲染进程数
                 f'--window-size={viewport["width"]},{viewport["height"]}',
             ] + anti_detect.get('chromium_args', [])
         )
@@ -823,6 +825,7 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
         Returns:
             爬取统计
         """
+        import gc
         max_articles = max_articles or self.config.get('crawler', {}).get('max_articles', 20)
         
         stats = {
@@ -832,7 +835,7 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
             'users': []
         }
         
-        for account in self.accounts:
+        for i, account in enumerate(self.accounts):
             user_id = account.get('id')
             user_name = account.get('name', user_id)
             url = account.get('url', f'https://xueqiu.com/u/{user_id}')
@@ -842,7 +845,7 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                 continue
             
             self.logger.info(f"\n{'='*50}")
-            self.logger.info(f"爬取用户: {user_name} ({user_id})")
+            self.logger.info(f"爬取用户 [{i+1}/{len(self.accounts)}]: {user_name} ({user_id})")
             
             try:
                 articles = self.crawl_user(user_id, url)
@@ -863,8 +866,18 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                     'error': str(e)
                 })
             
+            # 爬完每个用户后清理内存（防止 OOM）
+            gc.collect()
+            # 杀掉残留的 Chromium 僵尸进程
+            try:
+                import subprocess
+                subprocess.run(['pkill', '-f', 'chromium_headless_shell'],
+                               capture_output=True, timeout=5)
+            except Exception:
+                pass
+            
             # 用户间延迟
-            if account != self.accounts[-1]:
+            if i < len(self.accounts) - 1:
                 self._random_delay()
         
         # 打印统计

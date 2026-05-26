@@ -11,14 +11,6 @@ crawler:
 storage:
   output_dir: data/         # 输出目录
   format: markdown          # 存储格式
-  
-schedule:
-  enabled: true
-  cron: "0 2 * * *"         # 每天凌晨2点
-  
-logging:
-  level: INFO
-  file: logs/crawler.log
 
 # AI 分析配置
 analysis:
@@ -36,9 +28,8 @@ analysis:
     retry_on_http_codes: [429, 529, 502, 503, 504]  # 重试的错误码
     request_timeout_ms: 120000   # 单次 API 调用超时（ms）
 
-# 反爬策略
+# 反爬策略（crawler 实际使用 ua_pool 列表，此处仅作默认回退）
 anti_detect:
-  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   locale: "zh-CN"
   viewport:
     width: 1280    # 缩小视口降低 Chromium 内存占用（实测 ~14MB，并更接近真实用户分辨率分布）
