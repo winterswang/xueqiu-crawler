@@ -36,7 +36,7 @@ def get_today_articles(data_dir: str = 'data') -> list:
     articles = []
     today = datetime.now().strftime('%Y-%m-%d')
     
-    for article_id, info in index.get('articles', {}).items():
+    for index_key, info in index.get('articles', {}).items():
         crawl_time = info.get('crawl_time', '')
         if crawl_time.startswith(today):
             filepath = info.get('filepath', '')
@@ -49,7 +49,7 @@ def get_today_articles(data_dir: str = 'data') -> list:
                     continue
                 
                 articles.append({
-                    'article_id': article_id,
+                    'article_id': info.get('article_id', index_key),
                     'user_id': info.get('user_id', ''),
                     'title': info.get('title', ''),
                     'author': info.get('author', ''),
