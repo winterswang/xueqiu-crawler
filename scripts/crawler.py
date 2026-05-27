@@ -734,16 +734,27 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                 # 解析文章列表
                 article_list = self._parse_article_list(page, user_id)
                 
-                # 获取历史文章ID，用于增量判断
+                # 获取已爬取文章ID，用于增量去重
+                # 1. 从 history/ 快照获取最近N天的 article_id
                 history_ids = self._get_history_article_ids(user_id)
-                if history_ids:
-                    self.logger.info(f"历史已爬取 {len(history_ids)} 篇文章")
+                # 2. 从 index.json 获取所有该用户的 article_id（全局去重兜底）
+                indexed_ids = {
+                    info.get('article_id', '')
+                    for info in self.index.get('articles', {}).values()
+                    if info.get('user_id') == user_id
+                }
+                all_known_ids = history_ids | indexed_ids
+                if all_known_ids:
+                    self.logger.info(
+                        f"已知文章 {len(all_known_ids)} 篇 "
+                        f"(历史 {len(history_ids)}, 索引 {len(indexed_ids)})"
+                    )
                 
                 # 过滤出新增文章
                 new_articles = []
                 for article in article_list:
                     article_id = article.get('article_id', '')
-                    if article_id and article_id not in history_ids:
+                    if article_id and article_id not in all_known_ids:
                         new_articles.append(article)
                 
                 self.logger.info(f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇）")
@@ -770,9 +781,10 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                             self.logger.info(f"跳过非专栏文章: {title[:30]}...")
                             continue
                         
-                        # 检查是否已存在
+                        # 检查是否已存在（使用复合 key: user_id_article_id）
                         article_id = article.get('article_id', '')
-                        if article_id in self.index.get('articles', {}):
+                        index_key = f"{user_id}_{article_id}"
+                        if index_key in self.index.get('articles', {}):
                             self.logger.info(f"文章已存在，跳过: {article_id}")
                             continue
                         
@@ -780,8 +792,7 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                         filepath = self._save_as_markdown(article, user_id)
                         article['filepath'] = filepath
                         
-                        # 更新索引（统一用 user_id_article_id 作为 key）
-                        index_key = f"{user_id}_{article_id}"
+                        # 更新索引
                         self.index['articles'][index_key] = {
                             'article_id': article_id,
                             'user_id': user_id,
