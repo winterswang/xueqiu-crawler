@@ -802,7 +802,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
                     'url': f"https://xueqiu.com/{article.get('user_id', '')}/{article.get('article_id', '')}"
                 })
     
-    market_groups = group_stocks_by_market(all_stocks)
+    market_groups = group_stocks_by_market(list(stock_mentions.keys()))
     
     # 今日覆盖的市场
     markets_covered = [m for m in market_groups.keys() if m != '其他']
