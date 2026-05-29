@@ -62,7 +62,7 @@ def get_today_articles(data_dir: str = 'data') -> list:
 
 
 def generate_today_report(data_dir: str = 'data', output_path: str = None,
-                          api_key: str = None, limit: int = 20) -> str:
+                          api_key: str = None, limit: int = 50) -> str:
     """
     分析今日文章并生成日报（可 import 调用）
 
@@ -179,7 +179,7 @@ def main():
     parser.add_argument('--data-dir', default='data', help='数据目录')
     parser.add_argument('--output', default=None, help='输出路径')
     parser.add_argument('--api-key', default=None, help='百炼 API Key')
-    parser.add_argument('--limit', type=int, default=20, help='最大分析文章数')
+    parser.add_argument("--limit", type=int, default=50, help="最大分析文章数"), help='最大分析文章数')
 
     args = parser.parse_args()
     generate_today_report(

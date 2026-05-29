@@ -1,11 +1,12 @@
 # 雪球爬虫配置
 
 crawler:
-  delay_min: 2              # 最小请求间隔(秒)
-  delay_max: 5              # 最大请求间隔(秒)
+  delay_min: 2              # 文章间最小请求间隔(秒)
+  delay_max: 5              # 文章间最大请求间隔(秒)
+  # 用户间延迟由 _user_delay() 控制：前4个5-10s，之后8-15s
   timeout: 60               # 页面超时(秒)
   headless: true            # 无头模式（new headless via --headless=new）
-  max_articles: 20          # 每次最多爬取文章数
+  max_articles: 50          # 每次最多爬取文章数
   max_retries: 3            # 最大重试次数
 
 storage:

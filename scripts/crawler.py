@@ -23,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from playwright._impl._errors import TargetClosedError
+
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -571,6 +573,9 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
             if comment_match:
                 detail['comments'] = int(comment_match.group(1))
             
+        except TargetClosedError:
+            # 浏览器崩溃 — 向上抛出让调用方重建浏览器后重试
+            raise
         except Exception as e:
             self.logger.error(f"解析文章详情失败: {e}")
         
@@ -657,6 +662,15 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
         
         return False
     
+    def _user_delay(self, user_index: int):
+        """用户间延迟 — 前几个用户短延迟，后期加长以避免触发风控"""
+        if user_index < 4:
+            delay = random.uniform(5, 10)
+        else:
+            delay = random.uniform(8, 15)
+        self.logger.info(f"等待 {delay:.1f} 秒后爬取下一位用户...")
+        time.sleep(delay)
+
     def _check_and_handle_login(self, page: Page) -> bool:
         """检查是否需要登录，如果需要则展示二维码"""
         try:
@@ -696,208 +710,282 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
             self.logger.warning(f"检查登录状态失败: {e}")
             return False
     
-    def crawl_user(self, user_id: str, url: str) -> List[dict]:
-        """爬取单个用户的文章"""
-        self.logger.info(f"开始爬取用户: {user_id}")
-        
+    def _crawl_user_in_context(self, user_id: str, url: str, context: BrowserContext,
+                               max_articles: int) -> List[dict]:
+        """在共享浏览器上下文中爬取单个用户（内部方法）
+
+        TargetClosedError 向上传播，由调用方重建浏览器后重试。
+        """
         articles = []
+        page = context.new_page()
+
+        try:
+            # 访问雪球首页刷新会话
+            page.goto('https://xueqiu.com', timeout=self.timeout)
+            page.wait_for_timeout(2000)
+
+            # 访问用户主页
+            self.logger.info(f"访问用户主页: {url}")
+            page.goto(url, timeout=self.timeout)
+            page.wait_for_timeout(3000)
+
+            # 检查是否需要登录/验证
+            if self._check_and_handle_login(page):
+                self.logger.warning("检测到验证页面，等待中...")
+                page.wait_for_timeout(10000)
+
+            # 获取用户名并更新配置
+            user_name = self._get_user_name(page, user_id)
+            if user_name and user_name != user_id:
+                self._update_account_name(user_id, user_name)
+
+            # 解析文章列表
+            article_list = self._parse_article_list(page, user_id)
+
+            # 获取已爬取文章ID，用于增量去重
+            history_ids = self._get_history_article_ids(user_id)
+            indexed_ids = {
+                info.get('article_id', '')
+                for info in self.index.get('articles', {}).values()
+                if info.get('user_id') == user_id
+            }
+            all_known_ids = history_ids | indexed_ids
+            if all_known_ids:
+                self.logger.info(
+                    f"已知文章 {len(all_known_ids)} 篇 "
+                    f"(历史 {len(history_ids)}, 索引 {len(indexed_ids)})"
+                )
+
+            # 过滤出新增文章
+            new_articles = []
+            for article in article_list:
+                article_id = article.get('article_id', '')
+                if article_id and article_id not in all_known_ids:
+                    new_articles.append(article)
+
+            self.logger.info(f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇）")
+
+            # 遍历每篇新文章获取详情（TargetClosedError 向上传播）
+            for i, article in enumerate(new_articles[:max_articles]):
+                if not article['link']:
+                    continue
+
+                self._random_delay()
+
+                list_title = article.get('title', '')
+                self.logger.info(
+                    f"获取文章详情 [{i+1}/{min(len(article_list), max_articles)}]: "
+                    f"{article['link']}"
+                )
+
+                # 尝试获取详情；TargetClosedError 直接上抛
+                try:
+                    detail = self._parse_article_detail(page, article['link'])
+                except TargetClosedError:
+                    raise
+                except Exception as e:
+                    self.logger.error(f"解析文章详情失败: {e}")
+                    continue
+
+                if detail is None:
+                    label = list_title[:40] if list_title else article['link'][-20:]
+                    self.logger.warning(f"跳过文章（详情获取失败）: {label}")
+                    continue
+
+                # 合并信息
+                list_content = article.get('content', '')
+                article.update(detail)
+                if not article.get('title') and list_title:
+                    article['title'] = list_title
+                if not article.get('content') and list_content:
+                    article['content'] = list_content
+                article['crawl_time'] = datetime.now().isoformat()
+
+                # 过滤非专栏文章
+                is_column = article.get('is_column', False)
+                title = article.get('title', '')
+                if title.startswith('回复@') or not is_column:
+                    self.logger.info(f"跳过非专栏文章: {title[:30]}...")
+                    continue
+
+                # 去重
+                article_id = article.get('article_id', '')
+                index_key = f"{user_id}_{article_id}"
+                if index_key in self.index.get('articles', {}):
+                    self.logger.info(f"文章已存在，跳过: {article_id}")
+                    continue
+
+                # 保存为 Markdown
+                filepath = self._save_as_markdown(article, user_id)
+                article['filepath'] = filepath
+
+                # 更新索引
+                self.index['articles'][index_key] = {
+                    'article_id': article_id,
+                    'user_id': user_id,
+                    'title': article.get('title', ''),
+                    'author': article.get('author', ''),
+                    'publish_time': article.get('publish_time', ''),
+                    'crawl_time': article.get('crawl_time'),
+                    'file_path': filepath,
+                    'filepath': filepath,
+                }
+
+                articles.append(article)
+
+            self._save_index()
+            self._save_history(user_id, articles)
+
+        except Exception:
+            raise
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+        return articles
+
+    def crawl_user(self, user_id: str, url: str) -> List[dict]:
+        """爬取单个用户的文章（独立浏览器实例，兼容 --user 模式）"""
+        self.logger.info(f"开始爬取用户: {user_id}")
+
         max_articles = self.config.get('crawler', {}).get('max_articles', 20)
-        
+
         with sync_playwright() as p:
             browser, context = self._create_browser_context(p)
-            page = context.new_page()
-            
             try:
-                # 加载已保存的 cookies
                 self._load_cookies(context)
-                
-                # 先访问首页建立 cookies
-                self.logger.info("访问雪球首页...")
-                page.goto('https://xueqiu.com', timeout=self.timeout)
-                page.wait_for_timeout(2000)
-                
-                # 访问用户主页
-                self.logger.info(f"访问用户主页: {url}")
-                page.goto(url, timeout=self.timeout)
-                page.wait_for_timeout(3000)
-                
-                # 检查是否需要登录/验证
-                if self._check_and_handle_login(page):
-                    self.logger.warning("需要人工验证，等待...")
-                    page.wait_for_timeout(10000)  # 等待用户扫描
-                
-                # 获取用户名并更新配置
-                user_name = self._get_user_name(page, user_id)
-                if user_name and user_name != user_id:
-                    self._update_account_name(user_id, user_name)
-                
-                # 解析文章列表
-                article_list = self._parse_article_list(page, user_id)
-                
-                # 获取已爬取文章ID，用于增量去重
-                # 1. 从 history/ 快照获取最近N天的 article_id
-                history_ids = self._get_history_article_ids(user_id)
-                # 2. 从 index.json 获取所有该用户的 article_id（全局去重兜底）
-                indexed_ids = {
-                    info.get('article_id', '')
-                    for info in self.index.get('articles', {}).values()
-                    if info.get('user_id') == user_id
-                }
-                all_known_ids = history_ids | indexed_ids
-                if all_known_ids:
-                    self.logger.info(
-                        f"已知文章 {len(all_known_ids)} 篇 "
-                        f"(历史 {len(history_ids)}, 索引 {len(indexed_ids)})"
-                    )
-                
-                # 过滤出新增文章
-                new_articles = []
-                for article in article_list:
-                    article_id = article.get('article_id', '')
-                    if article_id and article_id not in all_known_ids:
-                        new_articles.append(article)
-                
-                self.logger.info(f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇）")
-                
-                # 遍历每篇新文章获取详情
-                for i, article in enumerate(new_articles[:max_articles]):
-                    if article['link']:
-                        self._random_delay()
-                        
-                        self.logger.info(f"获取文章详情 [{i+1}/{min(len(article_list), max_articles)}]: {article['link']}")
-                        
-                        detail = self._parse_article_detail(page, article['link'])
-                        
-                        # 合并信息
-                        article.update(detail)
-                        article['crawl_time'] = datetime.now().isoformat()
-                        
-                        # 判断是否是专栏文章（非评论/回复）
-                        is_column = article.get('is_column', False)
-                        title = article.get('title', '')
-                        
-                        # 过滤：标题以"回复@"开头的不是专栏文章
-                        if title.startswith('回复@') or not is_column:
-                            self.logger.info(f"跳过非专栏文章: {title[:30]}...")
-                            continue
-                        
-                        # 检查是否已存在（使用复合 key: user_id_article_id）
-                        article_id = article.get('article_id', '')
-                        index_key = f"{user_id}_{article_id}"
-                        if index_key in self.index.get('articles', {}):
-                            self.logger.info(f"文章已存在，跳过: {article_id}")
-                            continue
-                        
-                        # 保存为 Markdown
-                        filepath = self._save_as_markdown(article, user_id)
-                        article['filepath'] = filepath
-                        
-                        # 更新索引
-                        self.index['articles'][index_key] = {
-                            'article_id': article_id,
-                            'user_id': user_id,
-                            'title': article.get('title', ''),
-                            'author': article.get('author', ''),
-                            'publish_time': article.get('publish_time', ''),
-                            'crawl_time': article.get('crawl_time'),
-                            'file_path': filepath,
-                            'filepath': filepath,
-                        }
-                        
-                        articles.append(article)
-                
-                self._save_index()
-                
-                # 保存历史快照
-                self._save_history(user_id, articles)
-                
-            except Exception as e:
-                self.logger.error(f"爬取用户 {user_id} 失败: {e}")
-                import traceback
-                traceback.print_exc()
-                
+                return self._crawl_user_in_context(
+                    user_id, url, context, max_articles)
             finally:
                 try:
                     browser.close()
                 except Exception:
-                    pass  # EPIPE / 浏览器已崩溃
-        
-        self.logger.info(f"用户 {user_id} 爬取完成，获取 {len(articles)} 篇新文章")
-        return articles
-    
-    def crawl_all_users(self, max_articles: int = None, fetch_detail: bool = True) -> dict:
+                    pass
+
+    def crawl_all_users(self, max_articles: int = None,
+                        fetch_detail: bool = True) -> dict:
         """
-        爬取所有配置用户（Playwright）
-        
-        Args:
-            max_articles: 每个用户最大文章数
-            fetch_detail: 是否爬取详情
-        
-        Returns:
-            爬取统计
+        爬取所有配置用户 — 共享单个浏览器上下文，减少风控触发
         """
         import gc
-        max_articles = max_articles or self.config.get('crawler', {}).get('max_articles', 20)
-        
+        import subprocess as _subprocess
+
+        max_articles = max_articles or self.config.get(
+            'crawler', {}).get('max_articles', 20)
+        MAX_CONTEXT_RETRIES = 2  # 浏览器崩溃后重建次数
+
         stats = {
             'total_users': len(self.accounts),
             'total_new': 0,
             'total_saved': 0,
             'users': []
         }
-        
-        for i, account in enumerate(self.accounts):
-            user_id = account.get('id')
-            user_name = account.get('name', user_id)
-            url = account.get('url', f'https://xueqiu.com/u/{user_id}')
-            
-            if not user_id:
-                self.logger.warning(f"账号配置不完整: {account}")
-                continue
-            
-            self.logger.info(f"\n{'='*50}")
-            self.logger.info(f"爬取用户 [{i+1}/{len(self.accounts)}]: {user_name} ({user_id})")
-            
+
+        with sync_playwright() as p:
+            browser, context = self._create_browser_context(p)
+            self._load_cookies(context)
+
+            # 预热：先访问首页建立可信会话
             try:
-                articles = self.crawl_user(user_id, url)
-                stats['total_new'] += len(articles)
-                stats['total_saved'] += len(articles)
-                stats['users'].append({
-                    'user_id': user_id,
-                    'name': user_name,
-                    'new_articles': len(articles),
-                    'saved_articles': len(articles)
-                })
-                
+                warmup_page = context.new_page()
+                warmup_page.goto('https://xueqiu.com', timeout=self.timeout)
+                warmup_page.wait_for_timeout(3000)
+                # 模拟人类行为：滚动页面
+                warmup_page.evaluate('window.scrollBy(0, 300)')
+                warmup_page.wait_for_timeout(1000)
+                warmup_page.evaluate('window.scrollBy(0, -200)')
+                warmup_page.close()
+                self.logger.info("会话预热完成")
             except Exception as e:
-                self.logger.error(f"爬取用户 {user_id} 失败: {e}")
-                stats['users'].append({
-                    'user_id': user_id,
-                    'name': user_name,
-                    'error': str(e)
-                })
-            
-            # 爬完每个用户后清理内存（防止 OOM）
-            gc.collect()
-            # 杀掉残留的 Chromium 僵尸进程
+                self.logger.warning(f"预热失败（继续）: {e}")
+
+            for i, account in enumerate(self.accounts):
+                user_id = account.get('id')
+                user_name = account.get('name', user_id)
+                url = account.get('url', f'https://xueqiu.com/u/{user_id}')
+
+                if not user_id:
+                    self.logger.warning(f"账号配置不完整: {account}")
+                    continue
+
+                self.logger.info(f"\n{'='*50}")
+                self.logger.info(
+                    f"爬取用户 [{i+1}/{len(self.accounts)}]: "
+                    f"{user_name} ({user_id})"
+                )
+
+                # 带浏览器崩溃恢复的用户爬取
+                for retry in range(MAX_CONTEXT_RETRIES + 1):
+                    try:
+                        articles = self._crawl_user_in_context(
+                            user_id, url, context, max_articles)
+                        stats['total_new'] += len(articles)
+                        stats['total_saved'] += len(articles)
+                        stats['users'].append({
+                            'user_id': user_id,
+                            'name': user_name,
+                            'new_articles': len(articles),
+                            'saved_articles': len(articles)
+                        })
+                        break
+                    except TargetClosedError:
+                        if retry < MAX_CONTEXT_RETRIES:
+                            backoff = 2 + retry * 2
+                            self.logger.warning(
+                                f"浏览器上下文崩溃，重建后重试 "
+                                f"({retry+1}/{MAX_CONTEXT_RETRIES}), "
+                                f"等待{backoff}s..."
+                            )
+                            try:
+                                browser.close()
+                            except Exception:
+                                pass
+                            time.sleep(backoff)
+                            browser, context = self._create_browser_context(p)
+                            self._load_cookies(context)
+                        else:
+                            self.logger.error(
+                                f"爬取用户 {user_id} 最终失败 "
+                                f"(浏览器崩溃{MAX_CONTEXT_RETRIES+1}次)"
+                            )
+                            stats['users'].append({
+                                'user_id': user_id,
+                                'name': user_name,
+                                'error': '浏览器反复崩溃'
+                            })
+                    except Exception as e:
+                        self.logger.error(f"爬取用户 {user_id} 失败: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        stats['users'].append({
+                            'user_id': user_id,
+                            'name': user_name,
+                            'error': str(e)
+                        })
+                        break
+
+                # 爬完每个用户后清理内存
+                gc.collect()
+
+                # 用户间延迟（梯度递增，降低风控触发）
+                if i < len(self.accounts) - 1:
+                    self._user_delay(i + 1)
+
+            # 关闭共享的浏览器
             try:
-                import subprocess
-                subprocess.run(['pkill', '-f', 'chromium_headless_shell'],
-                               capture_output=True, timeout=5)
+                browser.close()
             except Exception:
                 pass
-            
-            # 用户间延迟
-            if i < len(self.accounts) - 1:
-                self._random_delay()
-        
+
         # 打印统计
         self.logger.info(f"\n{'='*50}")
         self.logger.info(f"爬取完成！")
         self.logger.info(f"总用户数: {stats['total_users']}")
         self.logger.info(f"新文章数: {stats['total_new']}")
         self.logger.info(f"保存文章数: {stats['total_saved']}")
-        
+
         # 保存爬取统计供日报使用
         successful = sum(1 for u in stats['users'] if 'saved_articles' in u)
         failed = sum(1 for u in stats['users'] if 'error' in u)
@@ -915,7 +1003,7 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
             self.logger.info(f"爬取统计已保存: {stats_file}")
         except OSError as e:
             self.logger.warning(f"保存爬取统计失败: {e}")
-        
+
         return stats
     
     def run(self):
