@@ -21,6 +21,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from logging_utils import get_logger, log_parse_failure, log_api_call
 
+# 自加载 .env（不依赖 shell 环境变量传递，兼容 cron/手动调用等场景）
+try:
+    from dotenv import load_dotenv
+    _env_path = Path(__file__).resolve().parent.parent / '.env'
+    if _env_path.exists():
+        load_dotenv(_env_path)
+except ImportError:
+    pass
+
 try:
     from anthropic import Anthropic
 except ImportError:
