@@ -179,7 +179,7 @@ def main():
     parser.add_argument('--data-dir', default='data', help='数据目录')
     parser.add_argument('--output', default=None, help='输出路径')
     parser.add_argument('--api-key', default=None, help='百炼 API Key')
-    parser.add_argument("--limit", type=int, default=50, help="最大分析文章数"), help='最大分析文章数')
+    parser.add_argument("--limit", type=int, default=50, help="最大分析文章数")
 
     args = parser.parse_args()
     generate_today_report(
