@@ -870,7 +870,6 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
         爬取所有配置用户 — 共享单个浏览器上下文，减少风控触发
         """
         import gc
-        import subprocess as _subprocess
 
         max_articles = max_articles or self.config.get(
             'crawler', {}).get('max_articles', 20)
