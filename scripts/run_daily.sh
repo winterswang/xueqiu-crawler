@@ -74,7 +74,7 @@ cleanup_chromium
 
 # 3. 生成分析报告（MINIMAX_API_KEY 从 .env 或环境变量读取）
 echo "[3/4] 生成分析报告..." >> "$LOG_FILE"
-/usr/bin/python3 scripts/generate_report.py --limit 20 >> "$LOG_FILE" 2>&1
+/usr/bin/python3 scripts/generate_report.py --limit 50 >> "$LOG_FILE" 2>&1
 
 # 4. 发布到 IMA 笔记并发送链接
 echo "[4/4] 发布到 IMA 笔记..." >> "$LOG_FILE"
