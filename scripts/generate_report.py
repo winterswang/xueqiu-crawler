@@ -12,6 +12,12 @@ import yaml
 from datetime import datetime
 from pathlib import Path
 
+# 自动加载 .env（如存在）
+from dotenv import load_dotenv
+_dotenv_path = Path(__file__).resolve().parent.parent / '.env'
+if _dotenv_path.exists():
+    load_dotenv(_dotenv_path, override=True)
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from logging_utils import get_logger, log_execution_stage, log_execution_summary
@@ -19,45 +25,92 @@ from analyzer import ArticleAnalyzer, check_article_quality, generate_daily_repo
 
 
 def get_today_articles(data_dir: str = 'data') -> list:
-    """获取今日新增文章"""
+    """获取今日新增文章（索引优先 + 文件系统兜底）"""
     data_path = Path(data_dir)
     index_file = data_path / 'index.json'
-    
-    if not index_file.exists():
-        return []
-    
-    try:
-        with open(index_file, 'r', encoding='utf-8') as f:
-            index = json.load(f)
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"读取索引失败: {e}")
-        return []
-    
-    articles = []
     today = datetime.now().strftime('%Y-%m-%d')
-    
-    for index_key, info in index.get('articles', {}).items():
-        crawl_time = info.get('crawl_time', '')
-        if crawl_time.startswith(today):
-            filepath = info.get('filepath', '')
-            if filepath and Path(filepath).exists():
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                except OSError as e:
-                    print(f"读取文章失败 {filepath}: {e}")
-                    continue
-                
-                articles.append({
-                    'article_id': info.get('article_id', index_key),
-                    'user_id': info.get('user_id', ''),
-                    'title': info.get('title', ''),
-                    'author': info.get('author', ''),
-                    'publish_time': info.get('publish_time', ''),
-                    'content': content,
-                    'filepath': filepath
-                })
-    
+
+    # 第一步：从索引获取
+    indexed_article_ids = set()
+    articles = []
+
+    if index_file.exists():
+        try:
+            with open(index_file, 'r', encoding='utf-8') as f:
+                index = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"读取索引失败: {e}")
+            index = {'articles': {}}
+
+        for index_key, info in index.get('articles', {}).items():
+            crawl_time = info.get('crawl_time', '')
+            if crawl_time.startswith(today):
+                article_id = info.get('article_id', index_key)
+                indexed_article_ids.add(article_id)
+                filepath = info.get('filepath', '')
+                if filepath and Path(filepath).exists():
+                    try:
+                        with open(filepath, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                    except OSError as e:
+                        print(f"读取文章失败 {filepath}: {e}")
+                        continue
+                    articles.append({
+                        'article_id': article_id,
+                        'user_id': info.get('user_id', ''),
+                        'title': info.get('title', ''),
+                        'author': info.get('author', ''),
+                        'publish_time': info.get('publish_time', ''),
+                        'content': content,
+                        'filepath': filepath
+                    })
+    else:
+        index = {'articles': {}}
+
+    # 第二步：文件系统兜底 — 扫描今日修改的 .md 文件（防止索引丢失）
+    fs_articles = 0
+    for user_dir in data_path.iterdir():
+        if not user_dir.is_dir():
+            continue
+        if user_dir.name in ('daily_reports', 'history'):
+            continue
+        for md_file in user_dir.glob('*.md'):
+            article_id = md_file.stem
+            if article_id in indexed_article_ids:
+                continue  # 索引已有，跳过
+            # 检查文件修改时间是否是今天
+            try:
+                mtime = datetime.fromtimestamp(md_file.stat().st_mtime)
+            except OSError:
+                continue
+            if mtime.strftime('%Y-%m-%d') != today:
+                continue
+            try:
+                content = md_file.read_text(encoding='utf-8')
+            except OSError:
+                continue
+            # 提取简单元数据
+            title = ''
+            author = ''
+            for line in content.split('\n'):
+                if line.startswith('# ') and not title:
+                    title = line[2:].strip()
+                if '作者：' in line and not author:
+                    author = line.split('作者：')[-1].split('|')[0].split('｜')[0].strip()
+            articles.append({
+                'article_id': article_id,
+                'user_id': user_dir.name,
+                'title': title,
+                'author': author,
+                'publish_time': '',
+                'content': content,
+                'filepath': str(md_file)
+            })
+            fs_articles += 1
+
+    if fs_articles:
+        print(f"文件系统兜底: {fs_articles} 篇（索引中缺失）")
+
     return articles
 
 

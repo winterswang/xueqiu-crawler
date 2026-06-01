@@ -25,6 +25,12 @@ from typing import Dict, List, Optional
 
 from playwright._impl._errors import TargetClosedError
 
+# 自动加载 .env（如存在）
+from dotenv import load_dotenv
+_dotenv_path = Path(__file__).resolve().parent.parent / '.env'
+if _dotenv_path.exists():
+    load_dotenv(_dotenv_path, override=True)
+
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -207,7 +213,6 @@ class XueqiuCrawler:
         delay_max = self.config.get('crawler', {}).get('delay_max', 5)
         delay = random.uniform(delay_min, delay_max)
         self.logger.debug(f"等待 {delay:.1f} 秒...")
-        import time
         time.sleep(delay)
     
     def _create_browser_context(self, playwright) -> BrowserContext:
@@ -355,31 +360,6 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
         """)
         
         return browser, context
-    
-    def _is_article(self, item) -> bool:
-        """判断是否为专栏文章"""
-        # 检查是否有文章标题
-        title_elem = item.query_selector('.title, h3, h4, .article-title')
-        if title_elem:
-            title = title_elem.inner_text().strip()
-            # 标题较长通常是文章
-            if len(title) > 5:
-                return True
-        
-        # 检查是否有"原文"链接（转发的不是原创文章）
-        source_elem = item.query_selector('.source')
-        if source_elem and '原文' in source_elem.inner_text():
-            return False
-            
-        # 检查内容长度
-        content_elem = item.query_selector('.content, .status-content, article')
-        if content_elem:
-            content = content_elem.inner_text()
-            # 内容超过200字符可能是文章
-            if len(content) > 200:
-                return True
-        
-        return False
     
     def _extract_article_id(self, url: str) -> str:
         """从URL提取文章ID"""
@@ -609,6 +589,8 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
         
         content = '\n'.join(lines)
         
+        if filepath.exists():
+            self.logger.warning(f"文件已存在，覆盖保存: {filepath}")
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
         
@@ -662,15 +644,6 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
         
         return False
     
-    def _user_delay(self, user_index: int):
-        """用户间延迟 — 前几个用户短延迟，后期加长以避免触发风控"""
-        if user_index < 4:
-            delay = random.uniform(5, 10)
-        else:
-            delay = random.uniform(8, 15)
-        self.logger.info(f"等待 {delay:.1f} 秒后爬取下一位用户...")
-        time.sleep(delay)
-
     def _check_and_handle_login(self, page: Page) -> bool:
         """检查是否需要登录，如果需要则展示二维码"""
         try:
@@ -742,18 +715,24 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
             # 解析文章列表
             article_list = self._parse_article_list(page, user_id)
 
-            # 获取已爬取文章ID，用于增量去重
+            # 获取已爬取文章ID，用于增量去重（3 层：索引 + 历史 + 文件系统）
             history_ids = self._get_history_article_ids(user_id)
             indexed_ids = {
                 info.get('article_id', '')
                 for info in self.index.get('articles', {}).values()
                 if info.get('user_id') == user_id
             }
-            all_known_ids = history_ids | indexed_ids
+            # 文件系统去重：扫描已保存的 .md 文件（防止索引丢失导致的重爬）
+            user_data_dir = self.data_dir / user_id
+            filesystem_ids = set()
+            if user_data_dir.exists():
+                for f in user_data_dir.glob('*.md'):
+                    filesystem_ids.add(f.stem)
+            all_known_ids = history_ids | indexed_ids | filesystem_ids
             if all_known_ids:
                 self.logger.info(
                     f"已知文章 {len(all_known_ids)} 篇 "
-                    f"(历史 {len(history_ids)}, 索引 {len(indexed_ids)})"
+                    f"(历史 {len(history_ids)}, 索引 {len(indexed_ids)}, 文件 {len(filesystem_ids)})"
                 )
 
             # 过滤出新增文章
@@ -815,7 +794,7 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                     self.logger.info(f"文章已存在，跳过: {article_id}")
                     continue
 
-                # 保存为 Markdown
+                # 保存为 Markdown（文件级去重：已存在则跳过）
                 filepath = self._save_as_markdown(article, user_id)
                 article['filepath'] = filepath
 
@@ -830,10 +809,12 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                     'file_path': filepath,
                     'filepath': filepath,
                 }
+                # 增量保存索引：每篇文章写入后立即持久化，防止中途崩溃丢失
+                self._save_index()
 
                 articles.append(article)
 
-            self._save_index()
+            # 保存用户历史快照
             self._save_history(user_id, articles)
 
         except Exception:
