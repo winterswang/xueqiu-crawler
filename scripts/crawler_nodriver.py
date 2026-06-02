@@ -311,24 +311,32 @@ class XueqiuCrawlerNodriver:
             self.logger.warning(f"未找到 .timeline__item (可能被WAF拦截)")
             return articles
 
-        # 获取所有时间线条目的关键数据
-        items_data = await self.tab.evaluate("""
-            Array.from(document.querySelectorAll('.timeline__item')).map((item, i) => {
-                const links = Array.from(item.querySelectorAll('a'))
-                    .map(a => a.href)
-                    .filter(h => /\\/\\d+\\/\\d+$/.test(h) && !h.includes('#comment'));
-                const titleEl = item.querySelector('.article__title, .title, h3, h4, .content, .status-content');
-                const timeEl = item.querySelector('.time, .date');
-                const likeEl = item.querySelector('[class*="like"]');
+        # 获取所有时间线条目的关键数据 (JSON.stringify 解决 nodriver RemoteObject 序列化)
+        items_json = await self.tab.evaluate("""
+            JSON.stringify(Array.from(document.querySelectorAll('.timeline__item')).map(function(item, i) {
+                var links = Array.from(item.querySelectorAll('a'))
+                    .map(function(a) { return a.href; })
+                    .filter(function(h) { return /\\/\\d+\\/\\d+$/.test(h) && h.indexOf('#comment') === -1; });
+                var titleEl = item.querySelector('.content, .status-content');
+                var timeEl = item.querySelector('.time, .date');
                 return {
                     link: links[0] || '',
-                    title: titleEl?.innerText?.trim().split('\\n')[0]?.substring(0, 100) || '',
-                    time: timeEl?.innerText?.trim() || '',
-                    likes: likeEl?.innerText?.match(/\\d+/)?.[0] || '0',
+                    title: titleEl && titleEl.innerText ? titleEl.innerText.trim().split('\\n')[0].substring(0, 100) : '',
+                    time: timeEl && timeEl.innerText ? timeEl.innerText.trim() : '',
                     index: i
                 };
-            })
+            }))
         """)
+
+        if not items_json or not isinstance(items_json, str):
+            self.logger.warning(f"evaluate 未返回有效的 JSON 字符串: {type(items_json)}")
+            return articles
+
+        try:
+            items_data = json.loads(items_json)
+        except json.JSONDecodeError as e:
+            self.logger.error(f"JSON 解析失败: {e}")
+            return articles
 
         self.logger.info(f"找到 {len(items_data)} 条动态")
 
@@ -342,7 +350,7 @@ class XueqiuCrawlerNodriver:
                 'content': item.get('content', ''),
                 'publish_time': item.get('time', ''),
                 'link': item['link'],
-                'likes': int(item.get('likes', 0)),
+                'likes': 0,
                 'comments': 0,
             }
             articles.append(article)
@@ -361,6 +369,12 @@ class XueqiuCrawlerNodriver:
 
         try:
             await self._navigate(url, wait_seconds=3)
+
+            # WAF 检测
+            if await self._detect_waf():
+                self.logger.warning(f"文章详情页触发 WAF，跳过: {url[-30:]}")
+                detail['title'] = 'WAF_BLOCKED'
+                return detail
 
             # 从页面标题提取
             title = await self._page_title()
@@ -557,9 +571,18 @@ class XueqiuCrawlerNodriver:
 
         return result
 
+    async def _reconnect_browser(self):
+        """重启浏览器 — 防止 WAF 累积"""
+        await self._close_browser()
+        await asyncio.sleep(2)
+        await self._start_browser()
+        await self._warmup()
+        await self._inject_cookies()
+
     async def crawl_all_users(self, max_articles: int = None) -> dict:
-        """爬取所有配置用户 — nodriver 共享浏览器"""
+        """爬取所有配置用户 — nodriver 每5用户重启防WAF"""
         max_articles = max_articles or self.config.get('crawler', {}).get('max_articles', 20)
+        restart_every = self.config.get('crawler', {}).get('browser_restart_interval', 5)
 
         stats = {
             'total_users': len(self.accounts),
@@ -586,6 +609,11 @@ class XueqiuCrawlerNodriver:
             stats['total_new'] += result.get('new_articles', 0)
             stats['total_saved'] += result.get('saved_articles', 0)
             stats['users'].append(result)
+
+            # 每 N 个用户重启浏览器（防 WAF 累积）
+            if (i + 1) % restart_every == 0 and i < len(self.accounts) - 1:
+                self.logger.info(f"🔄 重启浏览器（已处理 {i+1} 个用户）...")
+                await self._reconnect_browser()
 
             # 用户间延迟
             if i < len(self.accounts) - 1:
