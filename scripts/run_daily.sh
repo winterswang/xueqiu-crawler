@@ -65,7 +65,7 @@ cd "$PROJECT_DIR"
 
 # 1. 检查登录态
 echo "[1/4] 检查登录态..." >> "$LOG_FILE"
-/usr/bin/python3 scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（Playwright 将直接尝试）" >> "$LOG_FILE"
+/usr/bin/python3 scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（nodriver 将直接尝试）" >> "$LOG_FILE"
 
 # 2. 爬取新文章（nodriver — 绕过阿里云 WAF）
 echo "[2/4] 爬取新文章（nodriver）..." >> "$LOG_FILE"
