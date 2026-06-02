@@ -1,5 +1,5 @@
 #!/bin/bash
-# 雪球爬虫完整流程 v7 - Playwright 版本（4 步流水线 + 资源清理 + 内存防护）
+# 雪球爬虫完整流程 v8 - nodriver 版本（4 步流水线 + WAF 绕过 + 内存防护）
 # 凭证通过 .env 文件或环境变量加载（见 .env.example）
 
 set -e
@@ -12,11 +12,14 @@ DATE=$(date +%Y-%m-%d)
 
 # 资源清理函数：防止 OOM（僵尸 Chromium 进程）
 cleanup_chromium() {
-    # 杀掉所有残留的 Chromium headless shell 和 Playwright driver
+    # nodriver 使用 google-chrome，Playwright 使用 chromium_headless_shell
+    pkill -f "google-chrome.*headless" 2>/dev/null || true
     pkill -f "chromium_headless_shell" 2>/dev/null || true
     pkill -f "playwright/driver" 2>/dev/null || true
-    # 等待进程退出
     sleep 1
+  
+    # 清理 nodriver 临时 profile（超过 1 小时的）
+    find /root/.cache/openclaw -maxdepth 1 -name 'uc_*' -type d -mmin +60 -exec rm -rf {} \; 2>/dev/null || true
 }
 
 # 加载 .env 文件（如有）— 强制导出所有变量
@@ -53,7 +56,7 @@ echo $$ > "$LOCKFILE"
 trap 'rm -f "$LOCKFILE"; cleanup_chromium' EXIT
 
 echo "========================================" >> "$LOG_FILE"
-echo "[$(date)] 开始执行雪球爬虫流程 v7 (Playwright)" >> "$LOG_FILE"
+echo "[$(date)] 开始执行雪球爬虫流程 v8 (nodriver)" >> "$LOG_FILE"
 
 # 确保日志目录存在
 mkdir -p "$PROJECT_DIR/logs"
@@ -64,12 +67,12 @@ cd "$PROJECT_DIR"
 echo "[1/4] 检查登录态..." >> "$LOG_FILE"
 /usr/bin/python3 scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（Playwright 将直接尝试）" >> "$LOG_FILE"
 
-# 2. 爬取新文章（Playwright）
-echo "[2/4] 爬取新文章（Playwright）..." >> "$LOG_FILE"
-/usr/bin/python3 scripts/crawler.py --all --max 20 >> "$LOG_FILE" 2>&1
+# 2. 爬取新文章（nodriver — 绕过阿里云 WAF）
+echo "[2/4] 爬取新文章（nodriver）..." >> "$LOG_FILE"
+/usr/bin/python3 scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
 
-# 爬取完成后立即清理 Chromium，释放内存供后续 AI 分析使用
-echo "[清理] 释放 Playwright 浏览器资源..." >> "$LOG_FILE"
+# 爬取完成后立即清理 Chrome，释放内存供后续 AI 分析使用
+echo "[清理] 释放浏览器资源..." >> "$LOG_FILE"
 cleanup_chromium
 
 # 3. 生成分析报告（MINIMAX_API_KEY 从 .env 或环境变量读取）
