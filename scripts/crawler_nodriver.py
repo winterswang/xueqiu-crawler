@@ -134,14 +134,28 @@ class XueqiuCrawlerNodriver:
                     article_ids.add(article.get('article_id'))
         return article_ids
 
-    def _random_delay(self):
+    async def _random_delay(self):
         delay_min = self.config.get('crawler', {}).get('delay_min', 2)
         delay_max = self.config.get('crawler', {}).get('delay_max', 5)
         delay = random.uniform(delay_min, delay_max)
         self.logger.debug(f"等待 {delay:.1f} 秒...")
-        time.sleep(delay)
+        await self.tab.sleep(delay) if self.tab else await asyncio.sleep(delay)
 
     # ============ nodriver 浏览器管理 ============
+
+    async def _close_browser(self):
+        """安全关闭浏览器"""
+        if self.browser is None:
+            return
+        try:
+            result = self.browser.stop()
+            if result is not None and hasattr(result, '__await__'):
+                await result
+        except Exception as e:
+            self.logger.debug(f"关闭浏览器异常(非关键): {e}")
+        finally:
+            self.browser = None
+            self.tab = None
 
     async def _start_browser(self):
         """启动 nodriver 浏览器"""
@@ -166,25 +180,11 @@ class XueqiuCrawlerNodriver:
         self.tab = await self.browser.get(url)
         await self.tab.sleep(wait_seconds)
 
-    async def _eval(self, js: str):
-        """执行 JS 并返回结果"""
-        return await self.tab.evaluate(js)
-
     async def _query_text(self, selector: str) -> Optional[str]:
         """获取元素文本"""
         try:
             result = await self.tab.evaluate(
                 f"(document.querySelector('{selector}')?.innerText || '').trim()"
-            )
-            return result if result else None
-        except Exception:
-            return None
-
-    async def _query_html(self, selector: str) -> Optional[str]:
-        """获取元素 outerHTML"""
-        try:
-            result = await self.tab.evaluate(
-                f"document.querySelector('{selector}')?.outerHTML || ''"
             )
             return result if result else None
         except Exception:
@@ -210,9 +210,9 @@ class XueqiuCrawlerNodriver:
             return True
         return False
 
-    async def _wait_for_selector(self, selector: str, timeout: int = 15000):
+    async def _wait_for_selector(self, selector: str, timeout_seconds: float = 15.0):
         """等待选择器出现"""
-        deadline = time.time() + timeout / 1000
+        deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             count = await self.tab.evaluate(
                 f"document.querySelectorAll('{selector}').length"
@@ -238,16 +238,21 @@ class XueqiuCrawlerNodriver:
             return {}
 
     async def _inject_cookies(self):
-        """向浏览器注入 cookies（通过首页 set-cookie）"""
+        """注入 cookies（nodriver Chrome 自带 cookie jar，JS 注入仅限非 httpOnly）"""
         cookies = self._load_cookies_dict()
         if not cookies:
             return
-        for name, value in cookies.items():
-            js = f"document.cookie = '{name}={value}; domain=.xueqiu.com; path=/; SameSite=Lax'"
-            try:
-                await self.tab.evaluate(js)
-            except Exception:
-                pass  # httpOnly cookies 无法通过 JS 设置，但 nodriver 已有 cookie jar
+        # nodriver 的 Chrome 使用真实浏览器 profile，cookie jar 已自动管理
+        # JS 注入仅能设置非 httpOnly 的 cookie（如 acw_tc、设备 ID 等）
+        try:
+            cookie_pairs = '; '.join(
+                f'{k}={v}' for k, v in cookies.items()
+                if k not in ('xq_a_token', 'xq_r_token', 'xq_id_token', 'u')
+            )
+            if cookie_pairs:
+                await self.tab.evaluate(f"document.cookie = '{cookie_pairs}; domain=.xueqiu.com; path=/; SameSite=Lax'")
+        except Exception:
+            pass
         self.logger.info(f"已注入 {len(cookies)} 个 cookies")
 
     # ============ 用户相关 ============
@@ -301,7 +306,7 @@ class XueqiuCrawlerNodriver:
         articles = []
 
         # 等待时间线加载
-        found = await self._wait_for_selector('.timeline__item', timeout=15000)
+        found = await self._wait_for_selector('.timeline__item', timeout_seconds=15)
         if not found:
             self.logger.warning(f"未找到 .timeline__item (可能被WAF拦截)")
             return articles
@@ -498,7 +503,7 @@ class XueqiuCrawlerNodriver:
                 if not article['link']:
                     continue
 
-                self._random_delay()
+                await self._random_delay()
                 self.logger.info(f"详情 [{i+1}/{min(len(new_articles), max_articles)}]: {article['link'][-30:]}")
 
                 detail = await self._parse_article_detail(article['link'])
@@ -589,10 +594,7 @@ class XueqiuCrawlerNodriver:
                 self.logger.info(f"用户间延迟 {delay:.1f}s...")
                 await self.tab.sleep(delay)
 
-        try:
-            await self.browser.stop()
-        except Exception:
-            pass
+        await self._close_browser()
 
         self.logger.info(f"\n{'='*50}")
         self.logger.info(f"爬取完成!")
@@ -634,11 +636,7 @@ class XueqiuCrawlerNodriver:
             self.config.get('crawler', {}).get('max_articles', 20)
         )
 
-        try:
-            await self.browser.stop()
-        except Exception:
-            pass
-
+        await self._close_browser()
         return result
 
 
@@ -664,7 +662,10 @@ async def main_async():
 
 
 def main():
-    asyncio.run(main_async())
+    try:
+        asyncio.run(main_async())
+    except RuntimeError:
+        pass  # nodriver subprocess cleanup (harmless)
 
 
 if __name__ == '__main__':
