@@ -29,6 +29,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import nodriver as uc
 
+
+class WafDetectedError(Exception):
+    """WAF 检测异常 — 用于触发浏览器重启"""
+    pass
+
 # 默认常量
 DEFAULT_MAX_ARTICLES = 20
 MAX_RETRIES = 3
@@ -370,11 +375,10 @@ class XueqiuCrawlerNodriver:
         try:
             await self._navigate(url, wait_seconds=3)
 
-            # WAF 检测
+            # WAF 检测 — 触发浏览器重启
             if await self._detect_waf():
-                self.logger.warning(f"文章详情页触发 WAF，跳过: {url[-30:]}")
-                detail['title'] = 'WAF_BLOCKED'
-                return detail
+                self.logger.warning(f"文章详情页触发 WAF: {url[-30:]}")
+                raise WafDetectedError(f"WAF detected at detail page: {url[-30:]}")
 
             # 从页面标题提取
             title = await self._page_title()
@@ -469,7 +473,7 @@ class XueqiuCrawlerNodriver:
         user_name = account.get('name', user_id)
         url = account.get('url', f'https://xueqiu.com/u/{user_id}')
 
-        result = {'user_id': user_id, 'name': user_name, 'new_articles': 0, 'saved_articles': 0}
+        result = {'user_id': user_id, 'name': user_name, 'new_articles': 0, 'saved_articles': 0, 'waf_triggered': False}
 
         try:
             # 访问首页 + 用户页
@@ -520,7 +524,13 @@ class XueqiuCrawlerNodriver:
                 await self._random_delay()
                 self.logger.info(f"详情 [{i+1}/{min(len(new_articles), max_articles)}]: {article['link'][-30:]}")
 
-                detail = await self._parse_article_detail(article['link'])
+                try:
+                    detail = await self._parse_article_detail(article['link'])
+                except WafDetectedError:
+                    self.logger.warning(f"详情页 WAF 触发，中止当前用户剩余 {min(len(new_articles), max_articles) - i} 篇文章")
+                    result['waf_triggered'] = True
+                    break
+
                 if not detail:
                     continue
 
@@ -563,6 +573,9 @@ class XueqiuCrawlerNodriver:
             result['new_articles'] = len(articles)
             result['saved_articles'] = len(articles)
 
+        except WafDetectedError:
+            self.logger.warning(f"WAF 触发，中止用户: {user_name}")
+            result['waf_triggered'] = True
         except Exception as e:
             self.logger.error(f"爬取用户 {user_id} 失败: {e}")
             import traceback
@@ -573,11 +586,16 @@ class XueqiuCrawlerNodriver:
 
     async def _reconnect_browser(self):
         """重启浏览器 — 防止 WAF 累积"""
-        await self._close_browser()
-        await asyncio.sleep(2)
-        await self._start_browser()
-        await self._warmup()
-        await self._inject_cookies()
+        try:
+            await self._close_browser()
+            await asyncio.sleep(2)
+            await self._start_browser()
+            await self._warmup()
+            await self._inject_cookies()
+            self.logger.info("浏览器重启完成")
+        except Exception as e:
+            self.logger.error(f"浏览器重启失败: {e}")
+            raise
 
     async def crawl_all_users(self, max_articles: int = None) -> dict:
         """爬取所有配置用户 — nodriver 每5用户重启防WAF"""
@@ -611,7 +629,13 @@ class XueqiuCrawlerNodriver:
             stats['users'].append(result)
 
             # 每 N 个用户重启浏览器（防 WAF 累积）
-            if (i + 1) % restart_every == 0 and i < len(self.accounts) - 1:
+            # 或 WAF 触发后立即重启
+            should_restart = (i + 1) % restart_every == 0 and i < len(self.accounts) - 1
+            if result.get('waf_triggered') and i < len(self.accounts) - 1:
+                self.logger.info(f"⚠️ 检测到 WAF，立即重启浏览器...")
+                should_restart = True
+
+            if should_restart:
                 self.logger.info(f"🔄 重启浏览器（已处理 {i+1} 个用户）...")
                 await self._reconnect_browser()
 
