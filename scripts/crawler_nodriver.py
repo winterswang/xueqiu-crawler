@@ -184,7 +184,7 @@ class XueqiuCrawlerNodriver:
         """获取元素文本"""
         try:
             result = await self.tab.evaluate(
-                f"(document.querySelector('{selector}')?.innerText || '').trim()"
+                f"(function(){{ var el = document.querySelector('{selector}'); return el && el.innerText ? el.innerText.trim() : ''; }})()"
             )
             return result if result else None
         except Exception:
@@ -648,21 +648,21 @@ class XueqiuCrawlerNodriver:
 
         return stats
 
-    async def crawl_user(self, user_id: str) -> List[dict]:
+    async def crawl_user(self, user_id: str, max_articles: int = None) -> dict:
         """爬取单个用户"""
+        if max_articles is None:
+            max_articles = self.config.get('crawler', {}).get('max_articles', 20)
+
         account = next((a for a in self.accounts if a.get('id') == user_id), None)
         if not account:
             self.logger.error(f"未找到用户: {user_id}")
-            return []
+            return {}
 
         await self._start_browser()
         await self._warmup()
         await self._inject_cookies()
 
-        result = await self._crawl_one_user(
-            account,
-            self.config.get('crawler', {}).get('max_articles', 20)
-        )
+        result = await self._crawl_one_user(account, max_articles)
 
         await self._close_browser()
         return result
@@ -682,7 +682,7 @@ async def main_async():
     crawler = XueqiuCrawlerNodriver(args.config)
 
     if args.user:
-        result = await crawler.crawl_user(args.user)
+        result = await crawler.crawl_user(args.user, max_articles=args.max)
         print(f"\n结果: {result}")
     else:
         result = await crawler.crawl_all_users(max_articles=args.max)
