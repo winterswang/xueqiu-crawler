@@ -300,8 +300,8 @@ class ArticleAnalyzer:
                     self.client = None
             else:
                 self.logger.warning(
-                    f"MiniMax 客户端未初始化: api_key={"有" if self.api_key else "无"}, "
-                    f"Anthropic={"可用" if Anthropic else "不可用"}"
+                    f"MiniMax 客户端未初始化: api_key={'有' if self.api_key else '无'}, "
+                    f"Anthropic={'可用' if Anthropic else '不可用'}"
                 )
         elif self.provider == 'aliyun' and self.api_key:
             self.client = OpenAIClient(

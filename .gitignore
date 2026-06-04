@@ -35,3 +35,7 @@ data/index.json
 data/*/
 data/daily_reports/
 data/history/
+
+# Runtime artifacts
+output/
+config/xueqiu_cookies.json
