@@ -39,3 +39,8 @@ data/history/
 # Runtime artifacts
 output/
 config/xueqiu_cookies.json
+
+# Local runtime artifacts
+DAILY_LOG.md
+data/*.db
+data/*.bak
