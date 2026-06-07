@@ -41,8 +41,28 @@ except ImportError:
 
 
 class WafDetectedError(Exception):
-    """WAF 检测异常 — 用于触发浏览器重启"""
+    """Raised when the browser hits a WAF block (slider or redirect)."""
     pass
+
+
+# 405/WAF error page patterns — shared with opencli_extractor._ERROR_PAGE_PATTERNS
+_ERROR_CONTENT_PATTERNS = [
+    "您的访问被阻断",
+    "request has been blocked",
+    "可能对网站造成安全威胁",
+    "potential threats to the server",
+    "访问被拦截",
+]
+_ERROR_TITLE_PATTERNS = {"405", "403"}
+
+
+def _is_content_error(title: str, content: str) -> bool:
+    """Detect if title or content is a WAF/error page, not real article content."""
+    title_stripped = title.strip()
+    if title_stripped in _ERROR_TITLE_PATTERNS or title_stripped == "":
+        return True
+    head = content[:500]
+    return any(p in head for p in _ERROR_CONTENT_PATTERNS)
 
 # 默认常量
 DEFAULT_MAX_ARTICLES = 20
@@ -555,6 +575,13 @@ class XueqiuCrawlerNodriver:
                 # 跳过无内容文章
                 if not merged['content']:
                     self.logger.info(f"跳过无内容: {merged['title'][:30]}")
+                    continue
+
+                # 跳过 WAF/错误页面（405、访问阻断等）
+                # opencli browser extract 失败后回退到 API 层 article['text']，
+                # 其预览文本可能包含 405 错误页内容，需在此兜底检测
+                if _is_content_error(merged['title'], merged['content']):
+                    self.logger.warning(f"跳过错误页面: {merged['title'][:30]} ({merged['article_id']})")
                     continue
 
                 # 去重检查
