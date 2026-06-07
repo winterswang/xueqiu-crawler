@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 
 BROWSER_SESSION_PREFIX = "xq-crawler"
 
+# Patterns that indicate the page is a WAF/error page, not real article content
+_ERROR_PAGE_PATTERNS = [
+    "您的访问被阻断",
+    "request has been blocked",
+    "可能对网站造成安全威胁",
+    "potential threats to the server",
+    "405",
+    "访问被拦截",
+]
+
 
 def is_available() -> bool:
     """Check if opencli is installed and the Chrome extension is connected."""
@@ -90,41 +100,65 @@ def get_user_articles(user_id: str, count: int = 20) -> list[dict]:
         return []
 
 
-def get_article_content(url: str, session_name: str = "xq-crawler") -> dict:
+def get_article_content(url: str, session_name: str = "xq-crawler", max_retries: int = 2) -> dict:
     """Extract full article content from a xueqiu article URL.
 
     Returns dict with keys: url, title, content (markdown).
+    If the page is a WAF/error page, retries up to max_retries times.
     """
     result = {"url": url, "title": "", "content": ""}
 
-    # Open article page in browser session
-    open_result = _run("browser", session_name, "open", url, timeout=30)
-    if open_result.returncode != 0:
-        logger.error(f"Browser open failed: {open_result.stderr.strip()[:200]}")
-        return result
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            logger.warning(f"Retry {attempt}/{max_retries} for {url[-30:]}")
+            time.sleep(3)
 
-    # Wait for page to render
-    time.sleep(4)
+        # Open article page in browser session
+        open_result = _run("browser", session_name, "open", url, timeout=30)
+        if open_result.returncode != 0:
+            logger.error(f"Browser open failed: {open_result.stderr.strip()[:200]}")
+            continue
 
-    # Get title
-    title_result = _run("browser", session_name, "get", "title", timeout=10)
-    if title_result.returncode == 0:
-        raw_title = title_result.stdout.strip()
-        # Strip " - 雪球" suffix
-        result["title"] = re.sub(r"\s*[-–—]\s*雪球\s*$", "", raw_title).strip()
+        # Wait for page to render
+        time.sleep(4)
 
-    # Extract markdown content
-    extract_result = _run("browser", session_name, "extract", timeout=15)
-    if extract_result.returncode == 0:
-        cleaned = _clean_output(extract_result.stdout)
-        try:
-            data = json.loads(cleaned)
-            result["content"] = data.get("content", "")
-            result["title"] = result["title"] or data.get("title", "").replace(" - 雪球", "")
-        except json.JSONDecodeError:
-            logger.error(f"Failed to parse extract JSON for {url}")
+        # Get title
+        title_result = _run("browser", session_name, "get", "title", timeout=10)
+        if title_result.returncode == 0:
+            raw_title = title_result.stdout.strip()
+            result["title"] = re.sub(r"\s*[-–—]\s*雪球\s*$", "", raw_title).strip()
+
+        # Extract markdown content
+        extract_result = _run("browser", session_name, "extract", timeout=15)
+        if extract_result.returncode == 0:
+            cleaned = _clean_output(extract_result.stdout)
+            try:
+                data = json.loads(cleaned)
+                result["content"] = data.get("content", "")
+                result["title"] = result["title"] or data.get("title", "").replace(" - 雪球", "")
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse extract JSON for {url}")
+                continue
+
+        # Check if content is an error page
+        if _is_error_page(result["content"]):
+            logger.warning(f"Error page detected for {url[-30:]} (attempt {attempt+1})")
+            result["content"] = ""
+            result["title"] = ""
+            continue
+
+        # Success — content looks good
+        break
 
     return result
+
+
+def _is_error_page(content: str) -> bool:
+    """Check if extracted content is a WAF/error page."""
+    if len(content) < 100:
+        return False
+    head = content[:500].lower()
+    return any(p.lower() in head for p in _ERROR_PAGE_PATTERNS)
 
 
 def close_session(session_name: str = "xq-crawler"):
