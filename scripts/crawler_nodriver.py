@@ -52,8 +52,10 @@ _ERROR_CONTENT_PATTERNS = [
     "可能对网站造成安全威胁",
     "potential threats to the server",
     "访问被拦截",
+    "滑动验证",
+    "请按住滑块",
 ]
-_ERROR_TITLE_PATTERNS = {"405", "403"}
+_ERROR_TITLE_PATTERNS = {"405", "403", "滑动验证页面"}
 
 
 def _is_content_error(title: str, content: str) -> bool:
