@@ -641,6 +641,43 @@ class ArticleAnalyzer:
         except Exception as e:
             strategies_failed.append(f"cleaned: {e}")
 
+        # Strategy 4: retry — ask LLM to fix its own broken JSON
+        if strategies_failed:
+            try:
+                fixed_response = self._retry_json_fix(response, article)
+                if fixed_response:
+                    # Re-run strategies 1-3 on corrected response
+                    try:
+                        json_match = re.search(r'```json\s*(\{.*?\})\s*```', fixed_response, re.DOTALL)
+                        if json_match:
+                            result = json.loads(json_match.group(1))
+                            self.stats["parse_success"] += 1
+                            self.logger.debug(f"JSON解析成功(strategy=retry+code_block): {title[:40]}")
+                            return result
+                    except Exception:
+                        pass
+                    try:
+                        decoder = json.JSONDecoder()
+                        start = fixed_response.find('{')
+                        if start != -1:
+                            obj, _ = decoder.raw_decode(fixed_response[start:])
+                            self.stats["parse_success"] += 1
+                            self.logger.debug(f"JSON解析成功(strategy=retry+raw_decode): {title[:40]}")
+                            return obj
+                    except Exception:
+                        pass
+                    try:
+                        cleaned = re.sub(r'^[\s\S]*?```json\s*', '', fixed_response)
+                        cleaned = re.sub(r'\s*```[\s\S]*$', '', cleaned)
+                        result = json.loads(cleaned)
+                        self.stats["parse_success"] += 1
+                        self.logger.debug(f"JSON解析成功(strategy=retry+cleaned): {title[:40]}")
+                        return result
+                    except Exception as e:
+                        strategies_failed.append(f"retry: {e}")
+            except Exception as e:
+                strategies_failed.append(f"retry: {e}")
+
         # All strategies failed — log full diagnostics and return graceful fallback
         self.stats["parse_failed"] += 1
         strategy_detail = "; ".join(strategies_failed)
@@ -681,7 +718,39 @@ class ArticleAnalyzer:
             items = re.findall(r'"([^"]+)"', m.group(1))
             stocks.extend(items[:5])
         return stocks
-    
+
+    def _retry_json_fix(self, broken_response: str, article: dict) -> Optional[str]:
+        """Strategy 4: ask LLM to fix its own broken JSON.
+
+        Sends a short correction prompt with the original malformed response,
+        then returns the corrected text. Returns None if retry fails or times out.
+        """
+        title = (article or {}).get('title', '未知文章')
+        retry_prompt = (
+            "The following JSON has formatting errors that prevent parsing. "
+            "Fix the JSON and return ONLY the corrected JSON object, "
+            "no markdown fences or other text:\n\n"
+            + broken_response
+        )
+        try:
+            if self.provider == 'minimax':
+                fixed = self._call_minimax_with_retry(retry_prompt, f"fix:{title[:30]}")
+            elif self.client:
+                completion = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[{"role": "user", "content": retry_prompt}],
+                    max_tokens=8192,
+                )
+                fixed = completion.choices[0].message.content
+            else:
+                return None
+            self.stats["retry_count"] += 1
+            self.logger.info(f"JSON解析retry: {title[:40]}")
+            return fixed
+        except Exception as e:
+            self.logger.warning(f"JSON retry 失败: {title[:40]}: {e}")
+            return None
+
     def get_stats(self) -> dict:
         """获取分析统计"""
         return dict(self.stats)
