@@ -29,10 +29,42 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import nodriver as uc
 
+# OpenCLI fallback (zero-WAF via Chrome extension)
+try:
+    from scripts.opencli_extractor import is_available as _opencli_available
+    from scripts.opencli_extractor import OpencliExtractor
+    from scripts.opencli_extractor import get_user_articles as _opencli_get_list
+    _HAS_OPENCLI = True
+except ImportError:
+    _HAS_OPENCLI = False
+    def _opencli_available() -> bool: return False
+
 
 class WafDetectedError(Exception):
-    """WAF 检测异常 — 用于触发浏览器重启"""
+    """Raised when the browser hits a WAF block (slider or redirect)."""
     pass
+
+
+# 405/WAF error page patterns — shared with opencli_extractor._ERROR_PAGE_PATTERNS
+_ERROR_CONTENT_PATTERNS = [
+    "您的访问被阻断",
+    "request has been blocked",
+    "可能对网站造成安全威胁",
+    "potential threats to the server",
+    "访问被拦截",
+    "滑动验证",
+    "请按住滑块",
+]
+_ERROR_TITLE_PATTERNS = {"405", "403", "滑动验证页面"}
+
+
+def _is_content_error(title: str, content: str) -> bool:
+    """Detect if title or content is a WAF/error page, not real article content."""
+    title_stripped = title.strip()
+    if title_stripped in _ERROR_TITLE_PATTERNS or title_stripped == "":
+        return True
+    head = content[:500]
+    return any(p in head for p in _ERROR_CONTENT_PATTERNS)
 
 # 默认常量
 DEFAULT_MAX_ARTICLES = 20
@@ -73,6 +105,15 @@ class XueqiuCrawlerNodriver:
         self.timeout = self.config.get('crawler', {}).get('timeout', 60) * 1000
         self.browser = None
         self.tab = None
+
+        # OpenCLI availability check
+        self._use_opencli = _HAS_OPENCLI and _opencli_available()
+        if self._use_opencli:
+            self.logger.info("✅ OpenCLI 可用，启用 Chrome 扩展模式（零 WAF）")
+            self._opencli = OpencliExtractor()
+        else:
+            self.logger.info("ℹ️ OpenCLI 不可用，使用 nodriver 模式")
+            self._opencli = None
 
     # ============ Config/Index (同 Playwright 版本) ============
 
@@ -467,6 +508,121 @@ class XueqiuCrawlerNodriver:
 
     # ============ 核心爬取逻辑 ============
 
+    async def _crawl_one_user_opencli(self, account: dict, max_articles: int) -> dict:
+        """爬取单个用户 — OpenCLI 模式（Chrome 扩展，零 WAF）"""
+        user_id = account.get('id')
+        user_name = account.get('name', user_id)
+
+        assert self._opencli is not None, "OpenCLI extractor not initialized"
+        assert user_id is not None, "Account missing user_id"
+
+        result = {'user_id': user_id, 'name': user_name, 'new_articles': 0, 'saved_articles': 0}
+
+        try:
+            # 1. 获取文章列表（API 级别，不走浏览器导航）
+            article_list = _opencli_get_list(str(user_id), count=max_articles)
+            self.logger.info(f"OpenCLI 获取到 {len(article_list)} 篇文章")
+
+            # 2. 增量去重（复用现有逻辑）
+            history_ids = self._get_history_article_ids(user_id)
+            indexed_ids = {
+                info.get('article_id', '')
+                for info in self.index.get('articles', {}).values()
+                if info.get('user_id') == user_id
+            }
+            user_data_dir = self.data_dir / user_id
+            filesystem_ids = set()
+            if user_data_dir.exists():
+                for f in user_data_dir.glob('*.md'):
+                    filesystem_ids.add(f.stem)
+            all_known = history_ids | indexed_ids | filesystem_ids
+
+            new_articles = [a for a in article_list
+                            if a.get('article_id') and a['article_id'] not in all_known]
+            self.logger.info(f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇）")
+
+            # 3. 提取正文并保存
+            articles_saved = []
+            for i, article in enumerate(new_articles[:max_articles]):
+                url = article.get('url', '')
+                if not url:
+                    continue
+
+                self.logger.info(f"OpenCLI 详情 [{i+1}/{min(len(new_articles), max_articles)}]: {url[-30:]}")
+
+                # 提取正文（浏览器级别导航）
+                detail = self._opencli.get_article_content(url)
+
+                # 跳过非专栏/回复类文章
+                title = detail.get('title', article.get('title', ''))
+                if title.startswith('回复@'):
+                    self.logger.info(f"跳过回复: {title[:30]}...")
+                    continue
+
+                # 合并文章信息
+                merged = {
+                    'article_id': article.get('article_id', ''),
+                    'title': detail.get('title') or article.get('title', ''),
+                    'author': article.get('author', user_name),
+                    'publish_time': article.get('time', ''),
+                    'content': detail.get('content', article.get('text', '')),
+                    'likes': article.get('likes', 0),
+                    'comments': article.get('replies', 0),
+                    'url': url,
+                    'link': url,
+                    'crawl_time': datetime.now().isoformat(),
+                    'is_column': True,
+                }
+
+                # 跳过无内容文章
+                if not merged['content']:
+                    self.logger.info(f"跳过无内容: {merged['title'][:30]}")
+                    continue
+
+                # 跳过 WAF/错误页面（405、访问阻断等）
+                # opencli browser extract 失败后回退到 API 层 article['text']，
+                # 其预览文本可能包含 405 错误页内容，需在此兜底检测
+                if _is_content_error(merged['title'], merged['content']):
+                    self.logger.warning(f"跳过错误页面: {merged['title'][:30]} ({merged['article_id']})")
+                    continue
+
+                # 去重检查
+                article_id = merged['article_id']
+                index_key = f"{user_id}_{article_id}"
+                if index_key in self.index.get('articles', {}):
+                    self.logger.info(f"已存在，跳过: {article_id}")
+                    continue
+
+                # 保存为 Markdown
+                filepath = self._save_as_markdown(merged, user_id)
+                merged['filepath'] = filepath
+
+                # 更新索引
+                self.index['articles'][index_key] = {
+                    'article_id': article_id, 'user_id': user_id,
+                    'title': merged['title'],
+                    'author': merged['author'],
+                    'publish_time': merged['publish_time'],
+                    'crawl_time': merged['crawl_time'],
+                    'filepath': filepath,
+                }
+                self._save_index()
+                articles_saved.append(merged)
+
+            # 4. 保存历史
+            if articles_saved:
+                self._save_history(user_id, articles_saved)
+
+            result['new_articles'] = len(articles_saved)
+            result['saved_articles'] = len(articles_saved)
+            self.logger.info(f"用户 {user_name}: 保存 {len(articles_saved)} 篇文章")
+
+        except Exception as e:
+            self.logger.error(f"OpenCLI 爬取失败: {e}", exc_info=True)
+            result['error'] = str(e)
+
+        return result
+
     async def _crawl_one_user(self, account: dict, max_articles: int) -> dict:
         """爬取单个用户（在共享浏览器上下文中）"""
         user_id = account.get('id')
@@ -564,7 +720,7 @@ class XueqiuCrawlerNodriver:
                     'author': article.get('author', ''),
                     'publish_time': article.get('publish_time', ''),
                     'crawl_time': article.get('crawl_time'),
-                    'file_path': filepath, 'filepath': filepath,
+                    'filepath': filepath,
                 }
                 self._save_index()
                 articles.append(article)
@@ -598,55 +754,76 @@ class XueqiuCrawlerNodriver:
             raise
 
     async def crawl_all_users(self, max_articles: int = None) -> dict:
-        """爬取所有配置用户 — nodriver 每5用户重启防WAF"""
+        """爬取所有配置用户 — OpenCLI 优先，nodriver 兜底"""
         max_articles = max_articles or self.config.get('crawler', {}).get('max_articles', 20)
-        restart_every = self.config.get('crawler', {}).get('browser_restart_interval', 5)
 
         stats = {
             'total_users': len(self.accounts),
             'total_new': 0, 'total_saved': 0,
-            'users': []
+            'users': [], 'mode': 'opencli' if self._use_opencli else 'nodriver',
         }
 
-        await self._start_browser()
-        await self._warmup()
-        await self._inject_cookies()
+        if self._use_opencli:
+            # ── OpenCLI 模式：无需浏览器启动/warmup/cookie注入 ──
+            self.logger.info(f"🚀 OpenCLI 模式启动，共 {len(self.accounts)} 个用户")
 
-        for i, account in enumerate(self.accounts):
-            user_id = account.get('id')
-            user_name = account.get('name', user_id)
+            for i, account in enumerate(self.accounts):
+                user_id = account.get('id')
+                user_name = account.get('name', user_id)
+                if not user_id:
+                    continue
 
-            if not user_id:
-                self.logger.warning(f"账号配置不完整: {account}")
-                continue
+                self.logger.info(f"\n{'='*50}")
+                self.logger.info(f"爬取 [{i+1}/{len(self.accounts)}]: {user_name} ({user_id})")
 
-            self.logger.info(f"\n{'='*50}")
-            self.logger.info(f"爬取 [{i+1}/{len(self.accounts)}]: {user_name} ({user_id})")
+                result = await self._crawl_one_user_opencli(account, max_articles)
+                stats['total_new'] += result.get('new_articles', 0)
+                stats['total_saved'] += result.get('saved_articles', 0)
+                stats['users'].append(result)
 
-            result = await self._crawl_one_user(account, max_articles)
-            stats['total_new'] += result.get('new_articles', 0)
-            stats['total_saved'] += result.get('saved_articles', 0)
-            stats['users'].append(result)
+            self._opencli.close()
+        else:
+            # ── Nodriver 模式：原有逻辑 ──
+            restart_every = self.config.get('crawler', {}).get('browser_restart_interval', 5)
 
-            # 每 N 个用户重启浏览器（防 WAF 累积）
-            # 或 WAF 触发后立即重启
-            should_restart = (i + 1) % restart_every == 0 and i < len(self.accounts) - 1
-            if result.get('waf_triggered') and i < len(self.accounts) - 1:
-                self.logger.info(f"⚠️ 检测到 WAF，立即重启浏览器...")
-                should_restart = True
+            await self._start_browser()
+            await self._warmup()
+            await self._inject_cookies()
 
-            if should_restart:
-                self.logger.info(f"🔄 重启浏览器（已处理 {i+1} 个用户）...")
-                await self._reconnect_browser()
+            for i, account in enumerate(self.accounts):
+                user_id = account.get('id')
+                user_name = account.get('name', user_id)
 
-            # 用户间延迟
-            if i < len(self.accounts) - 1:
-                base_delay = self.config.get('crawler', {}).get('delay_min', 2)
-                delay = base_delay + random.uniform(0, base_delay)
-                self.logger.info(f"用户间延迟 {delay:.1f}s...")
-                await self.tab.sleep(delay)
+                if not user_id:
+                    self.logger.warning(f"账号配置不完整: {account}")
+                    continue
 
-        await self._close_browser()
+                self.logger.info(f"\n{'='*50}")
+                self.logger.info(f"爬取 [{i+1}/{len(self.accounts)}]: {user_name} ({user_id})")
+
+                result = await self._crawl_one_user(account, max_articles)
+                stats['total_new'] += result.get('new_articles', 0)
+                stats['total_saved'] += result.get('saved_articles', 0)
+                stats['users'].append(result)
+
+                # 每 N 个用户重启浏览器（防 WAF 累积）
+                should_restart = (i + 1) % restart_every == 0 and i < len(self.accounts) - 1
+                if result.get('waf_triggered') and i < len(self.accounts) - 1:
+                    self.logger.info(f"⚠️ 检测到 WAF，立即重启浏览器...")
+                    should_restart = True
+
+                if should_restart:
+                    self.logger.info(f"🔄 重启浏览器（已处理 {i+1} 个用户）...")
+                    await self._reconnect_browser()
+
+                # 用户间延迟
+                if i < len(self.accounts) - 1:
+                    base_delay = self.config.get('crawler', {}).get('delay_min', 2)
+                    delay = base_delay + random.uniform(0, base_delay)
+                    self.logger.info(f"用户间延迟 {delay:.1f}s...")
+                    await self.tab.sleep(delay)
+
+            await self._close_browser()
 
         self.logger.info(f"\n{'='*50}")
         self.logger.info(f"爬取完成!")
