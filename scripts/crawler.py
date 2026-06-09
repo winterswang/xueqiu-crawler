@@ -463,6 +463,7 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
             'content': '',
             'likes': 0,
             'comments': 0,
+            'is_column': False,
         }
         
         try:
@@ -806,7 +807,6 @@ Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
                     'author': article.get('author', ''),
                     'publish_time': article.get('publish_time', ''),
                     'crawl_time': article.get('crawl_time'),
-                    'file_path': filepath,
                     'filepath': filepath,
                 }
                 # 增量保存索引：每篇文章写入后立即持久化，防止中途崩溃丢失

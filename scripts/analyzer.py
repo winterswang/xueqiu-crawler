@@ -47,7 +47,6 @@ except ImportError:
 def classify_stock_market(stock: str) -> str:
     """判断股票所属市场"""
     stock_clean = stock.strip()
-    import re
 
     # 港股格式: 00883.HK, 09988.HK, 3690.HK
     if '.HK' in stock_clean.upper() or '港股' in stock_clean:
@@ -73,7 +72,7 @@ def classify_stock_market(stock: str) -> str:
 
 def group_stocks_by_market(stocks: List[str]) -> dict:
     """将股票列表按市场分组"""
-    groups = {'A股': [], '港股': [], '美股': [], '其他': []}
+    groups = {'A股': [], '港股': [], '美股': [], '日股': [], '其他': []}
     for stock in stocks:
         market = classify_stock_market(stock)
         groups[market].append(stock)
