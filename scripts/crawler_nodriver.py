@@ -604,7 +604,7 @@ class XueqiuCrawlerNodriver:
                     'author': merged['author'],
                     'publish_time': merged['publish_time'],
                     'crawl_time': merged['crawl_time'],
-                    'file_path': filepath, 'filepath': filepath,
+                    'filepath': filepath,
                 }
                 self._save_index()
                 articles_saved.append(merged)
@@ -720,7 +720,7 @@ class XueqiuCrawlerNodriver:
                     'author': article.get('author', ''),
                     'publish_time': article.get('publish_time', ''),
                     'crawl_time': article.get('crawl_time'),
-                    'file_path': filepath, 'filepath': filepath,
+                    'filepath': filepath,
                 }
                 self._save_index()
                 articles.append(article)
