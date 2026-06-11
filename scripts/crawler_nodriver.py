@@ -803,7 +803,7 @@ class XueqiuCrawlerNodriver:
         self.logger.info("🔄 OpenCLI session 已旋转")
 
     async def _retry_skipped_articles(self, skipped: List[dict], max_rounds: int = None,
-                                      cooldown_seconds: int = None) -> int:
+                                      cooldown_seconds: int = None) -> tuple:
         """对被 WAF 拦截的文章进行多轮重试。
 
         主爬取结束后，部分文章可能因 session 累积 WAF 触发被跳过。
@@ -815,13 +815,13 @@ class XueqiuCrawlerNodriver:
             cooldown_seconds: 每轮间冷却时间 (默认 180s = 3min)
 
         Returns:
-            int: 重试成功保存的文章数
+            (saved_count, remaining_list): 成功保存数 + 仍未成功的文章列表
         """
         max_rounds = max_rounds or self.config.get('crawler', {}).get('retry_max_rounds', 3)
         cooldown_seconds = cooldown_seconds or self.config.get('crawler', {}).get('retry_cooldown_seconds', 180)
 
         if not skipped:
-            return 0
+            return (0, [])
 
         self.logger.info(f"📋 开始重试 {len(skipped)} 篇被跳过的文章")
         retried = 0
@@ -860,7 +860,7 @@ class XueqiuCrawlerNodriver:
         total = retried
         final_skipped = len(remaining)
         self.logger.info(f"重试完成: 成功 {total} 篇, 仍未成功 {final_skipped} 篇")
-        return total
+        return (total, remaining)
 
     async def crawl_all_users(self, max_articles: int = None) -> dict:
         """爬取所有配置用户 — OpenCLI 优先，nodriver 兜底"""
@@ -910,11 +910,18 @@ class XueqiuCrawlerNodriver:
             if all_skipped:
                 self.logger.info(f"\n{'='*50}")
                 self.logger.info(f"📋 主爬取完成，{len(all_skipped)} 篇被跳过，开始冷却重试...")
-                retried = await self._retry_skipped_articles(all_skipped)
+                retried, remaining = await self._retry_skipped_articles(all_skipped)
                 stats['total_new'] += retried
                 stats['total_saved'] += retried
                 if retried > 0:
                     self.logger.info(f"✅ 重试成功 {retried} 篇")
+
+                # 剩余未成功的保存到磁盘，供后续 cron 继续重试
+                if remaining:
+                    skipped_file = self.data_dir / '.skipped_articles.json'
+                    with open(skipped_file, 'w', encoding='utf-8') as f:
+                        json.dump(remaining, f, ensure_ascii=False)
+                    self.logger.info(f"💾 {len(remaining)} 篇仍未成功，已保存到 {skipped_file} 供后续重试")
 
             self._opencli.close()
         else:
@@ -1013,11 +1020,37 @@ async def main_async():
     parser.add_argument('--user', '-u', help='指定用户ID')
     parser.add_argument('--max', '-m', type=int, default=20, help='最大文章数')
     parser.add_argument('-a', '--all', action='store_true', help='爬取所有用户')
+    parser.add_argument('--retry-skipped', action='store_true',
+                        help='从磁盘加载上次跳过的文章重试（跨 cron 重试模式）')
     args = parser.parse_args()
 
     crawler = XueqiuCrawlerNodriver(args.config)
 
-    if args.user:
+    if args.retry_skipped:
+        # ── 跨 cron 重试模式 ──
+        skipped_file = crawler.data_dir / '.skipped_articles.json'
+        if not skipped_file.exists():
+            crawler.logger.info("没有待重试的文章")
+            return
+        with open(skipped_file, 'r', encoding='utf-8') as f:
+            skipped = json.load(f)
+        crawler.logger.info(f"📋 从磁盘加载 {len(skipped)} 篇待重试文章")
+
+        retried, remaining = await crawler._retry_skipped_articles(skipped)
+        crawler.logger.info(f"✅ 重试成功 {retried} 篇")
+
+        # 更新磁盘文件
+        if remaining:
+            with open(skipped_file, 'w', encoding='utf-8') as f:
+                json.dump(remaining, f, ensure_ascii=False)
+            crawler.logger.info(f"💾 {len(remaining)} 篇仍未成功，已更新 {skipped_file}")
+        else:
+            skipped_file.unlink(missing_ok=True)
+            crawler.logger.info("🎉 所有文章已成功爬取，已删除待重试文件")
+
+        if crawler._opencli:
+            crawler._opencli.close()
+    elif args.user:
         result = await crawler.crawl_user(args.user, max_articles=args.max)
         print(f"\n结果: {result}")
     else:
