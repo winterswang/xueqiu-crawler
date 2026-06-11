@@ -3,15 +3,17 @@
 # 凭证通过 .env 文件或环境变量加载（见 .env.example）
 #
 # 用法:
-#   bash scripts/run_daily.sh              # 完整流程（爬取 + 分析 + 发布）
-#   bash scripts/run_daily.sh --crawl-only # 仅爬取（不含分析/发布）
-#   bash scripts/run_daily.sh --skip-crawl # 跳过爬取（仅分析 + 发布）
+#   bash scripts/run_daily.sh               # 完整流程（爬取 + 分析 + 发布）
+#   bash scripts/run_daily.sh --crawl-only  # 仅爬取（不含分析/发布）
+#   bash scripts/run_daily.sh --retry-failed # 重试上次失败的账号
+#   bash scripts/run_daily.sh --skip-crawl  # 跳过爬取（仅分析 + 发布）
 
 set -e
 
 MODE="full"
 case "${1:-}" in
     --crawl-only) MODE="crawl-only" ;;
+    --retry-failed) MODE="retry-failed" ;;
     --skip-crawl) MODE="skip-crawl" ;;
 esac
 
@@ -80,13 +82,19 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # === 爬取阶段（--skip-crawl 时跳过） ===
 if [ "$MODE" != "skip-crawl" ]; then
-    # 1. 检查登录态
-    echo "[1/4] 检查登录态..." >> "$LOG_FILE"
-    $PYTHON_BIN scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（nodriver 将直接尝试）" >> "$LOG_FILE"
+    if [ "$MODE" = "retry-failed" ]; then
+        # ── 重试失败账号 ──
+        echo "[retry] 重试上次失败的账号..." >> "$LOG_FILE"
+        $PYTHON_BIN scripts/crawler_nodriver.py --retry-failed >> "$LOG_FILE" 2>&1
+    else
+        # 1. 检查登录态
+        echo "[1/4] 检查登录态..." >> "$LOG_FILE"
+        $PYTHON_BIN scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（nodriver 将直接尝试）" >> "$LOG_FILE"
 
-    # 2. 爬取新文章（nodriver — 绕过阿里云 WAF）
-    echo "[2/4] 爬取新文章（nodriver）..." >> "$LOG_FILE"
-    $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
+        # 2. 爬取新文章（nodriver — 绕过阿里云 WAF）
+        echo "[2/4] 爬取新文章（nodriver）..." >> "$LOG_FILE"
+        $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
+    fi
 
     # 爬取完成后立即清理 Chrome，释放内存供后续 AI 分析使用
     echo "[清理] 释放浏览器资源..." >> "$LOG_FILE"
