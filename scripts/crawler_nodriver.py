@@ -508,18 +508,24 @@ class XueqiuCrawlerNodriver:
 
     # ============ 核心爬取逻辑 ============
 
-    def _extract_and_save_opencli(self, article: dict, user_id: str, user_name: str) -> Optional[dict]:
-        """提取单篇文章正文并保存。返回保存的 merged dict 或 None（含 skip 原因）。
+    def _extract_and_save_opencli(self, article: dict, user_id: str, user_name: str) -> tuple:
+        """提取单篇文章正文并保存。返回 (merged_dict, skip_reason) 元组。
 
-        返回 None 的情况：回复帖、无内容、WAF 错误页、重复。
-        调用方可通过检查返回值是否为 None 区分「跳过」和「保存成功」。
+        skip_reason 取值：
+        - None: 保存成功
+        - 'no_url': 文章没有 URL
+        - 'reply': 回复帖
+        - 'no_content': 正文为空
+        - 'waf': WAF 错误页面（405、滑动验证等）
+        - 'duplicate': 已存在（去重）
 
         Returns:
-            merged dict if saved successfully, None if skipped
+            (merged dict, None) if saved successfully
+            (None, skip_reason) if skipped
         """
         url = article.get('url', '')
         if not url:
-            return None
+            return (None, 'no_url')
 
         # 提取正文（浏览器级别导航）
         detail = self._opencli.get_article_content(url)
@@ -528,7 +534,7 @@ class XueqiuCrawlerNodriver:
         title = detail.get('title', article.get('title', ''))
         if title.startswith('回复@'):
             self.logger.info(f"跳过回复: {title[:30]}...")
-            return None
+            return (None, 'reply')
 
         # 合并文章信息
         merged = {
@@ -548,19 +554,19 @@ class XueqiuCrawlerNodriver:
         # 跳过无内容文章
         if not merged['content']:
             self.logger.info(f"跳过无内容: {merged['title'][:30]}")
-            return None
+            return (None, 'no_content')
 
         # 跳过 WAF/错误页面（405、访问阻断等）
         if _is_content_error(merged['title'], merged['content']):
             self.logger.warning(f"跳过错误页面: {merged['title'][:30]} ({merged['article_id']})")
-            return None
+            return (None, 'waf')
 
         # 去重检查
         article_id = merged['article_id']
         index_key = f"{user_id}_{article_id}"
         if index_key in self.index.get('articles', {}):
             self.logger.info(f"已存在，跳过: {article_id}")
-            return None
+            return (None, 'duplicate')
 
         # 保存为 Markdown
         filepath = self._save_as_markdown(merged, user_id)
@@ -576,7 +582,7 @@ class XueqiuCrawlerNodriver:
             'filepath': filepath,
         }
         self._save_index()
-        return merged
+        return (merged, None)
 
     async def _crawl_one_user_opencli(self, account: dict, max_articles: int) -> dict:
         """爬取单个用户 — OpenCLI 模式（Chrome 扩展）"""
@@ -624,22 +630,21 @@ class XueqiuCrawlerNodriver:
 
                 self.logger.info(f"OpenCLI 详情 [{i+1}/{min(len(new_articles), max_articles)}]: {url[-30:]}")
 
-                merged = self._extract_and_save_opencli(article, user_id, user_name)
-                if merged is not None:
-                    articles_saved.append(merged)
-                else:
-                    # 检查是否因为 WAF 被跳过（用于重试队列）
-                    if url:
-                        result['skipped_articles'].append({
-                            'url': url,
-                            'article': article,
-                            'user_id': user_id,
-                            'user_name': user_name,
-                        })
+                merged_result, skip_reason = self._extract_and_save_opencli(article, user_id, user_name)
+                if merged_result is not None:
+                    articles_saved.append(merged_result)
+                elif skip_reason == 'waf':
+                    # 仅 WAF 命中计入计数 + 加入重试队列
+                    result['waf_hits'] += 1
+                    result['skipped_articles'].append({
+                        'url': url,
+                        'article': article,
+                        'user_id': user_id,
+                        'user_name': user_name,
+                    })
+                # reply / no_content / duplicate 不计入 waf_hits，也不加入重试队列
 
-            result['waf_hits'] = len(result['skipped_articles'])
-            # 注：skipped_articles 包含所有被跳过的文章（WAF + 回复 + 无内容等），
-            # 但重试时 _extract_and_save_opencli 会再次校验，非 WAF 的跳过不会保存
+            # 注：waf_hits 仅统计 WAF 命中，不包含回复/无内容/去重跳过
 
             # 4. 保存历史
             if articles_saved:
@@ -838,7 +843,7 @@ class XueqiuCrawlerNodriver:
                 url = item.get('url', '')[-40:]
                 self.logger.info(f"  重试: ...{url}")
 
-                merged = self._extract_and_save_opencli(
+                merged, skip_reason = self._extract_and_save_opencli(
                     item['article'], item['user_id'], item['user_name']
                 )
                 if merged is not None:
@@ -906,6 +911,7 @@ class XueqiuCrawlerNodriver:
                 self.logger.info(f"\n{'='*50}")
                 self.logger.info(f"📋 主爬取完成，{len(all_skipped)} 篇被跳过，开始冷却重试...")
                 retried = await self._retry_skipped_articles(all_skipped)
+                stats['total_new'] += retried
                 stats['total_saved'] += retried
                 if retried > 0:
                     self.logger.info(f"✅ 重试成功 {retried} 篇")
