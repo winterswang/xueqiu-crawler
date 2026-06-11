@@ -508,15 +508,89 @@ class XueqiuCrawlerNodriver:
 
     # ============ 核心爬取逻辑 ============
 
+    def _extract_and_save_opencli(self, article: dict, user_id: str, user_name: str) -> Optional[dict]:
+        """提取单篇文章正文并保存。返回保存的 merged dict 或 None（含 skip 原因）。
+
+        返回 None 的情况：回复帖、无内容、WAF 错误页、重复。
+        调用方可通过检查返回值是否为 None 区分「跳过」和「保存成功」。
+
+        Returns:
+            merged dict if saved successfully, None if skipped
+        """
+        url = article.get('url', '')
+        if not url:
+            return None
+
+        # 提取正文（浏览器级别导航）
+        detail = self._opencli.get_article_content(url)
+
+        # 跳过非专栏/回复类文章
+        title = detail.get('title', article.get('title', ''))
+        if title.startswith('回复@'):
+            self.logger.info(f"跳过回复: {title[:30]}...")
+            return None
+
+        # 合并文章信息
+        merged = {
+            'article_id': article.get('article_id', ''),
+            'title': detail.get('title') or article.get('title', ''),
+            'author': article.get('author', user_name),
+            'publish_time': article.get('time', ''),
+            'content': detail.get('content', article.get('text', '')),
+            'likes': article.get('likes', 0),
+            'comments': article.get('replies', 0),
+            'url': url,
+            'link': url,
+            'crawl_time': datetime.now().isoformat(),
+            'is_column': True,
+        }
+
+        # 跳过无内容文章
+        if not merged['content']:
+            self.logger.info(f"跳过无内容: {merged['title'][:30]}")
+            return None
+
+        # 跳过 WAF/错误页面（405、访问阻断等）
+        if _is_content_error(merged['title'], merged['content']):
+            self.logger.warning(f"跳过错误页面: {merged['title'][:30]} ({merged['article_id']})")
+            return None
+
+        # 去重检查
+        article_id = merged['article_id']
+        index_key = f"{user_id}_{article_id}"
+        if index_key in self.index.get('articles', {}):
+            self.logger.info(f"已存在，跳过: {article_id}")
+            return None
+
+        # 保存为 Markdown
+        filepath = self._save_as_markdown(merged, user_id)
+        merged['filepath'] = filepath
+
+        # 更新索引
+        self.index['articles'][index_key] = {
+            'article_id': article_id, 'user_id': user_id,
+            'title': merged['title'],
+            'author': merged['author'],
+            'publish_time': merged['publish_time'],
+            'crawl_time': merged['crawl_time'],
+            'filepath': filepath,
+        }
+        self._save_index()
+        return merged
+
     async def _crawl_one_user_opencli(self, account: dict, max_articles: int) -> dict:
-        """爬取单个用户 — OpenCLI 模式（Chrome 扩展，零 WAF）"""
+        """爬取单个用户 — OpenCLI 模式（Chrome 扩展）"""
         user_id = account.get('id')
         user_name = account.get('name', user_id)
 
         assert self._opencli is not None, "OpenCLI extractor not initialized"
         assert user_id is not None, "Account missing user_id"
 
-        result = {'user_id': user_id, 'name': user_name, 'new_articles': 0, 'saved_articles': 0, 'waf_hits': 0}
+        result = {
+            'user_id': user_id, 'name': user_name,
+            'new_articles': 0, 'saved_articles': 0, 'waf_hits': 0,
+            'skipped_articles': [],
+        }
 
         try:
             # 1. 获取文章列表（API 级别，不走浏览器导航）
@@ -550,65 +624,22 @@ class XueqiuCrawlerNodriver:
 
                 self.logger.info(f"OpenCLI 详情 [{i+1}/{min(len(new_articles), max_articles)}]: {url[-30:]}")
 
-                # 提取正文（浏览器级别导航）
-                detail = self._opencli.get_article_content(url)
+                merged = self._extract_and_save_opencli(article, user_id, user_name)
+                if merged is not None:
+                    articles_saved.append(merged)
+                else:
+                    # 检查是否因为 WAF 被跳过（用于重试队列）
+                    if url:
+                        result['skipped_articles'].append({
+                            'url': url,
+                            'article': article,
+                            'user_id': user_id,
+                            'user_name': user_name,
+                        })
 
-                # 跳过非专栏/回复类文章
-                title = detail.get('title', article.get('title', ''))
-                if title.startswith('回复@'):
-                    self.logger.info(f"跳过回复: {title[:30]}...")
-                    continue
-
-                # 合并文章信息
-                merged = {
-                    'article_id': article.get('article_id', ''),
-                    'title': detail.get('title') or article.get('title', ''),
-                    'author': article.get('author', user_name),
-                    'publish_time': article.get('time', ''),
-                    'content': detail.get('content', article.get('text', '')),
-                    'likes': article.get('likes', 0),
-                    'comments': article.get('replies', 0),
-                    'url': url,
-                    'link': url,
-                    'crawl_time': datetime.now().isoformat(),
-                    'is_column': True,
-                }
-
-                # 跳过无内容文章
-                if not merged['content']:
-                    self.logger.info(f"跳过无内容: {merged['title'][:30]}")
-                    continue
-
-                # 跳过 WAF/错误页面（405、访问阻断等）
-                # opencli browser extract 失败后回退到 API 层 article['text']，
-                # 其预览文本可能包含 405 错误页内容，需在此兜底检测
-                if _is_content_error(merged['title'], merged['content']):
-                    self.logger.warning(f"跳过错误页面: {merged['title'][:30]} ({merged['article_id']})")
-                    result['waf_hits'] += 1
-                    continue
-
-                # 去重检查
-                article_id = merged['article_id']
-                index_key = f"{user_id}_{article_id}"
-                if index_key in self.index.get('articles', {}):
-                    self.logger.info(f"已存在，跳过: {article_id}")
-                    continue
-
-                # 保存为 Markdown
-                filepath = self._save_as_markdown(merged, user_id)
-                merged['filepath'] = filepath
-
-                # 更新索引
-                self.index['articles'][index_key] = {
-                    'article_id': article_id, 'user_id': user_id,
-                    'title': merged['title'],
-                    'author': merged['author'],
-                    'publish_time': merged['publish_time'],
-                    'crawl_time': merged['crawl_time'],
-                    'filepath': filepath,
-                }
-                self._save_index()
-                articles_saved.append(merged)
+            result['waf_hits'] = len(result['skipped_articles'])
+            # 注：skipped_articles 包含所有被跳过的文章（WAF + 回复 + 无内容等），
+            # 但重试时 _extract_and_save_opencli 会再次校验，非 WAF 的跳过不会保存
 
             # 4. 保存历史
             if articles_saved:
@@ -766,6 +797,66 @@ class XueqiuCrawlerNodriver:
         self._opencli = OpencliExtractor()
         self.logger.info("🔄 OpenCLI session 已旋转")
 
+    async def _retry_skipped_articles(self, skipped: List[dict], max_rounds: int = None,
+                                      cooldown_seconds: int = None) -> int:
+        """对被 WAF 拦截的文章进行多轮重试。
+
+        主爬取结束后，部分文章可能因 session 累积 WAF 触发被跳过。
+        此方法等待 WAF 冷却时间后，用全新 session 重新尝试提取。
+
+        Args:
+            skipped: 被跳过的文章列表 [{url, article, user_id, user_name}, ...]
+            max_rounds: 最大重试轮数 (默认 3)
+            cooldown_seconds: 每轮间冷却时间 (默认 180s = 3min)
+
+        Returns:
+            int: 重试成功保存的文章数
+        """
+        max_rounds = max_rounds or self.config.get('crawler', {}).get('retry_max_rounds', 3)
+        cooldown_seconds = cooldown_seconds or self.config.get('crawler', {}).get('retry_cooldown_seconds', 180)
+
+        if not skipped:
+            return 0
+
+        self.logger.info(f"📋 开始重试 {len(skipped)} 篇被跳过的文章")
+        retried = 0
+        remaining = list(skipped)
+
+        for round_num in range(1, max_rounds + 1):
+            if not remaining:
+                break
+
+            self.logger.info(f"🔄 重试第 {round_num}/{max_rounds} 轮: {len(remaining)} 篇待处理")
+            self.logger.info(f"⏳ WAF 冷却 {cooldown_seconds}s...")
+            await asyncio.sleep(cooldown_seconds)
+
+            # 使用全新 session
+            self._rotate_opencli_session()
+
+            still_skipped = []
+            for item in remaining:
+                url = item.get('url', '')[-40:]
+                self.logger.info(f"  重试: ...{url}")
+
+                merged = self._extract_and_save_opencli(
+                    item['article'], item['user_id'], item['user_name']
+                )
+                if merged is not None:
+                    retried += 1
+                    self.logger.info(f"  ✅ 重试成功: {merged['title'][:40]}")
+                else:
+                    still_skipped.append(item)
+
+            remaining = still_skipped
+
+            if remaining:
+                self.logger.info(f"  {len(remaining)} 篇仍未成功")
+
+        total = retried
+        final_skipped = len(remaining)
+        self.logger.info(f"重试完成: 成功 {total} 篇, 仍未成功 {final_skipped} 篇")
+        return total
+
     async def crawl_all_users(self, max_articles: int = None) -> dict:
         """爬取所有配置用户 — OpenCLI 优先，nodriver 兜底"""
         max_articles = max_articles or self.config.get('crawler', {}).get('max_articles', 20)
@@ -781,6 +872,7 @@ class XueqiuCrawlerNodriver:
             self.logger.info(f"🚀 OpenCLI 模式启动，共 {len(self.accounts)} 个用户")
 
             restart_every = self.config.get('crawler', {}).get('browser_restart_interval', 5)
+            all_skipped = []  # 收集被跳过的文章用于重试
 
             for i, account in enumerate(self.accounts):
                 user_id = account.get('id')
@@ -796,6 +888,10 @@ class XueqiuCrawlerNodriver:
                 stats['total_saved'] += result.get('saved_articles', 0)
                 stats['users'].append(result)
 
+                # 收集被跳过的文章 URL（用于后续冷却重试）
+                if result.get('skipped_articles'):
+                    all_skipped.extend(result['skipped_articles'])
+
                 # 每 N 个用户旋转 session（防 WAF 累积）
                 should_restart = (i + 1) % restart_every == 0 and i < len(self.accounts) - 1
                 if result.get('waf_hits', 0) > 0 and i < len(self.accounts) - 1:
@@ -804,6 +900,15 @@ class XueqiuCrawlerNodriver:
 
                 if should_restart:
                     self._rotate_opencli_session()
+
+            # ── 重试被 WAF 拦截的文章 ──
+            if all_skipped:
+                self.logger.info(f"\n{'='*50}")
+                self.logger.info(f"📋 主爬取完成，{len(all_skipped)} 篇被跳过，开始冷却重试...")
+                retried = await self._retry_skipped_articles(all_skipped)
+                stats['total_saved'] += retried
+                if retried > 0:
+                    self.logger.info(f"✅ 重试成功 {retried} 篇")
 
             self._opencli.close()
         else:
