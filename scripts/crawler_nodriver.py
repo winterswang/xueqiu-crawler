@@ -516,7 +516,7 @@ class XueqiuCrawlerNodriver:
         assert self._opencli is not None, "OpenCLI extractor not initialized"
         assert user_id is not None, "Account missing user_id"
 
-        result = {'user_id': user_id, 'name': user_name, 'new_articles': 0, 'saved_articles': 0}
+        result = {'user_id': user_id, 'name': user_name, 'new_articles': 0, 'saved_articles': 0, 'waf_hits': 0}
 
         try:
             # 1. 获取文章列表（API 级别，不走浏览器导航）
@@ -584,6 +584,7 @@ class XueqiuCrawlerNodriver:
                 # 其预览文本可能包含 405 错误页内容，需在此兜底检测
                 if _is_content_error(merged['title'], merged['content']):
                     self.logger.warning(f"跳过错误页面: {merged['title'][:30]} ({merged['article_id']})")
+                    result['waf_hits'] += 1
                     continue
 
                 # 去重检查
@@ -753,6 +754,18 @@ class XueqiuCrawlerNodriver:
             self.logger.error(f"浏览器重启失败: {e}")
             raise
 
+    def _rotate_opencli_session(self):
+        """旋转 OpenCLI 浏览器 session — 防止 WAF 累积触发。
+
+        OpenCLI 模式使用真实 Chrome 浏览器，文章详情页导航会在同一 session 中
+        累积 WAF 检测信号。约 30-35 次导航后触发滑动验证。此方法关闭旧 session
+        并创建新 session，重置 WAF 计数器。
+        """
+        if self._opencli:
+            self._opencli.close()
+        self._opencli = OpencliExtractor()
+        self.logger.info("🔄 OpenCLI session 已旋转")
+
     async def crawl_all_users(self, max_articles: int = None) -> dict:
         """爬取所有配置用户 — OpenCLI 优先，nodriver 兜底"""
         max_articles = max_articles or self.config.get('crawler', {}).get('max_articles', 20)
@@ -767,6 +780,8 @@ class XueqiuCrawlerNodriver:
             # ── OpenCLI 模式：无需浏览器启动/warmup/cookie注入 ──
             self.logger.info(f"🚀 OpenCLI 模式启动，共 {len(self.accounts)} 个用户")
 
+            restart_every = self.config.get('crawler', {}).get('browser_restart_interval', 5)
+
             for i, account in enumerate(self.accounts):
                 user_id = account.get('id')
                 user_name = account.get('name', user_id)
@@ -780,6 +795,15 @@ class XueqiuCrawlerNodriver:
                 stats['total_new'] += result.get('new_articles', 0)
                 stats['total_saved'] += result.get('saved_articles', 0)
                 stats['users'].append(result)
+
+                # 每 N 个用户旋转 session（防 WAF 累积）
+                should_restart = (i + 1) % restart_every == 0 and i < len(self.accounts) - 1
+                if result.get('waf_hits', 0) > 0 and i < len(self.accounts) - 1:
+                    self.logger.info(f"⚠️ 检测到 {result['waf_hits']} 次 CAPTCHA，立即旋转 session...")
+                    should_restart = True
+
+                if should_restart:
+                    self._rotate_opencli_session()
 
             self._opencli.close()
         else:
