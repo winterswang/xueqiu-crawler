@@ -8,6 +8,9 @@ crawler:
   headless: true            # 无头模式（new headless via --headless=new）
   max_articles: 50          # 每次最多爬取文章数
   max_retries: 3            # 最大重试次数
+  browser_restart_interval: 5  # 每 N 用户重启/旋转 browser session（防 WAF 累积）
+  retry_max_rounds: 3          # WAF 拦截后冷却重试轮数
+  retry_cooldown_seconds: 180  # 重试间 WAF 冷却时间（秒）
 
 storage:
   output_dir: data/         # 输出目录
