@@ -101,8 +101,8 @@ if [ "$MODE" != "skip-crawl" ]; then
     cleanup_chromium
 fi
 
-# === 分析 + 发布阶段（--crawl-only 时跳过） ===
-if [ "$MODE" != "crawl-only" ]; then
+# === 分析 + 发布阶段（--crawl-only / --retry-failed 时跳过） ===
+if [ "$MODE" != "crawl-only" ] && [ "$MODE" != "retry-failed" ]; then
     # 3. 生成分析报告（MINIMAX_API_KEY 从 .env 或环境变量读取）
     echo "[3/4] 生成分析报告..." >> "$LOG_FILE"
     $PYTHON_BIN scripts/generate_report.py --limit 50 >> "$LOG_FILE" 2>&1
