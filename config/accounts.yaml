@@ -54,6 +54,11 @@ accounts:
   id: '3075122481'
   name: 港股解码
   url: https://xueqiu.com/u/3075122481
+- description: ''
+  enabled: true
+  id: '9507152383'
+  name: 黑色面包
+  url: https://xueqiu.com/u/9507152383
 - description: 价值投资新经济
   enabled: true
   id: '7680894870'
