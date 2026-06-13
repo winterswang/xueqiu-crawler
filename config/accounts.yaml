@@ -64,3 +64,8 @@ accounts:
   id: '7680894870'
   name: 价值投资新经济
   url: https://xueqiu.com/u/7680894870
+- description: ''
+  enabled: true
+  id: '3966435964'
+  name: 待确认
+  url: https://xueqiu.com/u/3966435964
