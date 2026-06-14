@@ -249,7 +249,7 @@ class ArticleAnalyzer:
         # 从 config 读取模型名和截断阈值
         analysis_cfg = (config or {}).get('analysis', {})
         models_cfg = analysis_cfg.get('models', {})
-        self.model_name = models_cfg.get(self.provider, 'MiniMax-M2.7')
+        self.model_name = models_cfg.get(self.provider, 'MiniMax-M3')
         self.max_content_chars = analysis_cfg.get('max_content_chars', 8000)
         
         # 重试配置
@@ -1031,7 +1031,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         "---",
         "",
         f"*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
-        "*分析模型：MiniMax M2.7*",
+        "*分析模型：MiniMax M3*",
         "",
     ])
 
@@ -1090,7 +1090,7 @@ def _format_article(index: int, article: dict, result: dict) -> List[str]:
             lines.append(f"- **相关股票**：{', '.join(stocks)}")
         
         lines.append("")
-        lines.append("**MiniMax M2.7 分析：**")
+        lines.append("**MiniMax M3 分析：**")
         lines.append("")
         
         # 主题归类
