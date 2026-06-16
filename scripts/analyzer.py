@@ -789,7 +789,7 @@ class ArticleAnalyzer:
         }
     
     def _parse_response(self, response: str, article: dict = None) -> dict:
-        """解析 LLM 响应 - 精确提取 JSON 对象（4 层 fallback）"""
+        """解析 LLM 响应 - 精确提取 JSON 对象（5 层 fallback）"""
         title = (article or {}).get('title', '未知文章')
         strategies_failed = []
         
@@ -830,7 +830,10 @@ class ArticleAnalyzer:
 
         try:
             # Strategy 4: deterministic local repair for common MiniMax malformed JSON
-            return self._parse_json_with_local_repair(response, title, "local_repair")
+            result = self._parse_json_with_local_repair(response, title, "local_repair")
+            if result is not None:
+                return result
+            strategies_failed.append("local_repair: no JSON candidate found")
         except Exception as e:
             strategies_failed.append(f"local_repair: {e}")
 
