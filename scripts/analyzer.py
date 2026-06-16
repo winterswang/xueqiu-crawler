@@ -599,7 +599,194 @@ class ArticleAnalyzer:
 - core_points 要有观点、有数据支撑，不是复述原文
 - deep_analysis 的五个维度要充分利用文章中已有的信息，不要泛泛而谈
 - 语言简洁专业，直接切入要点
+- JSON 字符串内部如需使用英文双引号，必须转义为 \"
+- 禁止在字段值中直接出现未转义的英文双引号
+- 输出必须能被 Python json.loads 直接解析
+- 不要输出 JSON 以外的任何解释文本
 - 请确保输出是有效的 JSON"""
+
+    def _extract_json_candidate(self, response: str) -> str:
+        """Extract the most likely JSON object text from an LLM response."""
+        if not response:
+            return ''
+        json_match = re.search(r'```json\s*(\{.*?\})\s*```', response, re.DOTALL | re.IGNORECASE)
+        if json_match:
+            return json_match.group(1).strip()
+        fenced_match = re.search(r'```\s*(\{.*?\})\s*```', response, re.DOTALL)
+        if fenced_match:
+            return fenced_match.group(1).strip()
+        start = response.find('{')
+        end = response.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            return response[start:end + 1].strip()
+        return response.strip()
+
+    def _repair_unescaped_quotes_in_json_strings(self, text: str) -> str:
+        """Repair common MiniMax JSON issue: bare quotes inside string values.
+
+        Conservative state-machine repair:
+        - Quotes followed by JSON structural delimiters (: , } ]) close strings.
+        - Other unescaped quotes encountered while inside a string are treated as
+          literal content and escaped as \".
+        """
+        if not text:
+            return text
+
+        out = []
+        in_string = False
+        escape = False
+        n = len(text)
+
+        for i, ch in enumerate(text):
+            if not in_string:
+                out.append(ch)
+                if ch == '"':
+                    in_string = True
+                continue
+
+            if escape:
+                out.append(ch)
+                escape = False
+                continue
+
+            if ch == '\\':
+                out.append(ch)
+                escape = True
+                continue
+
+            if ch == '"':
+                j = i + 1
+                while j < n and text[j].isspace():
+                    j += 1
+                next_ch = text[j] if j < n else ''
+                if next_ch in {':', ',', '}', ']'} or next_ch == '':
+                    out.append(ch)
+                    in_string = False
+                else:
+                    out.append('\\"')
+                continue
+
+            out.append(ch)
+
+        return ''.join(out)
+
+    def _parse_json_with_local_repair(self, response: str, title: str, strategy_name: str) -> Optional[dict]:
+        """Parse JSON after deterministic local repair for unescaped quotes."""
+        candidate = self._extract_json_candidate(response)
+        if not candidate:
+            return None
+        repaired = self._repair_unescaped_quotes_in_json_strings(candidate)
+        result = json.loads(repaired)
+        self.stats["parse_success"] += 1
+        self.logger.debug(f"JSON解析成功(strategy={strategy_name}): {title[:40]}")
+        return result
+
+    def _extract_string_field_from_raw(self, response: str, field: str, limit: int = None) -> str:
+        """Best-effort extraction of a JSON string field from malformed raw text."""
+        m = re.search(rf'"{re.escape(field)}"\s*:\s*"', response)
+        if not m:
+            return ''
+        start = m.end()
+        chars = []
+        escape = False
+        for i in range(start, len(response)):
+            ch = response[i]
+            if escape:
+                chars.append(ch)
+                escape = False
+                continue
+            if ch == '\\':
+                chars.append(ch)
+                escape = True
+                continue
+            if ch == '"':
+                j = i + 1
+                while j < len(response) and response[j].isspace():
+                    j += 1
+                if j >= len(response) or response[j] in {',', '}', ']'}:
+                    break
+                chars.append(ch)
+                continue
+            chars.append(ch)
+        value = ''.join(chars).strip()
+        return value[:limit] if limit else value
+
+    def _extract_string_array_from_raw(self, response: str, field: str, max_items: int = None) -> list:
+        """Best-effort extraction of a JSON string array from malformed raw text."""
+        m = re.search(rf'"{re.escape(field)}"\s*:\s*\[', response)
+        if not m:
+            return []
+        i = m.end()
+        items = []
+        n = len(response)
+        while i < n:
+            while i < n and (response[i].isspace() or response[i] == ','):
+                i += 1
+            if i >= n or response[i] == ']':
+                break
+            if response[i] != '"':
+                i += 1
+                continue
+            i += 1
+            chars = []
+            escape = False
+            while i < n:
+                ch = response[i]
+                if escape:
+                    chars.append(ch)
+                    escape = False
+                    i += 1
+                    continue
+                if ch == '\\':
+                    chars.append(ch)
+                    escape = True
+                    i += 1
+                    continue
+                if ch == '"':
+                    j = i + 1
+                    while j < n and response[j].isspace():
+                        j += 1
+                    if j >= n or response[j] in {',', ']'}:
+                        i = j
+                        break
+                    chars.append(ch)
+                    i += 1
+                    continue
+                chars.append(ch)
+                i += 1
+            item = ''.join(chars).strip()
+            if item:
+                items.append(item)
+                if max_items and len(items) >= max_items:
+                    break
+            if i < n and response[i] == ']':
+                break
+            if i < n and response[i] == ',':
+                i += 1
+        return items
+
+    def _partial_analysis_from_raw(self, response: str) -> dict:
+        """Build a useful partial analysis from malformed JSON instead of empty [解析异常]."""
+        summary = self._extract_string_field_from_raw(response, 'summary', 100) or self._extract_summary_from_raw(response)
+        category = self._extract_string_field_from_raw(response, 'category', 30) or '其他'
+        core_points = self._extract_string_array_from_raw(response, 'core_points', max_items=3)
+        if not core_points:
+            core_points = ['[部分解析] JSON 结构异常，已保留可提取摘要；请查看原文获取完整分析']
+
+        deep = {
+            'business_quality': self._extract_string_field_from_raw(response, 'business_quality') or '[部分解析] 未能提取商业模式字段',
+            'management': self._extract_string_field_from_raw(response, 'management') or '[部分解析] 未能提取管理层字段',
+            'key_risks': self._extract_string_field_from_raw(response, 'key_risks') or '[部分解析] 未能提取关键风险字段',
+            'competitive_position': self._extract_string_field_from_raw(response, 'competitive_position') or '[部分解析] 未能提取竞争格局字段',
+            'outlook': self._extract_string_field_from_raw(response, 'outlook') or '[部分解析] 未能提取后续关注字段',
+        }
+        return {
+            'category': category,
+            'related_stocks': self._extract_stocks_from_raw(response),
+            'core_points': core_points,
+            'summary': summary,
+            'deep_analysis': deep,
+        }
     
     def _parse_response(self, response: str, article: dict = None) -> dict:
         """解析 LLM 响应 - 精确提取 JSON 对象（4 层 fallback）"""
@@ -641,7 +828,13 @@ class ArticleAnalyzer:
         except Exception as e:
             strategies_failed.append(f"cleaned: {e}")
 
-        # Strategy 4: retry — ask LLM to fix its own broken JSON
+        try:
+            # Strategy 4: deterministic local repair for common MiniMax malformed JSON
+            return self._parse_json_with_local_repair(response, title, "local_repair")
+        except Exception as e:
+            strategies_failed.append(f"local_repair: {e}")
+
+        # Strategy 5: retry — ask LLM to fix its own broken JSON
         if strategies_failed:
             try:
                 fixed_response = self._retry_json_fix(response, article)
@@ -673,6 +866,10 @@ class ArticleAnalyzer:
                         self.stats["parse_success"] += 1
                         self.logger.debug(f"JSON解析成功(strategy=retry+cleaned): {title[:40]}")
                         return result
+                    except Exception:
+                        pass
+                    try:
+                        return self._parse_json_with_local_repair(fixed_response, title, "retry+local_repair")
                     except Exception as e:
                         strategies_failed.append(f"retry: {e}")
             except Exception as e:
@@ -683,21 +880,8 @@ class ArticleAnalyzer:
         strategy_detail = "; ".join(strategies_failed)
         log_parse_failure(title, response, strategy_detail)
         
-        # 改进 fallback：尽量从 response 中提取有用信息
-        fallback_summary = self._extract_summary_from_raw(response)
-        return {
-            'category': '其他',
-            'related_stocks': self._extract_stocks_from_raw(response),
-            'core_points': ['[解析异常] 请查看原文获取完整分析'],
-            'summary': fallback_summary,
-            'deep_analysis': {
-                'business_quality': '[解析异常] 请查看原文',
-                'management': '[解析异常] 请查看原文',
-                'key_risks': '[解析异常] 请查看原文',
-                'competitive_position': '[解析异常] 请查看原文',
-                'outlook': '[解析异常] 请查看原文'
-            }
-        }
+        # Final fallback: preserve useful fields when full JSON parsing is impossible.
+        return self._partial_analysis_from_raw(response)
     
     def _extract_summary_from_raw(self, response: str) -> str:
         """从原始响应中尝试提取 summary 字段"""
