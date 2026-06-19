@@ -1053,12 +1053,14 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
     reference = sum(1 for r in results if r.get('priority') == 'reference')
     
     # 收集所有股票并按市场分组
+    # fix: 同一股票多次提及去重，一只股票只列出一次，多个文章链接合并
     stock_mentions = {}
-    all_stocks = []
     for article, result in zip(articles, results):
         if result.get('analysis'):
             for stock in result['analysis'].get('related_stocks', []):
-                all_stocks.append(stock)
+                stock = stock.strip()
+                if not stock:
+                    continue
                 if stock not in stock_mentions:
                     stock_mentions[stock] = []
                 stock_mentions[stock].append({
