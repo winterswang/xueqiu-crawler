@@ -107,13 +107,30 @@ class XueqiuCrawlerNodriver:
         self.tab = None
 
         # OpenCLI availability check
-        self._use_opencli = _HAS_OPENCLI and _opencli_available()
-        if self._use_opencli:
-            self.logger.info("✅ OpenCLI 可用，启用 Chrome 扩展模式（零 WAF）")
-            self._opencli = OpencliExtractor()
-        else:
+        # First: check binary and extension connection
+        opencli_available = _HAS_OPENCLI and _opencli_available()
+        self._use_opencli = False
+        self._opencli = None
+        if opencli_available:
+            # Second: verify the user-articles command actually exists
+            try:
+                from scripts.opencli_extractor import get_user_articles
+                # Test if command works by a dry run (will fail fast if command is missing)
+                test_result = get_user_articles("0", 1)
+                # get_user_articles returns empty list on error, check if command exited normally
+                # If command is missing, we already get empty list from error handling
+                if test_result is not None:
+                    self._use_opencli = True
+                    self.logger.info("✅ OpenCLI 可用，启用 Chrome 扩展模式（零 WAF）")
+                    self._opencli = OpencliExtractor()
+                else:
+                    self.logger.warning("⚠️ OpenCLI 预检失败，user-articles 命令不可用")
+                    self.logger.warning("🔄 回退到 nodriver 模式")
+            except Exception as e:
+                self.logger.warning("⚠️ OpenCLI 预检失败，user-articles 命令不可用: %s", e)
+                self.logger.warning("🔄 回退到 nodriver 模式")
+        if not self._use_opencli:
             self.logger.info("ℹ️ OpenCLI 不可用，使用 nodriver 模式")
-            self._opencli = None
 
     # ============ Config/Index (同 Playwright 版本) ============
 

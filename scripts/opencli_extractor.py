@@ -83,14 +83,18 @@ def get_user_articles(user_id: str, count: int = 20) -> list[dict]:
     Returns list of dicts with keys: article_id, title, author, time,
     likes, replies, url, text.
     """
-    result = _run(
-        "xueqiu", "user-articles",
-        "--user_id", str(user_id),
-        "--count", str(count),
-        "-f", "json",
-        timeout=30,
-        check=True,
-    )
+    try:
+        result = _run(
+            "xueqiu", "user-articles",
+            "--user_id", str(user_id),
+            "--count", str(count),
+            "-f", "json",
+            timeout=30,
+            check=True,
+        )
+    except RuntimeError as e:
+        logger.error(f"opencli user-articles command failed: {e}")
+        return None
     cleaned = _clean_output(result.stdout)
     try:
         data = json.loads(cleaned)
