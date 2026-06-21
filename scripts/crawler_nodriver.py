@@ -375,6 +375,9 @@ class XueqiuCrawlerNodriver:
             return articles
 
         # 获取所有时间线条目的关键数据 (JSON.stringify 解决 nodriver RemoteObject 序列化)
+        # is_likely_column: 列表层专栏预判。雪球专栏正文容器带 content--longtext class，
+        # 评论/短动态带 content--description。实测两类账号各 20 条 0 误判，可在列表层精准区分，
+        # 用于让专栏优先占用抓取额度，避免评论刷屏挤掉真专栏（见 plan 2026-06-21）。
         items_json = await self.tab.evaluate("""
             JSON.stringify(Array.from(document.querySelectorAll('.timeline__item')).map(function(item, i) {
                 var links = Array.from(item.querySelectorAll('a'))
@@ -382,10 +385,12 @@ class XueqiuCrawlerNodriver:
                     .filter(function(h) { return /\\/\\d+\\/\\d+$/.test(h) && h.indexOf('#comment') === -1; });
                 var titleEl = item.querySelector('.content, .status-content');
                 var timeEl = item.querySelector('.time, .date');
+                var isColumn = !!item.querySelector('.timeline__item__content--longtext');
                 return {
                     link: links[0] || '',
                     title: titleEl && titleEl.innerText ? titleEl.innerText.trim().split('\\n')[0].substring(0, 100) : '',
                     time: timeEl && timeEl.innerText ? timeEl.innerText.trim() : '',
+                    is_likely_column: isColumn,
                     index: i
                 };
             }))
@@ -413,6 +418,7 @@ class XueqiuCrawlerNodriver:
                 'content': item.get('content', ''),
                 'publish_time': item.get('time', ''),
                 'link': item['link'],
+                'is_likely_column': item.get('is_likely_column', False),
                 'likes': 0,
                 'comments': 0,
             }
@@ -699,23 +705,44 @@ class XueqiuCrawlerNodriver:
 
             new_articles = [a for a in article_list
                             if a.get('article_id') and a['article_id'] not in all_known]
+
+            # 专栏优先窗口：按列表层预判排序，让专栏优先占用 max_articles 额度。
+            # 背景：原逻辑取时间线前 N 条（专栏+评论混合），评论刷屏时真专栏会被挤出窗口漏抓。
+            # 现改为：专栏预判条目排前，评论/短动态排后。详情页仍会用 is_column 二次确认。
+            likely_columns = [a for a in new_articles if a.get('is_likely_column')]
+            likely_others = [a for a in new_articles if not a.get('is_likely_column')]
+            ordered_articles = likely_columns + likely_others
             self.logger.info(
-                f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇）"
+                f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇，"
+                f"其中预判专栏 {len(likely_columns)} 篇）"
             )
 
-            # 获取每篇详情
+            # 获取每篇详情 — 专栏优先，最多处理 max_articles 篇
+            # 早停优化：排序后专栏在前。允许在专栏耗尽后额外探测少量非专栏条目
+            # （容错 DOM 特征失效），超过阈值则停止，避免对大量评论发详情请求。
+            OTHER_PROBE_LIMIT = 3  # 专栏耗尽后最多再探测几条非专栏（防预判漏报）
+            other_probed = 0
             articles = []
-            for i, article in enumerate(new_articles[:max_articles]):
+            for i, article in enumerate(ordered_articles[:max_articles]):
                 if not article['link']:
                     continue
 
+                # 早停：进入非专栏区后，只探测有限几条就停（后面排序上全是评论）
+                if not article.get('is_likely_column'):
+                    if other_probed >= OTHER_PROBE_LIMIT:
+                        self.logger.info(
+                            f"专栏已耗尽，剩余 {min(len(ordered_articles), max_articles) - i} 条为非专栏预判，提前结束"
+                        )
+                        break
+                    other_probed += 1
+
                 await self._random_delay()
-                self.logger.info(f"详情 [{i+1}/{min(len(new_articles), max_articles)}]: {article['link'][-30:]}")
+                self.logger.info(f"详情 [{i+1}/{min(len(ordered_articles), max_articles)}]: {article['link'][-30:]}")
 
                 try:
                     detail = await self._parse_article_detail(article['link'])
                 except WafDetectedError:
-                    self.logger.warning(f"详情页 WAF 触发，中止当前用户剩余 {min(len(new_articles), max_articles) - i} 篇文章")
+                    self.logger.warning(f"详情页 WAF 触发，中止当前用户剩余 {min(len(ordered_articles), max_articles) - i} 篇文章")
                     result['waf_triggered'] = True
                     break
 
