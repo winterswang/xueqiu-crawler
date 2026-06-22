@@ -43,6 +43,11 @@ def _read_ima_credential(env_key: str, file_path: str) -> str:
 IMA_CLIENT_ID = _read_ima_credential("IMA_OPENAPI_CLIENTID", "~/.config/ima/client_id")
 IMA_API_KEY = _read_ima_credential("IMA_OPENAPI_APIKEY", "~/.config/ima/api_key")
 
+# IMA 目标笔记本：价值投资日报统一归类到此笔记本，便于查找。
+# folder_id 为该笔记本的确定 ID（查询 search_note_book 得到），直接定位避免重名新建。
+IMA_FOLDER_ID = "folder3b359cfc78ff05b3"
+IMA_FOLDER_NAME = "价值投资日报"
+
 
 def get_daily_report(date: Optional[str] = None) -> str:
     """读取日报 Markdown 内容"""
@@ -105,7 +110,12 @@ def create_ima_note(title: str, content: str) -> Optional[str]:
         _logger.info(f"今日已有笔记 {existing_doc_id}，仍将创建新笔记以确保内容最新")
 
     url = "https://ima.qq.com/openapi/note/v1/import_doc"
-    body = {"content_format": 1, "content": content}
+    body = {
+        "content_format": 1,
+        "content": content,
+        "folder_id": IMA_FOLDER_ID,
+        "folder_name": IMA_FOLDER_NAME,
+    }
     headers = {
         "ima-openapi-clientid": IMA_CLIENT_ID,
         "ima-openapi-apikey": IMA_API_KEY,
