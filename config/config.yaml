@@ -20,7 +20,7 @@ storage:
 analysis:
   provider: "minimax"           # 默认 provider: minimax / aliyun
   models:
-    minimax: "MiniMax-M3"       # MiniMax 模型名
+    minimax: "minimax-m3"       # 字节 coding plan MiniMax 模型名
     aliyun: "glm-5"             # 阿里云/百炼 模型名
   max_content_chars: 8000       # 传给 LLM 的最大字符数（长文分析完整性）
   # MiniMax API 重试策略
