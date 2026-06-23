@@ -249,7 +249,7 @@ class ArticleAnalyzer:
         # 从 config 读取模型名和截断阈值
         analysis_cfg = (config or {}).get('analysis', {})
         models_cfg = analysis_cfg.get('models', {})
-        self.model_name = models_cfg.get(self.provider, 'MiniMax-M3')
+        self.model_name = models_cfg.get(self.provider, 'minimax-m3')
         self.max_content_chars = analysis_cfg.get('max_content_chars', 8000)
         
         # 重试配置
@@ -262,10 +262,11 @@ class ArticleAnalyzer:
         self.request_timeout = retry_cfg.get('request_timeout_ms', 120000) / 1000.0
 
         # API Key 解析：优先传入的 api_key > 环境变量
+        # minimax provider 已迁到字节 coding plan，优先 ARK_API_KEY，兼容旧 MINIMAX_API_KEY
         if api_key:
             self.api_key = api_key
         elif self.provider == 'minimax':
-            self.api_key = os.environ.get('MINIMAX_API_KEY', '')
+            self.api_key = os.environ.get('ARK_API_KEY', '') or os.environ.get('MINIMAX_API_KEY', '')
         else:
             self.api_key = os.environ.get('BAILIAN_API_KEY', '')
 
@@ -280,27 +281,36 @@ class ArticleAnalyzer:
                 self.logger.warning("BAILIAN_API_KEY 未设置，回退使用 MINIMAX_API_KEY")
 
         if self.provider == 'minimax':
-            minimax_base = os.environ.get('MINIMAX_BASE_URL', 'https://api.minimaxi.com/anthropic')
-            if self.api_key and Anthropic:
+            # 字节 coding plan（OpenAI 兼容接口），取代即将废弃的 MiniMax 官方 anthropic baseURL。
+            # 默认 minimax-m3；api_key 优先 ARK_API_KEY。
+            # 注：不再读旧的 MINIMAX_BASE_URL（.env 中可能残留官方地址会污染），改用 ARK 专属变量。
+            minimax_base = os.environ.get(
+                'ARK_CODING_BASE_URL',
+                'https://ark.cn-beijing.volces.com/api/coding/v3',
+            )
+            # coding plan 用 ARK_API_KEY，未显式传入时优先取环境变量
+            if not api_key:
+                self.api_key = os.environ.get('ARK_API_KEY', '') or self.api_key
+            if self.api_key and OpenAIClient:
                 try:
-                    self.client = Anthropic(
+                    self.client = OpenAIClient(
                         api_key=self.api_key,
                         base_url=minimax_base,
                         max_retries=0,
                         timeout=self.request_timeout,
                     )
                     self.logger.info(
-                        f"MiniMax 客户端初始化成功: model={self.model_name}, "
+                        f"MiniMax(coding plan) 客户端初始化成功: model={self.model_name}, "
                         f"timeout={self.request_timeout}s, retry_max={self.retry_max}, "
                         f"base_url={minimax_base}"
                     )
                 except Exception as e:
-                    self.logger.error(f"MiniMax 客户端初始化失败: {e}")
+                    self.logger.error(f"MiniMax(coding plan) 客户端初始化失败: {e}")
                     self.client = None
             else:
                 self.logger.warning(
-                    f"MiniMax 客户端未初始化: api_key={'有' if self.api_key else '无'}, "
-                    f"Anthropic={'可用' if Anthropic else '不可用'}"
+                    f"MiniMax(coding plan) 客户端未初始化: api_key={'有' if self.api_key else '无'}, "
+                    f"OpenAIClient={'可用' if OpenAIClient else '不可用'}"
                 )
         elif self.provider == 'aliyun' and self.api_key:
             self.client = OpenAIClient(
@@ -341,42 +351,30 @@ class ArticleAnalyzer:
             )
             
             try:
-                resp = self.client.messages.create(
+                resp = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=8192,
                 )
                 latency_ms = int((time.time() - t0) * 1000)
-                
-                # 提取文本
-                texts = []
-                thinking_texts = []
-                input_tokens = getattr(resp.usage, 'input_tokens', 0) if hasattr(resp, 'usage') else 0
-                output_tokens = getattr(resp.usage, 'output_tokens', 0) if hasattr(resp, 'usage') else 0
-                stop_reason = getattr(resp, 'stop_reason', 'unknown') if hasattr(resp, 'stop_reason') else 'unknown'
-                
-                for block in resp.content:
-                    if hasattr(block, 'text') and block.text:
-                        texts.append(block.text)
-                    elif hasattr(block, 'thinking') and block.thinking:
-                        thinking_texts.append(block.thinking)
-                
-                if texts:
-                    response = '\n'.join(texts)
-                elif thinking_texts:
-                    raw_thinking = '\n'.join(thinking_texts)
-                    self.logger.warning(
-                        f"MiniMax 只返回 ThinkingBlock (无 TextBlock), "
-                        f"长度={len(raw_thinking)}, 尝试从 thinking 提取 JSON"
-                    )
-                    json_start = raw_thinking.rfind('{')
-                    if json_start != -1:
-                        response = raw_thinking[json_start:]
-                        self.logger.info(f"从 ThinkingBlock 末尾提取到 JSON 候选 (起始偏移={json_start})")
-                    else:
-                        response = raw_thinking
-                else:
-                    response = ""
+
+                # 提取文本（OpenAI 兼容格式）
+                usage = getattr(resp, 'usage', None)
+                input_tokens = getattr(usage, 'prompt_tokens', 0) if usage else 0
+                output_tokens = getattr(usage, 'completion_tokens', 0) if usage else 0
+                choice = resp.choices[0] if getattr(resp, 'choices', None) else None
+                stop_reason = getattr(choice, 'finish_reason', 'unknown') if choice else 'unknown'
+                response = (choice.message.content if choice and choice.message else "") or ""
+
+                # 部分模型会将推理放在 reasoning_content，正文为空时尝试回退提取
+                if not response and choice and choice.message:
+                    reasoning = getattr(choice.message, 'reasoning_content', None)
+                    if reasoning:
+                        self.logger.warning(
+                            f"MiniMax 正文为空，从 reasoning_content 提取 (长度={len(reasoning)})"
+                        )
+                        json_start = reasoning.rfind('{')
+                        response = reasoning[json_start:] if json_start != -1 else reasoning
                 
                 log_api_call(
                     "success",
