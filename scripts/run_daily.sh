@@ -53,20 +53,28 @@ if [ "$AVAILABLE_MEM" != "unknown" ] && [ "$AVAILABLE_MEM" -lt 500 ]; then
     cleanup_chromium
 fi
 
-# 防止并发执行（lockfile）
+# 防止并发执行（lockfile）— 保护窗口 1 小时
 LOCKFILE="$PROJECT_DIR/.cron_running.lock"
+LOCK_WINDOW_MINUTES=60
+
 if [ -f "$LOCKFILE" ]; then
-    LOCK_PID=$(cat "$LOCKFILE" 2>/dev/null)
-    if kill -0 "$LOCK_PID" 2>/dev/null; then
-        echo "[$(date)] ⚠️ 前一次执行尚未完成 (PID=$LOCK_PID)，跳过本次" >> "$LOG_FILE"
+    # 检查锁文件修改时间是否在保护窗口内
+    LOCK_AGE_MIN=$(($(date +%s) - $(stat -c %Y "$LOCKFILE" 2>/dev/null || echo 0)))
+    LOCK_AGE_MIN=$((LOCK_AGE_MIN / 60))
+    
+    if [ "$LOCK_AGE_MIN" -lt "$LOCK_WINDOW_MINUTES" ]; then
+        echo "[$(date)] ⚠️ 前一次执行在 ${LOCK_AGE_MIN} 分钟内完成（保护窗口 ${LOCK_WINDOW_MINUTES} 分钟），跳过本次" >> "$LOG_FILE"
         exit 0
     else
-        echo "[$(date)] 🔧 清理过期锁文件 (PID=$LOCK_PID 已不存在)" >> "$LOG_FILE"
-        rm -f "$LOCKFILE"
+        echo "[$(date)] 🔧 锁文件已过期 (${LOCK_AGE_MIN} 分钟 > ${LOCK_WINDOW_MINUTES} 分钟)，允许新执行" >> "$LOG_FILE"
     fi
 fi
-echo $$ > "$LOCKFILE"
-trap 'rm -f "$LOCKFILE"; cleanup_chromium' EXIT
+
+# 写入当前 PID 和时间戳
+echo "$$ $(date +%s)" > "$LOCKFILE"
+
+# EXIT 时只清理 chromium，不删除锁文件（保留 1 小时保护窗口）
+trap 'cleanup_chromium' EXIT
 
 echo "========================================" >> "$LOG_FILE"
 echo "[$(date)] 开始执行雪球爬虫流程 v9 (nodriver)" >> "$LOG_FILE"
