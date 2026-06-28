@@ -754,6 +754,9 @@ class XueqiuCrawlerNodriver:
                     article['title'] = article['list_title']
                 if not article.get('content') and article.get('list_content'):
                     article['content'] = article['list_content']
+                # Fallback: use user_name if author is empty (selector failed on some page templates)
+                if not article.get('author'):
+                    article['author'] = user_name
                 article['crawl_time'] = datetime.now().isoformat()
 
                 # 跳过非专栏文章
