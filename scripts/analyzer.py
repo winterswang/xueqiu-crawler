@@ -972,7 +972,7 @@ class ArticleAnalyzer:
         """获取分析统计"""
         return dict(self.stats)
     
-    REQUIRED_ANALYSIS_FIELDS = ['summary', 'category', 'core_points', 'deep_analysis']
+    REQUIRED_ANALYSIS_FIELDS = ['summary', 'category', 'topic_category', 'core_points', 'deep_analysis']
 
     def _validate_analysis(self, analysis: dict) -> bool:
         """校验 LLM 分析响应是否包含所有必需字段"""
