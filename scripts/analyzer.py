@@ -600,6 +600,8 @@ class ArticleAnalyzer:
 {{
     "summary": "一句话总结这篇文章的核心结论（30字以内）",
     "category": "行业分析 | 公司研究 | 投资理念 | 宏观经济 | 其他",
+    "topic_category": "科技/AI/互联网 | 新能源/制造业 | 医药/医疗 | 消费/零售 | 金融/地产/宏观 | 海外市场 | IPO/新股 | 市场策略/投资理念 | 商业航天 | 其他",
+    "sentiment": "bullish | bearish | neutral",
     "related_stocks": ["股票名称(code)", "..."],
     "core_points": [
         "核心观点1：内容要饱满，不少于50字，完整呈现论点",
@@ -790,6 +792,12 @@ class ArticleAnalyzer:
         """Build a useful partial analysis from malformed JSON instead of empty [解析异常]."""
         summary = self._extract_string_field_from_raw(response, 'summary', 100) or self._extract_summary_from_raw(response)
         category = self._extract_string_field_from_raw(response, 'category', 30) or '其他'
+        topic_category = self._extract_string_field_from_raw(response, 'topic_category', 30) or '其他'
+        # 标准化主题分类
+        valid_topics = {'科技/AI/互联网', '新能源/制造业', '医药/医疗', '消费/零售', '金融/地产/宏观',
+                       '海外市场', 'IPO/新股', '市场策略/投资理念', '商业航天', '其他'}
+        if topic_category not in valid_topics:
+            topic_category = '其他'
         core_points = self._extract_string_array_from_raw(response, 'core_points', max_items=3)
         if not core_points:
             core_points = ['[部分解析] JSON 结构异常，已保留可提取摘要；请查看原文获取完整分析']
@@ -803,6 +811,7 @@ class ArticleAnalyzer:
         }
         return {
             'category': category,
+            'topic_category': topic_category,
             'related_stocks': self._extract_stocks_from_raw(response),
             'core_points': core_points,
             'summary': summary,
@@ -1001,6 +1010,7 @@ class ArticleAnalyzer:
         defaults = {
             'summary': article.get('title', '')[:30],
             'category': '其他',
+            'topic_category': '其他',
             'related_stocks': [],
             'core_points': ['[解析异常] LLM 返回不完整，请查看原文'],
             'deep_analysis': {
@@ -1038,6 +1048,7 @@ class ArticleAnalyzer:
             'scores': scores,
             'analysis': {
                 'category': category,
+                'topic_category': '其他',
                 'related_stocks': [],
                 'core_points': ['需配置 API Key 进行完整分析'],
                 'summary': article.get('title', '')[:30],
@@ -1209,6 +1220,32 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
     else:
         lines.append("今日无集中热门话题")
     
+    # 大V今日动态
+    lines.append("")
+    lines.append("### 👤 大V今日动态")
+    lines.append("")
+    author_stats = {}
+    for article, result in zip(articles, results):
+        if not result.get('quality_passed'):
+            continue
+        author = article.get('author', '匿名')
+        if author not in author_stats:
+            author_stats[author] = {'count': 0, 'topics': set(), 'is_media': False}
+        author_stats[author]['count'] += 1
+        topic = result.get('analysis', {}).get('topic_category', '')
+        if topic and topic != '其他':
+            author_stats[author]['topics'].add(topic)
+        # 媒体号识别
+        if author in ['港股解码', '海豚研究君', '腾讯新闻', '新浪财经', '格隆汇']:
+            author_stats[author]['is_media'] = True
+    
+    # 按发文数排序
+    sorted_authors = sorted(author_stats.items(), key=lambda x: -x[1]['count'])
+    for author, stat in sorted_authors:
+        media_tag = ' [资讯]' if stat['is_media'] else ''
+        topics_str = '、'.join(list(stat['topics'])[:3]) if stat['topics'] else '综合资讯'
+        lines.append(f"- **{author}**{media_tag}（{stat['count']}篇）：{topics_str}")
+    
     lines.append("")
     
     # 文章集合（按优先级排序）
@@ -1231,8 +1268,45 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
     if priorities['worth_reading']:
         lines.append("### 🟡 值得关注")
         lines.append("")
-        for i, (article, result) in enumerate(priorities['worth_reading'], 1):
-            lines.extend(_format_article(i, article, result))
+        
+        # 按主题分组
+        TOPIC_EMOJI = {
+            '科技/AI/互联网': '🚀',
+            '新能源/制造业': '🏭',
+            '医药/医疗': '🏥',
+            '消费/零售': '🛒',
+            '金融/地产/宏观': '🏦',
+            '海外市场': '🌏',
+            'IPO/新股': '📝',
+            '市场策略/投资理念': '📊',
+            '商业航天': '🛰️',
+            '其他': '📌',
+        }
+        
+        groups = {}
+        for article, result in priorities['worth_reading']:
+            topic = result.get('analysis', {}).get('topic_category', '其他')
+            if topic not in groups:
+                groups[topic] = []
+            groups[topic].append((article, result))
+        
+        # 按组内文章总分从高到低排序
+        def group_score(group_items):
+            return sum(r['scores']['total'] for _, r in group_items)
+        sorted_topics = sorted(groups.keys(), key=lambda t: -group_score(groups[t]))
+        
+        article_idx = 1
+        for topic in sorted_topics:
+            group_items = groups[topic]
+            emoji = TOPIC_EMOJI.get(topic, '📌')
+            # 组内文章按单篇分数从高到低
+            group_items_sorted = sorted(group_items, key=lambda x: -x[1]['scores']['total'])
+            lines.append(f"#### {emoji} {topic}（{len(group_items_sorted)}篇）")
+            lines.append("")
+            for article, result in group_items_sorted:
+                lines.extend(_format_article(article_idx, article, result))
+                article_idx += 1
+            lines.append("")
     
     if priorities['market_news']:
         lines.append("### 📰 市场资讯")
