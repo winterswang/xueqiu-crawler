@@ -154,15 +154,32 @@ def calculate_priority_score(article: dict, analysis: dict = None) -> dict:
     
     # 2. 价值投资关键词评分（最高 25 分）
     deep_keywords = [
+        # A股/港股传统价值投资术语
         '估值', 'PE', 'PB', 'ROE', 'ROIC', 'DCF', '自由现金流',
         '护城河', '安全边际', '商业模式', '竞争优势', '壁垒',
         '财报', '年报', '季报', '业绩',
         '内在价值', '价值投资',
         '毛利率', '净利率', '利润率', '周转率',
-        '管理层', '资本配置', '股东回报'
+        '管理层', '资本配置', '股东回报',
+        # 通用深度分析关键词（覆盖海外市场/行业研究）
+        '深度', '剖析', '研究', '分析', '访谈', 'CEO',
+        '行业', '竞争格局', '盈利', '增长', '空间', '景气度',
+        '供需', '产能', '份额', '渗透率',
+        '风险', '催化剂', '展望', '预测'
     ]
     keyword_hits = sum(1 for kw in deep_keywords if kw in title + content)
     scores['keywords'] = min(keyword_hits * 2, 25)
+    
+    # 2.1 作者权重分（最高 10 分）- 深度大V加分，媒体号不加分
+    author = article.get('author', '')
+    premium_authors = [
+        'MZInvest', '逸修1', 'Waterzzz', '仓又加错-Leo',
+        '慧博', 'Ricky', '不明真相的群众', '李想', '大道无形我有型'
+    ]
+    if any(pa in author for pa in premium_authors):
+        scores['author_bonus'] = 10
+    else:
+        scores['author_bonus'] = 0
     
     # 3. GLM-5 分析结果评分
     if analysis:
@@ -190,6 +207,7 @@ def calculate_priority_score(article: dict, analysis: dict = None) -> dict:
     scores['total'] = sum([
         scores['content_depth'],
         scores['keywords'],
+        scores.get('author_bonus', 0),
         scores['category'],
         scores['core_points'],
         scores['title_quality']
@@ -218,8 +236,13 @@ def classify_priority(article: dict, analysis: dict = None) -> str:
     
     # 根据总分确定优先级
     # 必读：60+ 分（高质量价值投资分析）
-    # 值得关注：30-59 分（有价值的分析）
-    # 参考：40 分以下
+    # 值得关注：40-59 分（有价值的分析）
+    # 市场资讯：<40分 或 标题带收评/IPO追踪/IPO前哨/年中/盘点（流水线媒体内容）
+    # 参考：短状态/预告
+    title = article.get('title', '')
+    is_news = any(kw in title for kw in ['收评', 'IPO追踪', 'IPO前哨', '年中盘点', 'IPO', '新股'])
+    if is_news and total < 60:
+        return 'market_news'
     if total >= 60:
         return 'must_read'
     elif total >= 30:
@@ -1048,6 +1071,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
     
     must_read = sum(1 for r in results if r.get('priority') == 'must_read')
     worth_reading = sum(1 for r in results if r.get('priority') == 'worth_reading')
+    market_news = sum(1 for r in results if r.get('priority') == 'market_news')
     reference = sum(1 for r in results if r.get('priority') == 'reference')
     
     # 收集所有股票并按市场分组
@@ -1112,75 +1136,88 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         f"|--------|------|------|",
         f"| 🔴 必读 | {must_read} | 高质量长文，深度分析 |",
         f"| 🟡 值得关注 | {worth_reading} | 有价值的观点和分析 |",
+        f"| 📰 市场资讯 | {market_news} | 收评、IPO新闻、盘面资讯 |",
         f"| 🔵 参考 | {reference} | 短状态/预告类 |",
         "",
         "---",
         "",
-        "## 三、相关股票（按市场分组）",
+        "## 三、📌 今日核心观点速览",
+        "",
+        "### 🔴 核心观点",
         ""
     ])
-    
-    if market_groups:
-        for market, stocks in market_groups.items():
-            lines.append(f"### {market} ({len(stocks)} 只)")
-            lines.append("")
-            for stock in stocks:
-                mentions = stock_mentions.get(stock, [])
-                article_links = ', '.join([f"[{m['title'][:20]}]({m['url']})" for m in mentions[:2]])
-                lines.append(f"- **{stock}**：{len(mentions)} 次 · {article_links}")
-            lines.append("")
-    else:
-        lines.append("暂无股票覆盖")
-        lines.append("")
-    
-    # 操作参考
-    lines.append("---")
-    lines.append("")
-    lines.append("## 四、今日操作参考")
     lines.append("")
     
-    has_signals = False
+    has_core = False
+    all_risks = []
+    # 先处理必读文章的核心观点
     for article, result in zip(articles, results):
-        if result.get('quality_passed') and result.get('analysis'):
-            analysis = result['analysis']
-            da = analysis.get('deep_analysis', {})
-            core_points = analysis.get('core_points', [])
-            stocks = analysis.get('related_stocks', [])
+        if not result.get('quality_passed') or not result.get('analysis'):
+            continue
+        priority = result.get('priority', 'reference')
+        if priority not in ['must_read', 'worth_reading']:
+            continue
             
-            title = article.get('title', '')[:40]
-            stock_str = ', '.join(stocks[:2]) if stocks else ''
-            
-            # 从核心观点提炼一句话
-            top_point = core_points[0][:80] + '...' if core_points else ''
-            
-            lines.append(f"**{title}**")
+        analysis = result['analysis']
+        author = article.get('author', '匿名')
+        summary = analysis.get('summary', '')
+        stocks = analysis.get('related_stocks', [])
+        stock_str = '、'.join(stocks[:2]) if stocks else ''
+        
+        if summary:
             if stock_str:
-                lines.append(f"  📌 {stock_str}")
-            if top_point:
-                lines.append(f"  → {top_point}")
-            
-            # 显示关键风险或后续关注
-            key_risk = da.get('key_risks', '')
-            outlook = da.get('outlook', '')
-            if key_risk:
-                lines.append(f"  ⚠️ {key_risk[:100]}{'...' if len(key_risk)>100 else ''}")
-            elif outlook:
-                lines.append(f"  🔭 {outlook[:100]}{'...' if len(outlook)>100 else ''}")
-            
-            lines.append("")
-            has_signals = True
+                lines.append(f"- **{author}**「{stock_str}」：{summary}")
+            else:
+                lines.append(f"- **{author}**：{summary}")
+            has_core = True
+        
+        # 收集关键风险
+        da = analysis.get('deep_analysis', {})
+        key_risk = da.get('key_risks', '')
+        if key_risk and len(key_risk) > 10:
+            all_risks.append(key_risk[:120])
     
-    if not has_signals:
-        lines.append("暂无有效分析")
-        lines.append("")
+    if not has_core:
+        lines.append("暂无核心观点提炼")
+    
+    # 风险提示
+    lines.append("")
+    lines.append("### ⚠️ 风险与机会")
+    lines.append("")
+    if all_risks:
+        for risk in list(set(all_risks))[:5]:
+            lines.append(f"- {risk}{'...' if len(risk)>=120 else ''}")
+    else:
+        lines.append("今日无集中风险提示")
+    
+    # 新增标的提示（这里暂时简单实现，后续可以比对自选股）
+    lines.append("")
+    lines.append("### 🆕 关注方向")
+    lines.append("")
+    hot_topics = {}
+    for article, result in zip(articles, results):
+        if not result.get('quality_passed') or not result.get('analysis'):
+            continue
+        analysis = result['analysis']
+        category = analysis.get('category', '')
+        if category and category not in ['其他', '未分类']:
+            hot_topics[category] = hot_topics.get(category, 0) + 1
+    if hot_topics:
+        top_topics = sorted(hot_topics.items(), key=lambda x: -x[1])[:5]
+        for topic, cnt in top_topics:
+            lines.append(f"- {topic}（{cnt}篇文章讨论）")
+    else:
+        lines.append("今日无集中热门话题")
+    
+    lines.append("")
     
     # 文章集合（按优先级排序）
     lines.append("---")
     lines.append("")
-    lines.append("## 五、文章详情")
+    lines.append("## 四、文章详情")
     lines.append("")
     
-    priorities = {'must_read': [], 'worth_reading': [], 'reference': []}
+    priorities = {'must_read': [], 'worth_reading': [], 'market_news': [], 'reference': []}
     for article, result in zip(articles, results):
         priority = result.get('priority', 'reference')
         priorities[priority].append((article, result))
@@ -1197,6 +1234,12 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         for i, (article, result) in enumerate(priorities['worth_reading'], 1):
             lines.extend(_format_article(i, article, result))
     
+    if priorities['market_news']:
+        lines.append("### 📰 市场资讯")
+        lines.append("")
+        for i, (article, result) in enumerate(priorities['market_news'], 1):
+            lines.extend(_format_article_brief(i, article, result))
+    
     if priorities['reference']:
         lines.append("### 🔵 参考")
         lines.append("")
@@ -1210,7 +1253,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         "",
         "---",
         "",
-        "## 六、今日总结",
+        "## 五、今日总结",
         "",
         f"- **主要话题**：{', '.join(categories) if categories else '暂无'}",
         f"- **热门股票**：{', '.join(hot_stocks) if hot_stocks else '无'}",
@@ -1267,7 +1310,7 @@ def _format_article(index: int, article: dict, result: dict) -> List[str]:
     # 显示评分信息
     scores = result.get('scores')
     if scores:
-        lines.append(f"- **评分**：{scores.get('total', 0)} 分（内容{scores.get('content_depth', 0)}+关键词{scores.get('keywords', 0)}+归类{scores.get('category', 0)}+观点{scores.get('core_points', 0)}+标题{scores.get('title_quality', 0)}）")
+        lines.append(f"- **评分**：{scores.get('total', 0)} 分（内容{scores.get('content_depth', 0)}+关键词{scores.get('keywords', 0)}+作者{scores.get('author_bonus', 0)}+归类{scores.get('category', 0)}+观点{scores.get('core_points', 0)}+标题{scores.get('title_quality', 0)}）")
     
     analysis = result.get('analysis')
     if analysis:

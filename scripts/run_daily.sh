@@ -116,8 +116,13 @@ if [ "$MODE" != "crawl-only" ] && [ "$MODE" != "retry-failed" ]; then
     $PYTHON_BIN scripts/generate_report.py --limit 50 >> "$LOG_FILE" 2>&1
 
     # 4. 发布到 IMA 笔记并发送链接
-    echo "[4/4] 发布到 IMA 笔记..." >> "$LOG_FILE"
-    $PYTHON_BIN scripts/publish_daily_report.py >> "$LOG_FILE" 2>&1
+    echo "[4/5] 发布到 IMA 笔记..." >> "$LOG_FILE"
+    IMA_NOTE_URL=$($PYTHON_BIN scripts/publish_daily_report.py 2>&1 | grep -oE 'https://ima\.qq\.com/note/[a-zA-Z0-9]+' | head -1)
+    echo "IMA 笔记: $IMA_NOTE_URL" >> "$LOG_FILE"
+    
+    # 5. 推送飞书卡片
+    echo "[5/5] 推送飞书日报卡片..." >> "$LOG_FILE"
+    IMA_NOTE_URL="$IMA_NOTE_URL" $PYTHON_BIN scripts/push_feishu.py >> "$LOG_FILE" 2>&1
 fi
 
 echo "[$(date)] 流程执行完成" >> "$LOG_FILE"
