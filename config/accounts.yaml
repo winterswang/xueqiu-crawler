@@ -69,3 +69,8 @@ accounts:
   id: '3966435964'
   name: 慧博
   url: https://xueqiu.com/u/3966435964
+- description: ''
+  enabled: true
+  id: '1425236713'
+  name: 用户1425236713
+  url: https://xueqiu.com/u/1425236713
