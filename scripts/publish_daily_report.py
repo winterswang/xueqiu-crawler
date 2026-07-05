@@ -153,6 +153,19 @@ def main():
     _logger.info("=" * 50)
     _logger.info(f"开始发布价值投资日报 - {date}")
 
+    # 幂等检查：当天已经发布过就直接返回已有链接
+    state_file = Path(__file__).resolve().parent.parent / "data" / ".last_published_note.json"
+    if state_file.exists():
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            if state.get("date") == date and state.get("note_id"):
+                note_url = f"https://ima.qq.com/note/{state['note_id']}"
+                _logger.info(f"当天已发布过，直接返回已有笔记: {note_url}")
+                print(note_url)
+                return 0
+        except Exception:
+            pass  # 状态文件损坏就忽略，正常发布
+
     # 1. 读取日报
     try:
         content = get_daily_report(date)
@@ -167,6 +180,14 @@ def main():
     if note_id:
         log_execution_stage("ima_push", "success", f"note_id={note_id}")
         _logger.info(f"IMA 笔记: {note_url}")
+        # 写入状态文件，避免重复发布
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps({
+            "date": date,
+            "note_id": note_id,
+            "published_at": datetime.now().isoformat()
+        }, ensure_ascii=False), encoding="utf-8")
+        print(note_url)
     else:
         _logger.error("IMA 推送失败")
         return 1
