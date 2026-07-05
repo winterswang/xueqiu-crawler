@@ -120,9 +120,12 @@ if [ "$MODE" != "crawl-only" ] && [ "$MODE" != "retry-failed" ]; then
     IMA_NOTE_URL=$($PYTHON_BIN scripts/publish_daily_report.py 2>&1 | grep -oE 'https://ima\.qq\.com/note/[a-zA-Z0-9]+' | head -1)
     echo "IMA 笔记: $IMA_NOTE_URL" >> "$LOG_FILE"
     
-    # 5. 推送飞书卡片
-    echo "[5/5] 推送飞书日报卡片..." >> "$LOG_FILE"
-    IMA_NOTE_URL="$IMA_NOTE_URL" $PYTHON_BIN scripts/push_feishu.py >> "$LOG_FILE" 2>&1
+    # 5. 生成飞书摘要
+    echo "[5/5] 生成飞书推送摘要..." >> "$LOG_FILE"
+    echo "========================================" >> "$LOG_FILE"
+    echo "📊 价值投资日报 - $(date +%Y-%m-%d)" >> "$LOG_FILE"
+    IMA_NOTE_URL="$IMA_NOTE_URL" $PYTHON_BIN scripts/push_feishu.py 2>&1 | tee -a "$LOG_FILE"
+    echo "========================================" >> "$LOG_FILE"
 fi
 
 echo "[$(date)] 流程执行完成" >> "$LOG_FILE"
