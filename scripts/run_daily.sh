@@ -78,11 +78,11 @@ if [ -f "$LOCKFILE" ]; then
     fi
 fi
 
+# 提前设置trap，保证任何退出（包括写锁后立即崩溃）都会清理锁
+trap 'cleanup' EXIT
+
 # 写入当前 PID 和时间戳
 echo "$$ $(date +%s)" > "$LOCKFILE"
-
-# EXIT 时只清理 chromium，不删除锁文件（保留 1 小时保护窗口）
-trap 'cleanup' EXIT
 
 echo "========================================" >> "$LOG_FILE"
 echo "[$(date)] 开始执行雪球爬虫流程 v9 (nodriver)" >> "$LOG_FILE"
