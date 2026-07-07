@@ -23,8 +23,11 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_FILE="$PROJECT_DIR/logs/cron_daily.log"
 DATE=$(date +%Y-%m-%d)
 
-# 资源清理函数：防止 OOM（僵尸 Chromium 进程）
-cleanup_chromium() {
+# 资源清理函数：防止 OOM（僵尸 Chromium 进程）+ 删除锁文件
+cleanup() {
+    # 清理锁文件（无论成功失败都删除，避免下次被锁跳过）
+    rm -f "$PROJECT_DIR/.cron_running.lock"
+    
     # nodriver 使用 google-chrome，Playwright 使用 chromium_headless_shell
     pkill -f "google-chrome.*headless" 2>/dev/null || true
     pkill -f "chromium_headless_shell" 2>/dev/null || true
@@ -35,13 +38,18 @@ cleanup_chromium() {
     find /root/.cache/openclaw -maxdepth 1 -name 'uc_*' -type d -mmin +60 -exec rm -rf {} \; 2>/dev/null || true
 }
 
+# 兼容旧函数名
+cleanup_chromium() {
+    cleanup
+}
+
 # 加载 .env 文件（如有）— 强制导出所有变量
 if [ -f "$PROJECT_DIR/.env" ]; then
     set -a
     source "$PROJECT_DIR/.env"
     set +a
     # 显式导出关键变量（防御性）
-    export MINIMAX_API_KEY MINIMAX_BASE_URL BAILIAN_API_KEY 2>/dev/null || true
+    export MINIMAX_API_KEY MINIMAX_BASE_URL BAILIAN_API_KEY ARK_API_KEY ARK_CODING_BASE_URL ANALYZE_LLM_MODEL 2>/dev/null || true
 fi
 
 # 内存检查：低于 500MB 可用时告警
@@ -74,7 +82,7 @@ fi
 echo "$$ $(date +%s)" > "$LOCKFILE"
 
 # EXIT 时只清理 chromium，不删除锁文件（保留 1 小时保护窗口）
-trap 'cleanup_chromium' EXIT
+trap 'cleanup' EXIT
 
 echo "========================================" >> "$LOG_FILE"
 echo "[$(date)] 开始执行雪球爬虫流程 v9 (nodriver)" >> "$LOG_FILE"
