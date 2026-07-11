@@ -124,12 +124,16 @@ if [ "$MODE" != "crawl-only" ] && [ "$MODE" != "retry-failed" ]; then
     $PYTHON_BIN scripts/generate_report.py --limit 50 >> "$LOG_FILE" 2>&1
 
     # 4. 发布到 IMA 笔记并发送链接
-    echo "[4/5] 发布到 IMA 笔记..." >> "$LOG_FILE"
+    echo "[4/6] 发布到 IMA 笔记..." >> "$LOG_FILE"
     IMA_NOTE_URL=$($PYTHON_BIN scripts/publish_daily_report.py 2>&1 | grep -oE 'https://ima\.qq\.com/note/[a-zA-Z0-9]+' | head -1)
     echo "IMA 笔记: $IMA_NOTE_URL" >> "$LOG_FILE"
     
-    # 5. 生成飞书摘要
-    echo "[5/5] 生成飞书推送摘要..." >> "$LOG_FILE"
+    # 5. 增量同步当日爬取的原始文章到IMA雪球内容知识库（非阻塞，失败不影响主流程）
+    echo "[5/6] 同步原始文章到IMA知识库..." >> "$LOG_FILE"
+    $PYTHON_BIN scripts/sync_raw_articles_to_ima.py >> "$LOG_FILE" 2>&1 || echo "原始文章同步失败（不影响主流程）" >> "$LOG_FILE"
+    
+    # 6. 生成飞书摘要
+    echo "[6/6] 生成飞书推送摘要..." >> "$LOG_FILE"
     echo "========================================" >> "$LOG_FILE"
     echo "📊 价值投资日报 - $(date +%Y-%m-%d)" >> "$LOG_FILE"
     IMA_NOTE_URL="$IMA_NOTE_URL" $PYTHON_BIN scripts/push_feishu.py 2>&1 | tee -a "$LOG_FILE"

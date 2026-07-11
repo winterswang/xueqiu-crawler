@@ -1232,7 +1232,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         if author not in author_stats:
             author_stats[author] = {'count': 0, 'topics': set(), 'is_media': False}
         author_stats[author]['count'] += 1
-        topic = result.get('analysis', {}).get('topic_category', '')
+        topic = (result.get('analysis') or {}).get('topic_category', '')
         if topic and topic != '其他':
             author_stats[author]['topics'].add(topic)
         # 媒体号识别
@@ -1364,7 +1364,9 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
     return report
 
 
-def _format_article(index: int, article: dict, result: dict) -> List[str]:
+def _format_article(index: int, article: dict, result: dict | None) -> List[str]:
+    if result is None:
+        return []
     """格式化文章详情"""
     lines = []
     
@@ -1457,7 +1459,9 @@ def _format_article(index: int, article: dict, result: dict) -> List[str]:
     return lines
 
 
-def _format_article_brief(index: int, article: dict, result: dict) -> List[str]:
+def _format_article_brief(index: int, article: dict, result: dict | None) -> List[str]:
+    if result is None:
+        return []
     """格式化文章简要信息"""
     lines = []
     
