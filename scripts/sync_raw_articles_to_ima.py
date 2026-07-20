@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-每日爬取完成后，将原始文章Markdown同步到IMA「雪球内容数据」知识库。
+每日同步雪球「日报入选文章」到 IMA「雪球内容数据」知识库。
+
+W32 2026-07-20 改造：只同步日报中分类为 🔴必读/🟡值得关注/📰市场资讯 的文章，
+🔵参考（短文/无营养）不入选，未出现在日报里的也不同步。
+
 - 增量同步：记录已上传文件的路径+大小+mtime，不重复上传
 - 断点续传：中断后下次继续
 - 非阻塞：上传失败不影响主日报流程，只打印日志
+- 凌晨空跑保护：08:00 之前日报可能未生成 → 返回 0
 """
 import os
 import sys
@@ -18,6 +23,10 @@ from datetime import datetime, timezone, timedelta
 # Add xueqiu-analyzer-skill to path for ima_kb_uploader
 sys.path.insert(0, '/root/code/xueqiu-analyzer-skill/src')
 from xueqiu_analyzer.ima_kb_uploader import upload_file
+
+# Add scripts to path for parse_daily_report
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from parse_daily_report import extract_selected_articles, find_raw_article_path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,7 +74,7 @@ def get_file_md5(path: Path) -> str:
 
 
 def find_article_files() -> list[Path]:
-    """查找所有文章md文件（按用户ID目录存储）"""
+    """[DEPRECATED W32] 查找所有文章md文件（按用户ID目录存储）—— 保留兼容但不再使用"""
     files = []
     for user_dir in DATA_DIR.iterdir():
         if not user_dir.is_dir():
@@ -76,6 +85,46 @@ def find_article_files() -> list[Path]:
         for md_file in user_dir.glob("*.md"):
             files.append(md_file)
     return sorted(files)
+
+
+def find_selected_article_files(date_str: str) -> tuple[list[Path], int, int]:
+    """[W32 新增] 查找当天日报入选文章的 raw 文件路径。
+
+    Returns:
+        (selected_paths, total_selected, missing_files)
+        - selected_paths: 找到的 raw 文件路径列表
+        - total_selected: 日报入选总数
+        - missing_files: 入选但 raw 文件找不到的数量
+    """
+    selected = extract_selected_articles(date_str)
+    total = len(selected)
+    paths = []
+    missing = 0
+    for art in selected:
+        path = find_raw_article_path(art["user_id"], art["post_id"], DATA_DIR)
+        if path is not None:
+            paths.append(path)
+        else:
+            missing += 1
+            logger.warning(
+                "  ⚠️ 入选文章 raw 找不到: %s/%s (%s)",
+                art["user_id"], art["post_id"], art.get("title", "")[:50]
+            )
+    return sorted(paths), total, missing
+
+
+def make_state_key(date_str: str, file_path: Path) -> str:
+    """[W32 新增] 生成 state key: date:user_id:post_id"""
+    try:
+        rel = file_path.relative_to(DATA_DIR)
+        parts = rel.parts  # ('1425236713', '400972632.md')
+        if len(parts) == 2 and parts[0].isdigit():
+            post_id = parts[1].replace('.md', '')
+            return f"{date_str}:{parts[0]}:{post_id}"
+    except ValueError:
+        pass
+    # 兜底用相对路径
+    return f"{date_str}:{str(file_path.relative_to(DATA_DIR))}"
 
 
 def extract_article_title(md_path: Path) -> str:
@@ -97,21 +146,41 @@ def extract_article_title(md_path: Path) -> str:
 
 
 def main():
+    # W32 2026-07-20: 接受可选 --date 参数，默认今天
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", default=None, help="日报日期 YYYY-MM-DD（默认今天）")
+    args = parser.parse_args()
+
+    target_date = args.date or datetime.now().strftime("%Y-%m-%d")
+
     logger.info("=" * 60)
-    logger.info(f"开始同步雪球原始文章到IMA「{KB_NAME}」")
+    logger.info(f"开始同步雪球日报入选文章到 IMA「{KB_NAME}」 (date={target_date})")
 
     # 加载已上传状态
     state = load_sync_state()
     logger.info(f"已上传记录: {len(state)} 篇")
 
-    # 查找所有文章文件
-    all_files = find_article_files()
-    logger.info(f"本地文章总数: {len(all_files)} 篇")
+    # 凌晨空跑保护：日报不存在 → 0 上传 0 错误返回
+    daily_path = DATA_DIR / "daily_reports" / f"{target_date}.md"
+    if not daily_path.exists():
+        logger.info(
+            f"⏰ 日报文件不存在 ({daily_path}) —— 凌晨空跑保护，返回 0。"
+        )
+        return 0
 
-    # 找出待上传的：不在state里，或者大小/mtime/MD5变了
+    # W32: 改用入选文件列表（不再 find_article_files 全部）
+    all_files, total_selected, missing = find_selected_article_files(target_date)
+    logger.info(f"日报入选: {total_selected} 篇，找到 raw: {len(all_files)} 篇，missing: {missing} 篇")
+
+    if not all_files:
+        logger.info("✅ 没有入选文章需要同步（可能日报为空或全部 missing）")
+        return 0
+
+    # 找出待上传的：state key 不在 OR mtime/size 变了
     pending = []
     for f in all_files:
-        key = str(f.relative_to(DATA_DIR))
+        key = make_state_key(target_date, f)
         try:
             stat = f.stat()
             mtime = stat.st_mtime
@@ -124,19 +193,18 @@ def main():
 
         if key in state:
             old = state[key]
-            # 如果mtime和size都没变，跳过
+            # 如果 mtime 和 size 都没变，跳过
             if old.get("size") == size and abs(old.get("mtime", 0) - mtime) < 1:
                 continue
             # 内容变了才需要重新上传
-            # 这里简单处理，mtime变了就上传
 
         pending.append((key, f))
 
-    logger.info(f"待上传: {len(pending)} 篇")
+    logger.info(f"待上传: {len(pending)} 篇（已上传: {len(all_files) - len(pending)} 篇）")
 
     if not pending:
-        logger.info("✅ 没有新文章需要同步")
-        return
+        logger.info("✅ 没有新文章需要同步（全部已上传）")
+        return 0
 
     success = 0
     fail = 0
