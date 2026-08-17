@@ -50,7 +50,7 @@ accounts:
   name: 永庆好公司
   url: https://xueqiu.com/u/6865675576
 - description: 港股专业分析
-  enabled: true
+  enabled: false  # 2026-08-12 用户要求移除
   id: '3075122481'
   name: 港股解码
   url: https://xueqiu.com/u/3075122481
@@ -74,3 +74,8 @@ accounts:
   id: '1425236713'
   name: 用户1425236713
   url: https://xueqiu.com/u/1425236713
+- description: ''
+  enabled: true
+  id: '4111857140'
+  name: 用户4111857140
+  url: https://xueqiu.com/u/4111857140
