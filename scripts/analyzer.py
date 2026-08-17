@@ -1236,7 +1236,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         if topic and topic != '其他':
             author_stats[author]['topics'].add(topic)
         # 媒体号识别
-        if author in ['港股解码', '海豚研究君', '腾讯新闻', '新浪财经', '格隆汇']:
+        if author in ['海豚研究君', '腾讯新闻', '新浪财经', '格隆汇']:
             author_stats[author]['is_media'] = True
     
     # 按发文数排序
