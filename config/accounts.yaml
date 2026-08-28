@@ -79,3 +79,8 @@ accounts:
   id: '4111857140'
   name: 用户4111857140
   url: https://xueqiu.com/u/4111857140
+- description: ''
+  enabled: true
+  id: '3452146899'
+  name: 用户3452146899
+  url: https://xueqiu.com/u/3452146899
