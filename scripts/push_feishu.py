@@ -31,7 +31,7 @@ client = OpenAI(
     api_key=os.environ.get("ARK_API_KEY", os.environ.get("MINIMAX_API_KEY", "")),
     base_url=os.environ.get("ARK_CODING_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
 )
-MODEL = os.environ.get("ANALYZE_LLM_MODEL", "minimax-m3")
+MODEL = os.environ.get("ANALYZE_LLM_MODEL", "deepseek-v4-flash-260425")
 
 
 def read_today_report(date: str = None) -> str:
