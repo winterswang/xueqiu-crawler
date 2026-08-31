@@ -20,7 +20,7 @@ storage:
 analysis:
   provider: "minimax"           # 默认 provider: minimax / aliyun
   models:
-    minimax: "minimax-m3"       # 字节 coding plan MiniMax 模型名
+    minimax: "deepseek-v4-flash-260425"  # 字节 coding plan DeepSeek V4 Flash (2026-08-31 从 minimax-m3 切换)
     aliyun: "glm-5"             # 阿里云/百炼 模型名
   max_content_chars: 8000       # 传给 LLM 的最大字符数（长文分析完整性）
   # MiniMax API 重试策略

@@ -21,8 +21,8 @@ def test_minimax_config_uses_ark_coding_model(monkeypatch):
 
     cfg = yaml.safe_load((_project_root / "config" / "config.yaml").read_text(encoding="utf-8"))
 
-    assert cfg["analysis"]["models"]["minimax"] == "minimax-m3"
+    assert cfg["analysis"]["models"]["minimax"] == "deepseek-v4-flash-260425"
 
     analyzer = ArticleAnalyzer(api_key="", config=cfg)
     assert analyzer.provider == "minimax"
-    assert analyzer.model_name == "minimax-m3"
+    assert analyzer.model_name == "deepseek-v4-flash-260425"
