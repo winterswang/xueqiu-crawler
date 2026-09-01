@@ -1066,13 +1066,16 @@ class ArticleAnalyzer:
 # ============ 报告生成器 ============
 
 def generate_daily_report(articles: List[dict], results: List[dict], output_path: str = None,
-                          crawl_stats: dict = None) -> str:
+                          crawl_stats: dict = None, model_name: str = None) -> str:
     """
     生成每日投研分析报告 v2 - 市场分组 + 操作参考
     
     Args:
         crawl_stats: 可选，爬取统计（含覆盖率信息）
+        model_name: 可选，LLM 模型名（写进报告署名，默认 DeepSeek V4 Flash）
     """
+    if not model_name:
+        model_name = "deepseek-v4-flash-260425"  # 2026-09-01: 默认 DeepSeek V4 Flash (曾为 MiniMax M3)
     today = datetime.now().strftime('%Y-%m-%d')
     
     # 统计
@@ -1263,7 +1266,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         lines.append("### 🔴 必读")
         lines.append("")
         for i, (article, result) in enumerate(priorities['must_read'], 1):
-            lines.extend(_format_article(i, article, result))
+            lines.extend(_format_article(i, article, result, model_name))
     
     if priorities['worth_reading']:
         lines.append("### 🟡 值得关注")
@@ -1304,7 +1307,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
             lines.append(f"#### {emoji} {topic}（{len(group_items_sorted)}篇）")
             lines.append("")
             for article, result in group_items_sorted:
-                lines.extend(_format_article(article_idx, article, result))
+                lines.extend(_format_article(article_idx, article, result, model_name))
                 article_idx += 1
             lines.append("")
     
@@ -1335,7 +1338,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         "---",
         "",
         f"*报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
-        "*分析模型：MiniMax M3*",
+        f"*分析模型：{model_name}*",
         "",
     ])
 
@@ -1364,7 +1367,8 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
     return report
 
 
-def _format_article(index: int, article: dict, result: dict | None) -> List[str]:
+def _format_article(index: int, article: dict, result: dict | None,
+                    model_name: str = "deepseek-v4-flash-260425") -> List[str]:
     if result is None:
         return []
     """格式化文章详情"""
@@ -1396,7 +1400,7 @@ def _format_article(index: int, article: dict, result: dict | None) -> List[str]
             lines.append(f"- **相关股票**：{', '.join(stocks)}")
         
         lines.append("")
-        lines.append("**MiniMax M3 分析：**")
+        lines.append(f"**{model_name} 分析：**")
         lines.append("")
         
         # 主题归类
