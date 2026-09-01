@@ -201,7 +201,8 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"读取爬取统计失败: {e}")
 
-    report = generate_daily_report(articles, results, output_path, crawl_stats=crawl_stats)
+    report = generate_daily_report(articles, results, output_path, crawl_stats=crawl_stats,
+                                   model_name=analyzer.model_name)
     
     # 输出统计
     passed = sum(1 for r in results if r.get('quality_passed'))
