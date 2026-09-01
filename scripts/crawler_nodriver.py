@@ -224,9 +224,26 @@ class XueqiuCrawlerNodriver:
         """启动 nodriver 浏览器"""
         if self.browser is not None:
             return
-        config = uc.Config(headless=True, sandbox=False)
-        self.browser = await uc.start(config=config)
-        self.logger.info("nodriver 浏览器已启动")
+        # macOS 上 Chrome 冷启动偶尔超过 nodriver 内置的 ~2.75s 连接窗口
+        # （Linux 服务器上 Chrome 秒起无此问题），加重试兜底：
+        # 首次尝试会预热 page cache/代码签名，重试基本必成。
+        # 注意：这里必须抛普通 Exception 而非 RuntimeError —— main() 会静默吞掉 RuntimeError。
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                config = uc.Config(headless=True, sandbox=False)
+                self.browser = await uc.start(config=config)
+                self.logger.info("nodriver 浏览器已启动")
+                return
+            except Exception as e:
+                self.logger.warning(
+                    f"浏览器启动失败 (尝试 {attempt}/{max_attempts}): "
+                    f"{type(e).__name__}: {str(e)[:100]}"
+                )
+                await self._close_browser()
+                if attempt < max_attempts:
+                    await asyncio.sleep(3)
+        raise Exception(f"nodriver 浏览器启动失败（已重试 {max_attempts} 次）")
 
     async def _warmup(self):
         """访问首页预热会话"""
