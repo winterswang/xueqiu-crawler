@@ -21,7 +21,9 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 # Add xueqiu-analyzer-skill to path for ima_kb_uploader
-sys.path.insert(0, '/root/code/xueqiu-analyzer-skill/src')
+# 兄弟目录推导（远程 /root/code 与本地 ~/code/claude_code 同构）；
+# 目录不存在时无害——回退到 venv 里 pip install -e 的包
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'xueqiu-analyzer-skill' / 'src'))
 from xueqiu_analyzer.ima_kb_uploader import upload_file
 
 # Add scripts to path for parse_daily_report
@@ -193,9 +195,12 @@ def main():
 
         if key in state:
             old = state[key]
-            # 如果 mtime 和 size 都没变，跳过
+            # 如果 mtime 和 size 都没变：已成功上传、或已达重试上限（永久失败）才跳过；
+            # 曾失败（无 media_id）且 fail_count < MAX_RETRIES → 重新入队，跨运行重试
+            # （修复：原逻辑无条件跳过，导致下游 MAX_RETRIES 重试永远不可达）
             if old.get("size") == size and abs(old.get("mtime", 0) - mtime) < 1:
-                continue
+                if old.get("media_id") or old.get("fail_count", 0) >= 5:
+                    continue
             # 内容变了才需要重新上传
 
         pending.append((key, f))

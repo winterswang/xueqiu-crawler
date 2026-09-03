@@ -130,7 +130,7 @@ def test_extract_selected_dedupes_duplicate_links(tmp_daily_dir):
 
 def test_find_raw_article_path_existing():
     """find_raw_article_path: 找真实存在的 raw"""
-    data_dir = Path("/root/code/xueqiu-crawler/data")
+    data_dir = Path(__file__).resolve().parent.parent / "data"
     path = find_raw_article_path("1425236713", "400972632", data_dir=data_dir)
     assert path is not None
     assert path.exists()
@@ -139,7 +139,7 @@ def test_find_raw_article_path_existing():
 
 def test_find_raw_article_path_missing():
     """find_raw_article_path: 找不到返回 None"""
-    data_dir = Path("/root/code/xueqiu-crawler/data")
+    data_dir = Path(__file__).resolve().parent.parent / "data"
     path = find_raw_article_path("9999999999", "999999999999", data_dir=data_dir)
     assert path is None
 
@@ -155,7 +155,7 @@ def test_categories_definitions():
 
 def test_real_daily_2026_07_20_excludes_blue():
     """真实日报 2026-07-20：1 🔴 + 5 🔵，只入选 1 篇"""
-    real_dir = Path("/root/code/xueqiu-crawler/data/daily_reports")
+    real_dir = Path(__file__).resolve().parent.parent / "data" / "daily_reports"
     if not (real_dir / "2026-07-20.md").exists():
         pytest.skip("真实日报 2026-07-20.md 不存在")
     selected = extract_selected_articles("2026-07-20", report_dir=real_dir)
