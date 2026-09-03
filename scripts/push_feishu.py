@@ -26,7 +26,7 @@ REPORT_DIR = PROJECT_DIR / "data" / "daily_reports"
 
 # 飞书 webhook 从环境变量读取，或使用配置文件
 FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
-# OpenAI 兼容客户端（使用字节 coding plan minimax-m3）
+# OpenAI 兼容客户端（字节 coding plan，模型与 config.yaml 保持同步）
 client = OpenAI(
     api_key=os.environ.get("ARK_API_KEY", os.environ.get("MINIMAX_API_KEY", "")),
     base_url=os.environ.get("ARK_CODING_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),

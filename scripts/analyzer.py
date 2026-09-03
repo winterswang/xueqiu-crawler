@@ -1075,7 +1075,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
         model_name: 可选，LLM 模型名（写进报告署名，默认 DeepSeek V4 Flash）
     """
     if not model_name:
-        model_name = "deepseek-v4-flash-260425"  # 2026-09-01: 默认 DeepSeek V4 Flash (曾为 MiniMax M3)
+        model_name = "deepseek-v4-flash-ga-260731"  # 2026-09-03: 与 config.yaml 同步（曾为 flash-260425 / MiniMax M3）
     today = datetime.now().strftime('%Y-%m-%d')
     
     # 统计
@@ -1368,7 +1368,7 @@ def generate_daily_report(articles: List[dict], results: List[dict], output_path
 
 
 def _format_article(index: int, article: dict, result: dict | None,
-                    model_name: str = "deepseek-v4-flash-260425") -> List[str]:
+                    model_name: str = "deepseek-v4-flash-ga-260731") -> List[str]:
     if result is None:
         return []
     """格式化文章详情"""
