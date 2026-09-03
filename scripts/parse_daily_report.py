@@ -43,6 +43,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from datetime import datetime
+
+# 仓库根（兄弟目录部署兼容：远程 /root/code 与本地 ~/code/claude_code 同构）
+PROJECT_DIR = Path(__file__).resolve().parent.parent
 from typing import Optional
 
 # 选中的分类标题（H3 级别）
@@ -77,7 +80,7 @@ def extract_selected_articles(
 
     Args:
         date: "YYYY-MM-DD" 格式，默认今天
-        report_dir: 日报目录，默认 /root/code/xueqiu-crawler/data/daily_reports
+        report_dir: 日报目录，默认 <repo>/data/daily_reports
 
     Returns:
         list of dict，每个含 {user_id, post_id, title, category}
@@ -94,7 +97,7 @@ def extract_selected_articles(
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
     if report_dir is None:
-        report_dir = Path("/root/code/xueqiu-crawler/data/daily_reports")
+        report_dir = PROJECT_DIR / "data" / "daily_reports"
 
     report_path = report_dir / f"{date}.md"
     if not report_path.exists():
@@ -181,7 +184,7 @@ def find_raw_article_path(
         Path if exists, else None
     """
     if data_dir is None:
-        data_dir = Path("/root/code/xueqiu-crawler/data")
+        data_dir = PROJECT_DIR / "data"
 
     article_path = data_dir / user_id / f"{post_id}.md"
     return article_path if article_path.exists() else None
