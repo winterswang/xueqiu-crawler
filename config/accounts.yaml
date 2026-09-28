@@ -84,3 +84,8 @@ accounts:
   id: '3452146899'
   name: 用户3452146899
   url: https://xueqiu.com/u/3452146899
+- description: 医药投资分析（AK112/康方生物等）
+  enabled: true
+  id: '1222910358'
+  name: Trociz
+  url: https://xueqiu.com/u/1222910358
