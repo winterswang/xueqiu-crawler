@@ -47,7 +47,7 @@
 
 ### 后续工作
 
-- [ ] 将 `scripts/crawler.py` 迁移到 nodriver async API
+- [x] 将 `scripts/crawler.py` 迁移到 nodriver async API（已完成：crawler_nodriver.py；旧文件 2026-10-01 归档到 archive/）
 - [ ] 保留文章解析逻辑，替换 Playwright 页面操作
 - [ ] 测试 12 用户全量爬取稳定性
 - [ ] 更新 cron 任务
