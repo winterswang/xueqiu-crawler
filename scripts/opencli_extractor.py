@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 
 BROWSER_SESSION_PREFIX = "xq-crawler"
 
-
 def is_available() -> bool:
     """Check if opencli is installed and the Chrome extension is connected."""
     if not shutil.which("opencli"):
