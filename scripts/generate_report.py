@@ -22,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from logging_utils import get_logger, log_execution_stage, log_execution_summary
 from analyzer import ArticleAnalyzer, check_article_quality, generate_daily_report
+# 风控页判定统一走 xueqiu_analyzer.waf（唯一实现，见 scripts/waf_bridge.py）
+from waf_bridge import is_error_page
 
 
 def get_today_articles(data_dir: str = 'data') -> list:
@@ -111,19 +113,9 @@ def get_today_articles(data_dir: str = 'data') -> list:
     if fs_articles:
         print(f"文件系统兜底: {fs_articles} 篇（索引中缺失）")
 
-    # 过滤 WAF/错误页面（405、验证页面等）
-    _error_titles = {"405", "403", "滑动验证页面"}
-    _error_patterns = [
-        "您的访问被阻断", "request has been blocked",
-        "可能对网站造成安全威胁", "potential threats to the server",
-        "访问被拦截", "滑动验证", "请按住滑块",
-    ]
+    # 过滤 WAF/错误页面（405、验证页面等）—— 判定见 xueqiu_analyzer.waf
     def _is_error(a: dict) -> bool:
-        t = a.get('title', '').strip()
-        if t in _error_titles or t == '':
-            return True
-        head = a.get('content', '')[:500]
-        return any(p in head for p in _error_patterns)
+        return is_error_page(a.get('title', ''), a.get('content', ''))
 
     filtered = [a for a in articles if not _is_error(a)]
     skipped = len(articles) - len(filtered)

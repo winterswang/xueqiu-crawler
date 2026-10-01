@@ -27,6 +27,12 @@ if _dotenv_path.exists():
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# 风控页判定的唯一实现（analyzer 的 xueqiu_analyzer.waf）。
+# 导入失败会当场 SystemExit —— 见 scripts/waf_bridge.py 的说明。
+from scripts.waf_bridge import (  # noqa: E402
+    contains_waf_text, has_waf_marker, is_error_page,
+)
+
 import nodriver as uc
 
 # OpenCLI fallback (zero-WAF via Chrome extension)
@@ -45,26 +51,10 @@ class WafDetectedError(Exception):
     pass
 
 
-# 405/WAF error page patterns — shared with opencli_extractor._ERROR_PAGE_PATTERNS
-_ERROR_CONTENT_PATTERNS = [
-    "您的访问被阻断",
-    "request has been blocked",
-    "可能对网站造成安全威胁",
-    "potential threats to the server",
-    "访问被拦截",
-    "滑动验证",
-    "请按住滑块",
-]
-_ERROR_TITLE_PATTERNS = {"405", "403", "滑动验证页面"}
-
-
-def _is_content_error(title: str, content: str) -> bool:
-    """Detect if title or content is a WAF/error page, not real article content."""
-    title_stripped = title.strip()
-    if title_stripped in _ERROR_TITLE_PATTERNS or title_stripped == "":
-        return True
-    head = content[:500]
-    return any(p in head for p in _ERROR_CONTENT_PATTERNS)
+# 风控页判定统一走 xueqiu_analyzer.waf（唯一实现，见 scripts/waf_bridge.py）。
+# 这里原先有两套互不相同的模式表：本文件的 _ERROR_CONTENT_PATTERNS 与
+# opencli_extractor 的 _ERROR_PAGE_PATTERNS —— 大小写行为还不一样。
+_is_content_error = is_error_page
 
 # 默认常量
 DEFAULT_MAX_ARTICLES = 20
@@ -279,14 +269,15 @@ class XueqiuCrawlerNodriver:
         return await self.tab.evaluate("document.documentElement.outerHTML")
 
     async def _detect_waf(self) -> bool:
-        """检测是否触发了WAF验证"""
+        """检测是否触发了 WAF 验证（模式表见 xueqiu_analyzer.waf）。
+
+        刻意不走 is_error_page：那条「空标题算错误页」的规则是为「过滤坏文章」
+        设计的，用它来触发浏览器重启太激进 —— 一次没取到标题就重启不划算。
+        """
         title = await self._page_title()
-        if "滑动验证" in title:
-            self.logger.warning("检测到 WAF 滑动验证页面!")
-            return True
         content = await self._page_content()
-        if "aliyun_waf" in content:
-            self.logger.warning("检测到 WAF 标记!")
+        if contains_waf_text(title) or contains_waf_text(content) or has_waf_marker(content):
+            self.logger.warning("检测到 WAF 风控页（标题/正文/页面标记命中）")
             return True
         return False
 
