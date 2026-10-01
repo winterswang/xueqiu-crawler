@@ -16,7 +16,7 @@
 ```
 accounts.yaml (账号配置)
         ↓
-crawler.py (Playwright 爬文章列表 + 详情)
+crawler_nodriver.py (nodriver 爬文章列表 + 详情；旧 crawler.py 已归档到 archive/)
         ↓
 index.json (文章索引: article_id → filepath)
         ↓

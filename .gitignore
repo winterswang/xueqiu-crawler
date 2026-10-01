@@ -44,3 +44,6 @@ config/xueqiu_cookies.json
 DAILY_LOG.md
 data/*.db
 data/*.bak
+
+# 运行期锁文件（勿提交）
+.cron_running.lock
