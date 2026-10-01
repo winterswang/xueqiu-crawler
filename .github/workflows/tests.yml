@@ -1,0 +1,45 @@
+name: tests
+
+# analyzer 已 public，跨仓库 checkout 用默认凭据即可，无需 PAT secret。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # scripts/waf_bridge.py 引用 analyzer 的 xueqiu_analyzer.waf（风控判定唯一实现），
+      # scripts/generate_report.py 也经它间接依赖。拿不到会 SystemExit。
+      - name: Checkout analyzer
+        uses: actions/checkout@v4
+        with:
+          repository: winterswang/xueqiu-analyzer-skill
+          path: _deps/xueqiu-analyzer-skill
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # requirements.txt 里没有 pytest，测试依赖单独装
+          pip install -r requirements.txt pytest
+          pip install -e _deps/xueqiu-analyzer-skill
+
+      - name: Run tests
+        env:
+          XUEQIU_ANALYZER_PATH: ${{ github.workspace }}/_deps/xueqiu-analyzer-skill/src
+        run: python -m pytest tests/ -q

@@ -12,3 +12,8 @@ python-dotenv>=1.0.0
 
 # 爬虫备用（Playwright 本地浏览器，仅 XCrawl 失败时 fallback）
 playwright>=1.40.0
+
+# 爬虫主力（scripts/crawler_nodriver.py，run_daily.sh 每天调用）
+# 此前一直不在 requirements 里 —— 生产环境是手工装的，新环境照 requirements
+# 装完会在 import 阶段 ModuleNotFoundError。CI 加进来后才暴露。
+nodriver>=0.50
