@@ -60,7 +60,7 @@ function buildExtractJs(targetCount, maxScrolls) {
     ' })()';
 }
 
-const BLOCK_GUARD = "(function(){var t=(document.title||'')+' '+((document.body&&document.body.innerText)||'').slice(0,300);return /您的访问被阻断|request has been blocked|可能对网站造成安全威胁|potential threats to the server|访问被拦截|滑动验证|请按住滑块|访问验证|安全限制|访问频繁|website-login/.test(t)?'BLOCKED':'OK';})()";
+const BLOCK_GUARD = "(function(){var t=(document.title||'')+' '+((document.body&&document.body.innerText)||'').slice(0,300);return /您的访问被阻断|request has been blocked|可能对网站造成安全威胁|potential threats to the server|访问被拦截|滑动验证|请按住滑块|访问验证|安全限制|访问频繁|website-login|405 forbidden|http 405|405 not allowed/.test(t)?'BLOCKED':'OK';})()";
 
 cli({
     site: 'xueqiu',
