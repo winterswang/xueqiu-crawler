@@ -78,4 +78,18 @@ else
   echo "  （目录不存在）"
 fi
 
+# ── 5. BLOCK_GUARD 是否与 Python 侧唯一实现同源 ─────────────────────────
+echo "== BLOCK_GUARD 与 xueqiu_analyzer.waf.CONTENT_PATTERNS 是否同源"
+SYNC="$DIR/../scripts/sync_waf_patterns.py"
+if [ -f "$SYNC" ]; then
+  if python3 "$SYNC" --check >/tmp/waf_sync_check.out 2>&1; then
+    sed 's/^/  /' /tmp/waf_sync_check.out
+  else
+    sed 's/^/  /' /tmp/waf_sync_check.out
+    echo "  → 运行 python3 scripts/sync_waf_patterns.py 修复"
+  fi
+else
+  echo "  ??   找不到 $SYNC"
+fi
+
 exit 0

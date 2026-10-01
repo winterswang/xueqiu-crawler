@@ -18,22 +18,22 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# 风控页判定统一走 xueqiu_analyzer.waf（唯一实现，见 scripts/waf_bridge.py）。
+# 这里原先自己维护一份 _ERROR_PAGE_PATTERNS：比 crawler_nodriver 那份少两项
+# （滑动验证 / 请按住滑块）、多一项 "405"，而且 "405" 是当正文子串匹配的 ——
+# 任何开头 500 字里出现 405 的正常文章都会被误判成错误页并重试。
+from scripts.waf_bridge import looks_like_waf_content  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 BROWSER_SESSION_PREFIX = "xq-crawler"
-
-# Patterns that indicate the page is a WAF/error page, not real article content
-_ERROR_PAGE_PATTERNS = [
-    "您的访问被阻断",
-    "request has been blocked",
-    "可能对网站造成安全威胁",
-    "potential threats to the server",
-    "405",
-    "访问被拦截",
-]
 
 
 def is_available() -> bool:
@@ -158,11 +158,12 @@ def get_article_content(url: str, session_name: str = "xq-crawler", max_retries:
 
 
 def _is_error_page(content: str) -> bool:
-    """Check if extracted content is a WAF/error page."""
-    if len(content) < 100:
-        return False
-    head = content[:500].lower()
-    return any(p.lower() in head for p in _ERROR_PAGE_PATTERNS)
+    """Check if extracted content is a WAF/error page.
+
+    实现见 xueqiu_analyzer.waf.looks_like_waf_content —— 只有正文、没有可信标题，
+    且沿用原有的「短于 100 字不判」规则（那是「没取到内容」，不是风控）。
+    """
+    return looks_like_waf_content(content)
 
 
 def close_session(session_name: str = "xq-crawler"):
