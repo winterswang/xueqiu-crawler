@@ -1,0 +1,2 @@
+# opencli plugin install 时自动生成（指向全局 @jackwener/opencli 的符号链接）
+node_modules/

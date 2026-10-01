@@ -1,0 +1,6 @@
+{
+  "name": "xueqiu-adapters",
+  "version": "1.0.0",
+  "description": "雪球 / 小红书 opencli 本地适配器：news、replies、stock-notices、user-articles、comments、xiaohongshu search",
+  "opencli": ">=1.8.8"
+}
