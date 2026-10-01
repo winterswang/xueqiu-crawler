@@ -1,12 +1,6 @@
 name: tests
 
-# 需要 secret ANALYZER_REPO_TOKEN：一个能只读访问 winterswang/xueqiu-analyzer-skill
-# 的 fine-grained PAT。该仓库是 private，默认的 GITHUB_TOKEN 只能读当前仓库，
-# 跨仓库 checkout 会 404。缺少 secret 时 job 会在 checkout 步骤失败。
-#
-# 配置（一次性）:
-#   1. 建 fine-grained PAT，仅授权 xueqiu-analyzer-skill 的 Contents: Read
-#   2. gh secret set ANALYZER_REPO_TOKEN --repo winterswang/xueqiu-crawler
+# analyzer 已 public，跨仓库 checkout 用默认凭据即可，无需 PAT secret。
 
 on:
   push:
@@ -27,12 +21,11 @@ jobs:
 
       # scripts/waf_bridge.py 引用 analyzer 的 xueqiu_analyzer.waf（风控判定唯一实现），
       # scripts/generate_report.py 也经它间接依赖。拿不到会 SystemExit。
-      - name: Checkout analyzer (private)
+      - name: Checkout analyzer
         uses: actions/checkout@v4
         with:
           repository: winterswang/xueqiu-analyzer-skill
           path: _deps/xueqiu-analyzer-skill
-          token: ${{ secrets.ANALYZER_REPO_TOKEN }}
 
       - uses: actions/setup-python@v5
         with:
