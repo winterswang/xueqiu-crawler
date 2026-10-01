@@ -27,9 +27,9 @@
 ┌───────────────────────────────────────────────────────────────────┐
 │                      爬虫层 (Crawler Layer)                        │
 │                                                                   │
-│  crawler.py (~880行)     ← 主用，Playwright 本地浏览器爬取        │
-│       └─ XueqiuCrawler: 文章列表爬取、详情爬取、增量更新          │
-│       └─ crawl_all_users: 串行遍历11个账号 + 爬取统计保存         │
+│  crawler_nodriver.py     ← 主用，nodriver async 爬取（run_daily 调用）│
+│       └─ XueqiuCrawlerNodriver: 文章列表/详情爬取、增量更新       │
+│  〔已归档〕crawler.py    ← 旧 Playwright 实现，0 引用 → archive/  │
 │                                                                   │
 │  login.py (295行)        ← 新增，雪球自动登录脚本                 │
 │       └─ 通过 OpenClaw browser 自动完成登录、提取 cookies          │

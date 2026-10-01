@@ -31,7 +31,9 @@ _ERROR_PAGE_PATTERNS = [
     "request has been blocked",
     "可能对网站造成安全威胁",
     "potential threats to the server",
-    "405",
+    "405 Forbidden",
+    "HTTP 405",
+    "405 Not Allowed",
     "访问被拦截",
 ]
 

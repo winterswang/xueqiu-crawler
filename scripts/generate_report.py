@@ -155,7 +155,16 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
 
     if not articles:
         logger.info("今日无新增文章")
-        return ""
+        # 仍然产出最小报告。
+        # 原因：run_daily.sh 的后续步骤（publish_daily_report / push_feishu）都假定
+        # 日报文件存在，直接 return "" 会让「今天确实没有新文章」这个**正常状态**
+        # 触发一串「日报文件不存在」报错，且当天零交付（2026-10-01 实测）。
+        # 复用 generate_daily_report 生成，格式与正常日报完全一致。
+        today = datetime.now().strftime('%Y-%m-%d')
+        no_update_path = output_path or f"{data_dir}/daily_reports/{today}.md"
+        report = generate_daily_report([], [], no_update_path)
+        logger.info(f"已生成「今日无新增」最小日报: {no_update_path}")
+        return report
 
     logger.info(f"今日新增文章: {len(articles)} 篇")
 
