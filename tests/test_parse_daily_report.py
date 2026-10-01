@@ -128,19 +128,27 @@ def test_extract_selected_dedupes_duplicate_links(tmp_daily_dir):
     assert user_ids.count("1425236713") == 1, f"1425236713 出现 {user_ids.count('1425236713')} 次"
 
 
-def test_find_raw_article_path_existing():
-    """find_raw_article_path: 找真实存在的 raw"""
-    data_dir = Path(__file__).resolve().parent.parent / "data"
-    path = find_raw_article_path("1425236713", "400972632", data_dir=data_dir)
+def test_find_raw_article_path_existing(tmp_path):
+    """find_raw_article_path: 存在则返回该路径。
+
+    原来读的是 <repo>/data/1425236713/400972632.md —— data/ 被 gitignore，
+    CI 上不存在，这个用例必然失败（本机有文件所以一直没暴露）。
+    改为在 tmp_path 里自造 fixture。
+    """
+    user_dir = tmp_path / "1425236713"
+    user_dir.mkdir()
+    (user_dir / "400972632.md").write_text("正文", encoding="utf-8")
+
+    path = find_raw_article_path("1425236713", "400972632", data_dir=tmp_path)
+
     assert path is not None
     assert path.exists()
     assert path.name == "400972632.md"
 
 
-def test_find_raw_article_path_missing():
+def test_find_raw_article_path_missing(tmp_path):
     """find_raw_article_path: 找不到返回 None"""
-    data_dir = Path(__file__).resolve().parent.parent / "data"
-    path = find_raw_article_path("9999999999", "999999999999", data_dir=data_dir)
+    path = find_raw_article_path("9999999999", "999999999999", data_dir=tmp_path)
     assert path is None
 
 
