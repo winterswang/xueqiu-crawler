@@ -2,7 +2,7 @@ import { cli } from '@jackwener/opencli/registry';
 import { CommandExecutionError } from '@jackwener/opencli/errors';
 import { ArgumentError } from '@jackwener/opencli/errors';
 
-const SYMBOL_PATTERN = /^[A-Z]{0,2}\d{4,6}[A-Z]?$/;
+const SYMBOL_PATTERN = /^(?:[A-Z]{2}\d{5,6}|\d{4,6}|[A-Z]{1,5}(?:\.[A-Z]{1,2})?)$/;
 
 const CLICK_NEWS_TAB_JS = ' (() => {' +
     'const wanted = ["资讯", "新闻"];' +
@@ -110,4 +110,3 @@ cli({
         return (Array.isArray(items) ? items : []).slice(0, limit);
     },
 });
-
