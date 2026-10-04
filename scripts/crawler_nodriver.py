@@ -372,7 +372,7 @@ class XueqiuCrawlerNodriver:
             return match.group(1)
         return hashlib.md5((url + str(time.time())).encode()).hexdigest()[:12]
 
-    async def _parse_article_list(self, user_id: str) -> List[dict]:
+    async def _parse_article_list(self, user_id: str) -> Optional[List[dict]]:
         """解析用户时间线，提取文章列表"""
         articles = []
 
@@ -380,7 +380,7 @@ class XueqiuCrawlerNodriver:
         found = await self._wait_for_selector('.timeline__item', timeout_seconds=15)
         if not found:
             self.logger.warning(f"未找到 .timeline__item (可能被WAF拦截)")
-            return articles
+            return None
 
         # 获取所有时间线条目的关键数据 (JSON.stringify 解决 nodriver RemoteObject 序列化)
         # is_likely_column: 列表层专栏预判。雪球专栏正文容器带 content--longtext class，
@@ -406,13 +406,13 @@ class XueqiuCrawlerNodriver:
 
         if not items_json or not isinstance(items_json, str):
             self.logger.warning(f"evaluate 未返回有效的 JSON 字符串: {type(items_json)}")
-            return articles
+            return None
 
         try:
             items_data = json.loads(items_json)
         except json.JSONDecodeError as e:
             self.logger.error(f"JSON 解析失败: {e}")
-            return articles
+            return None
 
         self.logger.info(f"找到 {len(items_data)} 条动态")
 
@@ -696,6 +696,9 @@ class XueqiuCrawlerNodriver:
 
             # 解析文章列表
             article_list = await self._parse_article_list(user_id)
+            if article_list is None:
+                result['error'] = 'timeline_not_found'
+                return result
 
             # 增量去重
             history_ids = self._get_history_article_ids(user_id)
@@ -915,7 +918,10 @@ class XueqiuCrawlerNodriver:
         self.logger.info(f"新文章: {stats['total_new']}")
 
         # 保存统计
-        successful = sum(1 for u in stats['users'] if 'saved_articles' in u)
+        successful = sum(
+            1 for u in stats['users']
+            if 'saved_articles' in u and 'error' not in u
+        )
         failed = sum(1 for u in stats['users'] if 'error' in u)
         crawl_stats = {
             'date': datetime.now().strftime('%Y-%m-%d'),
