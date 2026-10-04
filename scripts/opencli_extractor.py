@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # （滑动验证 / 请按住滑块）、多一项 "405"，而且 "405" 是当正文子串匹配的 ——
 # 任何开头 500 字里出现 405 的正常文章都会被误判成错误页并重试。
 from scripts.waf_bridge import looks_like_waf_content  # noqa: E402
+from xueqiu_analyzer.opencli_call_logger import record_opencli_call  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,14 @@ def _run(*args: str, timeout: int = 30, check: bool = False) -> subprocess.Compl
     """Run opencli command, suppressing stderr noise."""
     cmd = ["opencli"] + list(args)
     logger.debug(f"opencli: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    source = os.environ.get("XUEQIU_CALL_SOURCE", "xueqiu-crawler:opencli_extractor")
+    started_at = time.time()
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except Exception as exc:
+        record_opencli_call(cmd, started_at, error=exc, source=source, caller="_run")
+        raise
+    record_opencli_call(cmd, started_at, result=result, source=source, caller="_run")
     if check and result.returncode != 0:
         raise RuntimeError(f"opencli failed: {result.stderr.strip()[:200]}")
     return result
