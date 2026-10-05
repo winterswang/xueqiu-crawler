@@ -30,7 +30,7 @@ def test_user_articles_preflight_does_not_visit_xueqiu(monkeypatch):
 def test_opencli_run_uses_shared_rate_limiter(monkeypatch):
     slots = []
 
-    def fake_slot(_source):
+    def fake_slot(_source, _args):
         slot = {"enabled": True, "waited_seconds": 0.0, "reserved_seconds": 2.0}
         slots.append(slot)
         return slot
