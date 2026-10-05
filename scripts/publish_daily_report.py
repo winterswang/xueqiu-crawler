@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import hashlib
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -148,31 +149,61 @@ def create_ima_note(title: str, content: str) -> Optional[str]:
     return None
 
 
-def main():
+def _content_digest(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _should_reuse_note(state: dict, date: str, digest: str) -> bool:
+    """当天且**内容一致**才复用已有笔记。
+
+    只比日期不够：日报在同一天会被重写（首次爬取被风控拦住产出 0 篇空日报，
+    过了验证页重跑才有真内容）。复用旧笔记会让「重跑成功」指向空日报，
+    且脚本返回 0，任何地方都看不出异常。
+    老状态文件没有 content_digest → 视为不一致 → 重新发布（安全方向）。
+    """
+    if not isinstance(state, dict):
+        return False
+    return bool(
+        state.get("date") == date
+        and state.get("note_id")
+        and state.get("content_digest") == digest
+    )
+
+
+def main(force: bool = False):
     date = datetime.now().strftime("%Y-%m-%d")
     _logger.info("=" * 50)
     _logger.info(f"开始发布价值投资日报 - {date}")
 
-    # 幂等检查：当天已经发布过就直接返回已有链接
-    state_file = Path(__file__).resolve().parent.parent / "data" / ".last_published_note.json"
-    if state_file.exists():
-        try:
-            state = json.loads(state_file.read_text(encoding="utf-8"))
-            if state.get("date") == date and state.get("note_id"):
-                note_url = f"https://ima.qq.com/note/{state['note_id']}"
-                _logger.info(f"当天已发布过，直接返回已有笔记: {note_url}")
-                print(note_url)
-                return 0
-        except Exception:
-            pass  # 状态文件损坏就忽略，正常发布
-
-    # 1. 读取日报
+    # 1. 先读日报 —— 幂等判断必须基于**内容**，见下
     try:
         content = get_daily_report(date)
         _logger.info(f"日报读取成功: {len(content)} 字符")
     except FileNotFoundError as e:
         _logger.error(f"日报文件不存在: {e}")
         return 1
+
+    digest = _content_digest(content)
+
+    # 幂等检查：只有「当天 + 内容一致」才复用已有笔记（见 _should_reuse_note）。
+    # 2026-10-05 实测踩到过只比日期的坑：08:07 发布了 0 篇笔记 7512664842445628，
+    # 10:10 过了验证页重跑 —— 旧逻辑会打印那篇空笔记的 URL 并 return 0。
+    state_file = Path(__file__).resolve().parent.parent / "data" / ".last_published_note.json"
+    if not force and state_file.exists():
+        try:
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            if _should_reuse_note(state, date, digest):
+                note_url = f"https://ima.qq.com/note/{state['note_id']}"
+                _logger.info(f"当天已发布过且内容未变，复用已有笔记: {note_url}")
+                print(note_url)
+                return 0
+            if state.get("date") == date and state.get("note_id"):
+                _logger.warning(
+                    "当天已发布过，但日报内容已变化 —— 重新发布新笔记"
+                    f"（旧 note_id={state['note_id']}）"
+                )
+        except Exception:
+            pass  # 状态文件损坏就忽略，正常发布
 
     # 2. 推送到 IMA
     note_id = create_ima_note(f"价值投资日报 - {date}", content)
@@ -185,6 +216,7 @@ def main():
         state_file.write_text(json.dumps({
             "date": date,
             "note_id": note_id,
+            "content_digest": digest,
             "published_at": datetime.now().isoformat()
         }, ensure_ascii=False), encoding="utf-8")
         print(note_url)
@@ -196,4 +228,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # --force: 跳过幂等检查，强制发新笔记（手工补救用）
+    sys.exit(main(force="--force" in sys.argv[1:]))
