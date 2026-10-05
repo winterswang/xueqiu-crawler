@@ -5,19 +5,19 @@ WAF Bypass 验证 — Phase 1: Playwright Stealth 增强
 
 用法: python scripts/test_waf_bypass.py [--strategy all|stealth|profile|stealth+extras]
 """
+
 import argparse
 import json
 import logging
-import os
-import sys
 import time
 from pathlib import Path
-from datetime import datetime
 
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -39,8 +39,10 @@ def load_cookies():
         with open(COOKIES_FILE) as f:
             d = json.load(f)
         if isinstance(d.get("cookies"), dict):
-            cookies_list = [{"name": k, "value": v, "domain": ".xueqiu.com", "path": "/"}
-                            for k, v in d["cookies"].items()]
+            cookies_list = [
+                {"name": k, "value": v, "domain": ".xueqiu.com", "path": "/"}
+                for k, v in d["cookies"].items()
+            ]
 
     # 合并 monitor cookies (更丰富)
     if MON_COOKIES_FILE.exists():
@@ -88,9 +90,9 @@ def check_page_state(page, label):
 
 def test_strategy(strategy_name, setup_fn, cookies_list):
     """测试一种策略"""
-    logger.info(f"\n{'='*60}")
+    logger.info(f"\n{'=' * 60}")
     logger.info(f"🧪 测试策略: {strategy_name}")
-    logger.info(f"{'='*60}")
+    logger.info(f"{'=' * 60}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -132,7 +134,9 @@ def test_strategy(strategy_name, setup_fn, cookies_list):
                 page.goto(url, timeout=30000, wait_until="domcontentloaded")
                 page.wait_for_timeout(5000)
                 state = check_page_state(page, label)
-                logger.info(f"  {label}: {state['state']} | {state['title']} | {state['size']}B")
+                logger.info(
+                    f"  {label}: {state['state']} | {state['title']} | {state['size']}B"
+                )
                 results[label] = state
             except Exception as e:
                 logger.error(f"  {label}: ERROR {str(e)[:80]}")
@@ -278,8 +282,12 @@ def setup_stealth_package(context):
 
 def main():
     parser = argparse.ArgumentParser(description="WAF Bypass 验证")
-    parser.add_argument("--strategy", choices=["all", "baseline", "stealth", "stealth_full", "profile"],
-                        default="all", help="测试策略")
+    parser.add_argument(
+        "--strategy",
+        choices=["all", "baseline", "stealth", "stealth_full", "profile"],
+        default="all",
+        help="测试策略",
+    )
     parser.add_argument("--headless", action="store_true", default=True)
     parser.add_argument("--show", action="store_true", help="有头模式")
     args = parser.parse_args()
@@ -306,9 +314,9 @@ def main():
         time.sleep(2)
 
     # 汇总
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("📊 汇总结果")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"{'策略':<20} {'用户页':<15} {'股票页':<15}")
     print("-" * 50)
     for strategy, results in all_results.items():
@@ -319,8 +327,7 @@ def main():
         print(f"{strategy:<20} {user_i} {user_state:<13} {stock_i} {stock_state}")
 
     passed = any(
-        r.get("用户主页", {}).get("state") == "PASSED"
-        for r in all_results.values()
+        r.get("用户主页", {}).get("state") == "PASSED" for r in all_results.values()
     )
     if passed:
         print("\n✅ 有策略成功绕过 WAF！")

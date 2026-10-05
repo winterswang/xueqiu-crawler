@@ -36,7 +36,9 @@ def test_opencli_run_uses_shared_rate_limiter(monkeypatch):
         return slot
 
     def fake_run(*_args, **_kwargs):
-        return subprocess.CompletedProcess(args=[], returncode=0, stdout="[]", stderr="")
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="[]", stderr=""
+        )
 
     monkeypatch.setattr(opencli_extractor, "acquire_opencli_slot", fake_slot)
     monkeypatch.setattr(opencli_extractor.subprocess, "run", fake_run)

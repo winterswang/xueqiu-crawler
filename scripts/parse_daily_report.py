@@ -38,6 +38,7 @@ API:
     #     ...
     # ]
 """
+
 from __future__ import annotations
 
 import re
@@ -61,9 +62,7 @@ EXCLUDED_CATEGORIES = {
 }
 
 # 链接正则：xueqiu.com/{user_id}/{post_id}
-XUEQIU_URL_RE = re.compile(
-    r"https?://xueqiu\.com/(\d+)/(\d+)"
-)
+XUEQIU_URL_RE = re.compile(r"https?://xueqiu\.com/(\d+)/(\d+)")
 
 # 分类标题正则（H3：### xxx）
 CATEGORY_HEADER_RE = re.compile(
@@ -145,12 +144,14 @@ def extract_selected_articles(
             # 尝试从链接附近提取标题（链接前一行或同行的 "链接" 字段附近）
             article_title = _extract_title_near_link(section_text, m.start())
 
-            selected.append({
-                "user_id": user_id,
-                "post_id": post_id,
-                "title": article_title,
-                "category": category_label,
-            })
+            selected.append(
+                {
+                    "user_id": user_id,
+                    "post_id": post_id,
+                    "title": article_title,
+                    "category": category_label,
+                }
+            )
 
     return selected
 
@@ -162,7 +163,7 @@ def _extract_title_near_link(text: str, link_pos: int, window: int = 200) -> str
     或向上找 "### 🔴 必读" 之后的第一个 ####。
     """
     # 向前找 #### 行
-    before = text[max(0, link_pos - window):link_pos]
+    before = text[max(0, link_pos - window) : link_pos]
     h4_match = re.search(r"####\s+\d+\.\s+(.+?)$", before, re.MULTILINE)
     if h4_match:
         return h4_match.group(1).strip()
@@ -192,7 +193,6 @@ def find_raw_article_path(
 
 if __name__ == "__main__":
     import sys
-    import json
 
     date = sys.argv[1] if len(sys.argv) > 1 else None
     selected = extract_selected_articles(date)

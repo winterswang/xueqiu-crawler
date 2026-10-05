@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """把所有本地历史文章标记为已同步，之后只上传新增的"""
+
 import json
 from pathlib import Path
 
@@ -8,7 +9,7 @@ state_file = DATA_DIR / ".ima_raw_sync_state.json"
 
 try:
     state = json.load(open(state_file, 'r', encoding='utf-8'))
-except:
+except (OSError, json.JSONDecodeError):
     state = {}
 
 count = 0
@@ -24,7 +25,7 @@ for user_dir in DATA_DIR.iterdir():
                 "size": stat.st_size,
                 "media_id": "history_marked",
                 "upload_time": "2026-07-08T00:00:00+08:00",
-                "note": "历史文章批量标记，从今日起只增量同步"
+                "note": "历史文章批量标记，从今日起只增量同步",
             }
             count += 1
 

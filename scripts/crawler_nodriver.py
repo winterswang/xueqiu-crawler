@@ -18,9 +18,10 @@ import asyncio
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from dotenv import load_dotenv
+
 _dotenv_path = Path(__file__).resolve().parent.parent / '.env'
 if _dotenv_path.exists():
     load_dotenv(_dotenv_path, override=True)
@@ -30,7 +31,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # 风控页判定的唯一实现（analyzer 的 xueqiu_analyzer.waf）。
 # 导入失败会当场 SystemExit —— 见 scripts/waf_bridge.py 的说明。
 from scripts.waf_bridge import (  # noqa: E402
-    contains_waf_text, has_waf_marker, is_error_page,
+    contains_waf_text,
+    has_waf_marker,
+    is_error_page,
 )
 
 import nodriver as uc
@@ -40,14 +43,18 @@ try:
     from scripts.opencli_extractor import is_available as _opencli_available
     from scripts.opencli_extractor import OpencliExtractor
     from scripts.opencli_extractor import get_user_articles as _opencli_get_list
+
     _HAS_OPENCLI = True
 except ImportError:
     _HAS_OPENCLI = False
-    def _opencli_available() -> bool: return False
+
+    def _opencli_available() -> bool:
+        return False
 
 
 class WafDetectedError(Exception):
     """Raised when the browser hits a WAF block (slider or redirect)."""
+
     pass
 
 
@@ -74,8 +81,8 @@ def setup_logging(config: dict):
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(log_file, encoding='utf-8'),
-            logging.StreamHandler()
-        ]
+            logging.StreamHandler(),
+        ],
     )
     return logging.getLogger(__name__)
 
@@ -88,7 +95,9 @@ class XueqiuCrawlerNodriver:
         self.config = self._load_config(config_path)
         self.logger = setup_logging(self.config)
         self.accounts = self._load_accounts()
-        self.data_dir = self.project_root / self.config.get('storage', {}).get('output_dir', 'data')
+        self.data_dir = self.project_root / self.config.get('storage', {}).get(
+            'output_dir', 'data'
+        )
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.index_file = self.data_dir / 'index.json'
         self.index = self._load_index()
@@ -106,6 +115,7 @@ class XueqiuCrawlerNodriver:
             # preflight never spends a real xueqiu.com request or triggers WAF.
             try:
                 from scripts.opencli_extractor import is_user_articles_available
+
                 if is_user_articles_available():
                     self._use_opencli = True
                     self.logger.info("✅ OpenCLI 可用，启用 Chrome 扩展模式（零 WAF）")
@@ -114,7 +124,9 @@ class XueqiuCrawlerNodriver:
                     self.logger.warning("⚠️ OpenCLI 预检失败，user-articles 命令不可用")
                     self.logger.warning("🔄 回退到 nodriver 模式")
             except Exception as e:
-                self.logger.warning("⚠️ OpenCLI 预检失败，user-articles 命令不可用: %s", e)
+                self.logger.warning(
+                    "⚠️ OpenCLI 预检失败，user-articles 命令不可用: %s", e
+                )
                 self.logger.warning("🔄 回退到 nodriver 模式")
         if not self._use_opencli:
             self.logger.info("ℹ️ OpenCLI 不可用，使用 nodriver 模式")
@@ -165,8 +177,14 @@ class XueqiuCrawlerNodriver:
             'date': today,
             'user_id': user_id,
             'article_count': len(articles),
-            'articles': [{'article_id': a.get('article_id'), 'title': a.get('title', '')[:50],
-                          'crawl_time': a.get('crawl_time')} for a in articles]
+            'articles': [
+                {
+                    'article_id': a.get('article_id'),
+                    'title': a.get('title', '')[:50],
+                    'crawl_time': a.get('crawl_time'),
+                }
+                for a in articles
+            ],
         }
         with open(history_file, 'w', encoding='utf-8') as f:
             json.dump(history_data, f, ensure_ascii=False, indent=2)
@@ -273,7 +291,11 @@ class XueqiuCrawlerNodriver:
         """
         title = await self._page_title()
         content = await self._page_content()
-        if contains_waf_text(title) or contains_waf_text(content) or has_waf_marker(content):
+        if (
+            contains_waf_text(title)
+            or contains_waf_text(content)
+            or has_waf_marker(content)
+        ):
             self.logger.warning("检测到 WAF 风控页（标题/正文/页面标记命中）")
             return True
         return False
@@ -314,11 +336,14 @@ class XueqiuCrawlerNodriver:
         # JS 注入仅能设置非 httpOnly 的 cookie（如 acw_tc、设备 ID 等）
         try:
             cookie_pairs = '; '.join(
-                f'{k}={v}' for k, v in cookies.items()
+                f'{k}={v}'
+                for k, v in cookies.items()
                 if k not in ('xq_a_token', 'xq_r_token', 'xq_id_token', 'u')
             )
             if cookie_pairs:
-                await self.tab.evaluate(f"document.cookie = '{cookie_pairs}; domain=.xueqiu.com; path=/; SameSite=Lax'")
+                await self.tab.evaluate(
+                    f"document.cookie = '{cookie_pairs}; domain=.xueqiu.com; path=/; SameSite=Lax'"
+                )
         except Exception:
             pass
         self.logger.info(f"已注入 {len(cookies)} 个 cookies")
@@ -353,7 +378,9 @@ class XueqiuCrawlerNodriver:
                         account['name'] = name
                         self.logger.info(f"更新账号名称: {user_id} -> {name}")
                         with open(accounts_path, 'w', encoding='utf-8') as f:
-                            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+                            yaml.dump(
+                                data, f, default_flow_style=False, allow_unicode=True
+                            )
                         return True
                     break
         except Exception as e:
@@ -376,7 +403,7 @@ class XueqiuCrawlerNodriver:
         # 等待时间线加载
         found = await self._wait_for_selector('.timeline__item', timeout_seconds=15)
         if not found:
-            self.logger.warning(f"未找到 .timeline__item (可能被WAF拦截)")
+            self.logger.warning("未找到 .timeline__item (可能被WAF拦截)")
             return None
 
         # 获取所有时间线条目的关键数据 (JSON.stringify 解决 nodriver RemoteObject 序列化)
@@ -402,7 +429,9 @@ class XueqiuCrawlerNodriver:
         """)
 
         if not items_json or not isinstance(items_json, str):
-            self.logger.warning(f"evaluate 未返回有效的 JSON 字符串: {type(items_json)}")
+            self.logger.warning(
+                f"evaluate 未返回有效的 JSON 字符串: {type(items_json)}"
+            )
             return None
 
         try:
@@ -437,8 +466,13 @@ class XueqiuCrawlerNodriver:
         """导航到文章详情页并解析内容"""
         detail = {
             'url': url,
-            'title': '', 'author': '', 'publish_time': '',
-            'content': '', 'likes': 0, 'comments': 0, 'is_column': False,
+            'title': '',
+            'author': '',
+            'publish_time': '',
+            'content': '',
+            'likes': 0,
+            'comments': 0,
+            'is_column': False,
         }
 
         try:
@@ -480,7 +514,12 @@ class XueqiuCrawlerNodriver:
                 self.logger.info(f"正文: {len(content)} 字符")
             else:
                 # 短动态 fallback
-                for sel in ['.status-content', '.article-content', '.status__content', 'article']:
+                for sel in [
+                    '.status-content',
+                    '.article-content',
+                    '.status__content',
+                    'article',
+                ]:
                     text = await self._query_text(sel)
                     if text and len(text) > 20:
                         detail['content'] = text
@@ -536,7 +575,9 @@ class XueqiuCrawlerNodriver:
 
     # ============ 核心爬取逻辑 ============
 
-    def _extract_and_save_opencli(self, article: dict, user_id: str, user_name: str) -> bool:
+    def _extract_and_save_opencli(
+        self, article: dict, user_id: str, user_name: str
+    ) -> bool:
         """提取单篇文章正文并保存。返回 True 表示保存成功。
 
         保存到磁盘 + 更新索引。WAF/无内容/重复 返回 False。
@@ -576,7 +617,9 @@ class XueqiuCrawlerNodriver:
 
         # 跳过 WAF/错误页面（405、访问阻断等）
         if _is_content_error(merged['title'], merged['content']):
-            self.logger.warning(f"WAF 拦截: {merged['title'][:30]} ({merged['article_id']})")
+            self.logger.warning(
+                f"WAF 拦截: {merged['title'][:30]} ({merged['article_id']})"
+            )
             return False
 
         # 去重检查
@@ -591,7 +634,8 @@ class XueqiuCrawlerNodriver:
 
         # 更新索引
         self.index['articles'][index_key] = {
-            'article_id': article_id, 'user_id': user_id,
+            'article_id': article_id,
+            'user_id': user_id,
             'title': merged['title'],
             'author': merged['author'],
             'publish_time': merged['publish_time'],
@@ -610,8 +654,10 @@ class XueqiuCrawlerNodriver:
         assert user_id is not None, "Account missing user_id"
 
         result = {
-            'user_id': user_id, 'name': user_name,
-            'new_articles': 0, 'saved_articles': 0,
+            'user_id': user_id,
+            'name': user_name,
+            'new_articles': 0,
+            'saved_articles': 0,
             'new_articles_available': 0,  # API 返回的新文章数（含 WAF 拦截的）
         }
 
@@ -634,9 +680,14 @@ class XueqiuCrawlerNodriver:
                     filesystem_ids.add(f.stem)
             all_known = history_ids | indexed_ids | filesystem_ids
 
-            new_articles = [a for a in article_list
-                            if a.get('article_id') and a['article_id'] not in all_known]
-            self.logger.info(f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇）")
+            new_articles = [
+                a
+                for a in article_list
+                if a.get('article_id') and a['article_id'] not in all_known
+            ]
+            self.logger.info(
+                f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇）"
+            )
 
             # 3. 提取正文并保存。专栏优先；非专栏多数是回复/短状态，
             # 只保留少量探测位，避免为明显不收录的内容消耗详情页请求。
@@ -661,7 +712,7 @@ class XueqiuCrawlerNodriver:
                     other_probed += 1
 
                 self.logger.info(
-                    f"OpenCLI 详情 [{i+1}/{min(len(ordered_articles), max_articles)}]: {url[-30:]}"
+                    f"OpenCLI 详情 [{i + 1}/{min(len(ordered_articles), max_articles)}]: {url[-30:]}"
                 )
 
                 if self._extract_and_save_opencli(article, user_id, user_name):
@@ -689,7 +740,13 @@ class XueqiuCrawlerNodriver:
         user_name = account.get('name', user_id)
         url = account.get('url', f'https://xueqiu.com/u/{user_id}')
 
-        result = {'user_id': user_id, 'name': user_name, 'new_articles': 0, 'saved_articles': 0, 'waf_triggered': False}
+        result = {
+            'user_id': user_id,
+            'name': user_name,
+            'new_articles': 0,
+            'saved_articles': 0,
+            'waf_triggered': False,
+        }
 
         try:
             # 访问首页 + 用户页
@@ -728,8 +785,11 @@ class XueqiuCrawlerNodriver:
                     filesystem_ids.add(f.stem)
             all_known = history_ids | indexed_ids | filesystem_ids
 
-            new_articles = [a for a in article_list
-                            if a.get('article_id') and a['article_id'] not in all_known]
+            new_articles = [
+                a
+                for a in article_list
+                if a.get('article_id') and a['article_id'] not in all_known
+            ]
 
             # 专栏优先窗口：按列表层预判排序，让专栏优先占用 max_articles 额度。
             # 背景：原逻辑取时间线前 N 条（专栏+评论混合），评论刷屏时真专栏会被挤出窗口漏抓。
@@ -762,12 +822,16 @@ class XueqiuCrawlerNodriver:
                     other_probed += 1
 
                 await self._random_delay()
-                self.logger.info(f"详情 [{i+1}/{min(len(ordered_articles), max_articles)}]: {article['link'][-30:]}")
+                self.logger.info(
+                    f"详情 [{i + 1}/{min(len(ordered_articles), max_articles)}]: {article['link'][-30:]}"
+                )
 
                 try:
                     detail = await self._parse_article_detail(article['link'])
                 except WafDetectedError:
-                    self.logger.warning(f"详情页 WAF 触发，中止当前用户剩余 {min(len(ordered_articles), max_articles) - i} 篇文章")
+                    self.logger.warning(
+                        f"详情页 WAF 触发，中止当前用户剩余 {min(len(ordered_articles), max_articles) - i} 篇文章"
+                    )
                     result['waf_triggered'] = True
                     break
 
@@ -802,7 +866,8 @@ class XueqiuCrawlerNodriver:
                 article['filepath'] = filepath
 
                 self.index['articles'][index_key] = {
-                    'article_id': article_id, 'user_id': user_id,
+                    'article_id': article_id,
+                    'user_id': user_id,
                     'title': article.get('title', ''),
                     'author': article.get('author', ''),
                     'publish_time': article.get('publish_time', ''),
@@ -822,6 +887,7 @@ class XueqiuCrawlerNodriver:
         except Exception as e:
             self.logger.error(f"爬取用户 {user_id} 失败: {e}")
             import traceback
+
             traceback.print_exc()
             result['error'] = str(e)
 
@@ -842,12 +908,16 @@ class XueqiuCrawlerNodriver:
 
     async def crawl_all_users(self, max_articles: int = None) -> dict:
         """爬取所有配置用户 — OpenCLI 优先，nodriver 兜底"""
-        max_articles = max_articles or self.config.get('crawler', {}).get('max_articles', 20)
+        max_articles = max_articles or self.config.get('crawler', {}).get(
+            'max_articles', 20
+        )
 
         stats = {
             'total_users': len(self.accounts),
-            'total_new': 0, 'total_saved': 0,
-            'users': [], 'mode': 'opencli' if self._use_opencli else 'nodriver',
+            'total_new': 0,
+            'total_saved': 0,
+            'users': [],
+            'mode': 'opencli' if self._use_opencli else 'nodriver',
         }
 
         if self._use_opencli:
@@ -860,8 +930,10 @@ class XueqiuCrawlerNodriver:
                 if not user_id:
                     continue
 
-                self.logger.info(f"\n{'='*50}")
-                self.logger.info(f"爬取 [{i+1}/{len(self.accounts)}]: {user_name} ({user_id})")
+                self.logger.info(f"\n{'=' * 50}")
+                self.logger.info(
+                    f"爬取 [{i + 1}/{len(self.accounts)}]: {user_name} ({user_id})"
+                )
 
                 result = await self._crawl_one_user_opencli(account, max_articles)
                 stats['total_new'] += result.get('new_articles', 0)
@@ -871,7 +943,9 @@ class XueqiuCrawlerNodriver:
             self._opencli.close()
         else:
             # ── Nodriver 模式：原有逻辑 ──
-            restart_every = self.config.get('crawler', {}).get('browser_restart_interval', 5)
+            restart_every = self.config.get('crawler', {}).get(
+                'browser_restart_interval', 5
+            )
 
             await self._start_browser()
             await self._warmup()
@@ -885,8 +959,10 @@ class XueqiuCrawlerNodriver:
                     self.logger.warning(f"账号配置不完整: {account}")
                     continue
 
-                self.logger.info(f"\n{'='*50}")
-                self.logger.info(f"爬取 [{i+1}/{len(self.accounts)}]: {user_name} ({user_id})")
+                self.logger.info(f"\n{'=' * 50}")
+                self.logger.info(
+                    f"爬取 [{i + 1}/{len(self.accounts)}]: {user_name} ({user_id})"
+                )
 
                 result = await self._crawl_one_user(account, max_articles)
                 stats['total_new'] += result.get('new_articles', 0)
@@ -894,13 +970,15 @@ class XueqiuCrawlerNodriver:
                 stats['users'].append(result)
 
                 # 每 N 个用户重启浏览器（防 WAF 累积）
-                should_restart = (i + 1) % restart_every == 0 and i < len(self.accounts) - 1
+                should_restart = (i + 1) % restart_every == 0 and i < len(
+                    self.accounts
+                ) - 1
                 if result.get('waf_triggered') and i < len(self.accounts) - 1:
-                    self.logger.info(f"⚠️ 检测到 WAF，立即重启浏览器...")
+                    self.logger.info("⚠️ 检测到 WAF，立即重启浏览器...")
                     should_restart = True
 
                 if should_restart:
-                    self.logger.info(f"🔄 重启浏览器（已处理 {i+1} 个用户）...")
+                    self.logger.info(f"🔄 重启浏览器（已处理 {i + 1} 个用户）...")
                     await self._reconnect_browser()
 
                 # 用户间延迟
@@ -912,15 +990,14 @@ class XueqiuCrawlerNodriver:
 
             await self._close_browser()
 
-        self.logger.info(f"\n{'='*50}")
-        self.logger.info(f"爬取完成!")
+        self.logger.info(f"\n{'=' * 50}")
+        self.logger.info("爬取完成!")
         self.logger.info(f"总用户: {stats['total_users']}")
         self.logger.info(f"新文章: {stats['total_new']}")
 
         # 保存统计
         successful = sum(
-            1 for u in stats['users']
-            if 'saved_articles' in u and 'error' not in u
+            1 for u in stats['users'] if 'saved_articles' in u and 'error' not in u
         )
         failed = sum(1 for u in stats['users'] if 'error' in u)
         crawl_stats = {
@@ -961,8 +1038,10 @@ class XueqiuCrawlerNodriver:
 
 # ============ CLI ============
 
+
 async def main_async():
     import argparse
+
     parser = argparse.ArgumentParser(description='雪球爬虫 (nodriver 版本)')
     parser.add_argument('--config', '-c', help='配置文件路径')
     parser.add_argument('--user', '-u', help='指定用户ID')
@@ -977,7 +1056,9 @@ async def main_async():
         print(f"\n结果: {result}")
     else:
         result = await crawler.crawl_all_users(max_articles=args.max)
-        print(f"\n结果: {len(result.get('users', []))} 用户, {result.get('total_new', 0)} 篇新文章")
+        print(
+            f"\n结果: {len(result.get('users', []))} 用户, {result.get('total_new', 0)} 篇新文章"
+        )
 
 
 def main():

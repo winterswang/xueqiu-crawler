@@ -9,9 +9,7 @@
 """
 
 import logging
-import os
 import sys
-from datetime import datetime
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
@@ -22,6 +20,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 # 主流程 logger
 _main_logger = None
 
+
 def _init_main_logger():
     global _main_logger
     if _main_logger:
@@ -31,10 +30,16 @@ def _init_main_logger():
     _main_logger.propagate = False
     # 文件 handler（自动轮转，最大 5MB × 3 个备份）
     fh = RotatingFileHandler(
-        LOG_DIR / "cron_daily.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        LOG_DIR / "cron_daily.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
     )
     fh.setLevel(logging.DEBUG)
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(module)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(module)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     fh.setFormatter(fmt)
     _main_logger.addHandler(fh)
     # 控制台 handler：仅在交互终端时添加（避免 shell 重定向到同名日志文件时双写）
@@ -45,11 +50,14 @@ def _init_main_logger():
         _main_logger.addHandler(ch)
     return _main_logger
 
+
 def get_logger(name: str = "xueqiu.main"):
     return _init_main_logger()
 
+
 # 解析失败专用 logger (记录完整 LLM 响应)
 _parse_logger = None
+
 
 def _init_parse_logger():
     global _parse_logger
@@ -59,7 +67,10 @@ def _init_parse_logger():
     _parse_logger.setLevel(logging.DEBUG)
     _parse_logger.propagate = False
     fh = RotatingFileHandler(
-        LOG_DIR / "parse_failures.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        LOG_DIR / "parse_failures.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
     )
     fh.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -67,11 +78,14 @@ def _init_parse_logger():
     _parse_logger.addHandler(fh)
     return _parse_logger
 
+
 def get_parse_logger():
     return _init_parse_logger()
 
+
 # 执行统计 logger
 _stats_logger = None
+
 
 def _init_stats_logger():
     global _stats_logger
@@ -86,6 +100,7 @@ def _init_stats_logger():
     fh.setFormatter(fmt)
     _stats_logger.addHandler(fh)
     return _stats_logger
+
 
 def get_stats_logger():
     return _init_stats_logger()
@@ -105,12 +120,16 @@ def log_parse_failure(article_title: str, response: str, strategy: str = "all_fa
     has_bracket = "[" in response
     has_json_block = "```json" in response
     has_md_block = "```" in response
-    plog.info(f"JSON 特征: 花括号={'✅' if has_brace else '❌'}, 方括号={'✅' if has_bracket else '❌'}, json块={'✅' if has_json_block else '❌'}, md块={'✅' if has_md_block else '❌'}")
+    plog.info(
+        f"JSON 特征: 花括号={'✅' if has_brace else '❌'}, 方括号={'✅' if has_bracket else '❌'}, json块={'✅' if has_json_block else '❌'}, md块={'✅' if has_md_block else '❌'}"
+    )
     plog.info(f"完整响应:\n{response}")
     plog.info("=" * 60)
     # 同时记录到主日志
     logger = get_logger()
-    logger.warning(f"JSON解析失败: {article_title}, 响应{len(response)}字符, has_json_block={has_json_block}")
+    logger.warning(
+        f"JSON解析失败: {article_title}, 响应{len(response)}字符, has_json_block={has_json_block}"
+    )
 
 
 def log_execution_stage(stage: str, status: str, detail: str = ""):
@@ -128,6 +147,7 @@ def log_execution_summary(summary: dict):
 # MiniMax API 调用专用 logger（结构化 JSON 日志）
 _api_logger = None
 
+
 def _init_api_logger():
     global _api_logger
     if _api_logger:
@@ -136,7 +156,10 @@ def _init_api_logger():
     _api_logger.setLevel(logging.DEBUG)
     _api_logger.propagate = False
     fh = RotatingFileHandler(
-        LOG_DIR / "minimax_api.log", maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        LOG_DIR / "minimax_api.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
     )
     fh.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -148,13 +171,14 @@ def _init_api_logger():
 def log_api_call(event: str, **kwargs):
     """
     记录 MiniMax API 调用事件（结构化 JSON）
-    
+
     Args:
         event: start / success / retry / failure
         **kwargs: 调用上下文（model, attempt, latency_ms, error_type, etc.）
     """
     alog = _init_api_logger()
     import json as _json
+
     payload = {"event": event}
     payload.update(kwargs)
     alog.info(_json.dumps(payload, ensure_ascii=False, default=str))

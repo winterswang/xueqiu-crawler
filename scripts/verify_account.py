@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """临时验证单个雪球账号能否正常爬取。用法: python scripts/verify_account.py <user_id>"""
-import asyncio, sys
+
+import asyncio
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from crawler_nodriver import XueqiuCrawlerNodriver
+
 
 async def main():
     user_id = sys.argv[1] if len(sys.argv) > 1 else '4111857140'
@@ -24,13 +27,14 @@ async def main():
         print(f"❌ 浏览器启动失败: {e}")
         return
     result = await crawler._crawl_one_user(account, max_articles=5)
-    print(f"\n📊 结果:")
+    print("\n📊 结果:")
     print(f"   可用文章: {result.get('new_articles_available', '?')}")
     print(f"   新文章: {result.get('new_articles', '?')}")
     print(f"   保存: {result.get('saved_articles', '?')}")
     name = result.get('user_name') or result.get('name')
     if name:
         print(f"   抓取到昵称: {name}")
+
 
 if __name__ == '__main__':
     asyncio.run(main())

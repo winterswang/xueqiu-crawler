@@ -24,7 +24,7 @@ import argparse
 import json
 import os
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -36,19 +36,28 @@ DEFAULT_LOG = Path.home() / ".opencli" / "xueqiu-calls.jsonl"
 # opencli_rate_limiter._should_throttle）。
 # 2026-10-05 踩过：不分青红皂白算「分钟峰值」会得出 16 次/分的假高，
 # 而同期真正的站点请求峰值只有 6 次/分 —— 口径不对会把结论带偏一个量级。
-SITE_OPERATIONS = frozenset({
-    "browser:open",   # 导航到目标页面
-    "news", "comments", "replies", "stock-notices", "user-articles",
-    "stock", "search",
-})
+SITE_OPERATIONS = frozenset(
+    {
+        "browser:open",  # 导航到目标页面
+        "news",
+        "comments",
+        "replies",
+        "stock-notices",
+        "user-articles",
+        "stock",
+        "search",
+    }
+)
 
 
 def _log_path(explicit: str | None) -> Path:
     if explicit:
         return Path(os.path.expanduser(explicit))
-    return Path(os.path.expanduser(os.environ.get("XUEQIU_OPENCLI_LOG", ""))) if os.environ.get(
-        "XUEQIU_OPENCLI_LOG"
-    ) else DEFAULT_LOG
+    return (
+        Path(os.path.expanduser(os.environ.get("XUEQIU_OPENCLI_LOG", "")))
+        if os.environ.get("XUEQIU_OPENCLI_LOG")
+        else DEFAULT_LOG
+    )
 
 
 def load_records(path: Path) -> list[dict]:
@@ -164,19 +173,25 @@ def render(summary: dict, top_minutes: int = 8, sample_failures: int = 8) -> str
     lines: list[str] = []
     total = summary["total"]
     if not total:
-        return "台账里这个时间窗内没有记录（检查 ~/.opencli/xueqiu-calls.jsonl 是否存在）"
+        return (
+            "台账里这个时间窗内没有记录（检查 ~/.opencli/xueqiu-calls.jsonl 是否存在）"
+        )
 
     site_total = summary.get("site_total", 0)
     local_total = summary.get("local_total", 0)
     site_peak_minute, site_peak_count = _peak(summary.get("by_minute_site", {}))
 
-    lines.append(f"总调用 {total} 次，失败 {summary['failed']} 次（{_pct(summary['failed'], total)}）")
+    lines.append(
+        f"总调用 {total} 次，失败 {summary['failed']} 次（{_pct(summary['failed'], total)}）"
+    )
     lines.append(
         f"  其中站点请求 {site_total} 次，本地命令 {local_total} 次"
         f"（只有站点请求会触发风控，判定以站点口径为准）"
     )
     if site_peak_count:
-        lines.append(f"  站点请求分钟峰值 {site_peak_count} 次/分（{site_peak_minute}）")
+        lines.append(
+            f"  站点请求分钟峰值 {site_peak_count} 次/分（{site_peak_minute}）"
+        )
     lines.append(f"时间范围 {summary['first']} → {summary['last']}")
     lines.append("")
 
@@ -205,26 +220,34 @@ def render(summary: dict, top_minutes: int = 8, sample_failures: int = 8) -> str
     # 只有**站点请求**才该拿来和风控阈值比；本地命令（browser get/extract/close）
     # 混进来会把峰值抬高一档，见文件头 SITE_OPERATIONS 的注释。
     lines.append(f"== 站点请求分钟峰值 Top {top_minutes}（决定风控的那一列）==")
-    for minute, count in summary.get("by_minute_site", Counter()).most_common(top_minutes):
+    for minute, count in summary.get("by_minute_site", Counter()).most_common(
+        top_minutes
+    ):
         lines.append(f"  {minute}  {count:>3} 次")
     lines.append("")
 
     lines.append(f"== 本地命令分钟峰值 Top {top_minutes}（不触发风控，仅供排查耗时）==")
-    for minute, count in summary.get("by_minute_local", Counter()).most_common(top_minutes):
+    for minute, count in summary.get("by_minute_local", Counter()).most_common(
+        top_minutes
+    ):
         lines.append(f"  {minute}  {count:>3} 次")
     lines.append("")
 
-    lines.append(f"== 全部调用分钟峰值 Top {top_minutes}（站点+本地，不等于风控压力）==")
+    lines.append(
+        f"== 全部调用分钟峰值 Top {top_minutes}（站点+本地，不等于风控压力）=="
+    )
     for minute, count in summary["by_minute"].most_common(top_minutes):
         lines.append(f"  {minute}  {count:>3} 次")
     lines.append("")
 
     if summary["failures"]:
-        lines.append(f"== 失败样本（共 {len(summary['failures'])} 条，展示最近 {sample_failures} 条）==")
+        lines.append(
+            f"== 失败样本（共 {len(summary['failures'])} 条，展示最近 {sample_failures} 条）=="
+        )
         for row in summary["failures"][-sample_failures:]:
             error = str(row.get("error") or "").replace("\n", " ")[:110]
             lines.append(
-                f"  {row.get('ts','')}  {row.get('source','?')}  {row.get('operation','?')}"
+                f"  {row.get('ts', '')}  {row.get('source', '?')}  {row.get('operation', '?')}"
                 f"  rc={row.get('returncode')}  {error}"
             )
 
@@ -242,7 +265,9 @@ def main() -> int:
     path = _log_path(args.log)
     if not path.exists():
         print(f"找不到台账：{path}")
-        print("（台账号在首次调用 opencli 后生成；若从未生成，检查 XUEQIU_OPENCLI_LOG 是否被设为 off）")
+        print(
+            "（台账号在首次调用 opencli 后生成；若从未生成，检查 XUEQIU_OPENCLI_LOG 是否被设为 off）"
+        )
         return 1
 
     if args.date:
@@ -265,48 +290,66 @@ def main() -> int:
         def _in_window(key: str, fmt: str) -> bool:
             return cutoff <= datetime.strptime(key, fmt) < end
 
-        for key in ("by_hour", "by_hour_fail", "by_minute",
-                    "by_minute_site", "by_minute_local"):
+        for key in (
+            "by_hour",
+            "by_hour_fail",
+            "by_minute",
+            "by_minute_site",
+            "by_minute_local",
+        ):
             summary[key] = Counter(
-                {k: v for k, v in summary[key].items() if _in_window(k, "%Y-%m-%d %H:%M")}
+                {
+                    k: v
+                    for k, v in summary[key].items()
+                    if _in_window(k, "%Y-%m-%d %H:%M")
+                }
                 if key.startswith("by_minute")
-                else {k: v for k, v in summary[key].items() if _in_window(k, "%Y-%m-%d %H:00")}
+                else {
+                    k: v
+                    for k, v in summary[key].items()
+                    if _in_window(k, "%Y-%m-%d %H:00")
+                }
             )
         summary["total"] = sum(summary["by_hour"].values())
         summary["failed"] = sum(summary["by_hour_fail"].values())
         summary["site_total"] = sum(summary["by_minute_site"].values())
         summary["local_total"] = sum(summary["by_minute_local"].values())
         summary["failures"] = [
-            r for r in summary["failures"]
+            r
+            for r in summary["failures"]
             if (ts := _parse_ts(r)) and ts >= cutoff and ts < end
         ]
         summary["site_failed"] = sum(
-            1 for r in summary["failures"] if str(r.get("operation") or "?") in SITE_OPERATIONS
+            1
+            for r in summary["failures"]
+            if str(r.get("operation") or "?") in SITE_OPERATIONS
         )
 
     if args.json:
         site_minute, site_count = _peak(summary.get("by_minute_site", {}))
         local_minute, local_count = _peak(summary.get("by_minute_local", {}))
-        print(json.dumps(
-            {
-                "total": summary["total"],
-                "failed": summary["failed"],
-                "site_total": summary.get("site_total", 0),
-                "local_total": summary.get("local_total", 0),
-                "site_failed": summary.get("site_failed", 0),
-                "site_peak": {"minute": site_minute, "count": site_count},
-                "local_peak": {"minute": local_minute, "count": local_count},
-                "by_hour": dict(summary["by_hour"]),
-                "by_source": dict(summary["by_source"]),
-                "by_operation": dict(summary["by_operation"]),
-                "peak_minutes_site": dict(
-                    summary.get("by_minute_site", Counter()).most_common(20)
-                ),
-                "peak_minutes_all": dict(summary["by_minute"].most_common(20)),
-            },
-            ensure_ascii=False,
-            indent=1,
-        ))
+        print(
+            json.dumps(
+                {
+                    "total": summary["total"],
+                    "failed": summary["failed"],
+                    "site_total": summary.get("site_total", 0),
+                    "local_total": summary.get("local_total", 0),
+                    "site_failed": summary.get("site_failed", 0),
+                    "site_peak": {"minute": site_minute, "count": site_count},
+                    "local_peak": {"minute": local_minute, "count": local_count},
+                    "by_hour": dict(summary["by_hour"]),
+                    "by_source": dict(summary["by_source"]),
+                    "by_operation": dict(summary["by_operation"]),
+                    "peak_minutes_site": dict(
+                        summary.get("by_minute_site", Counter()).most_common(20)
+                    ),
+                    "peak_minutes_all": dict(summary["by_minute"].most_common(20)),
+                },
+                ensure_ascii=False,
+                indent=1,
+            )
+        )
         return 0
 
     print(render(summary))

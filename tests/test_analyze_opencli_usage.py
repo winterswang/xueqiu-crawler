@@ -37,9 +37,7 @@ def _record(minute: int, second: int, operation: str, ok: bool = True) -> dict:
 
 def test_local_commands_do_not_count_toward_site_peak():
     """站点 2 次 + 本地 5 次在同一分钟：站点峰值必须是 2，不是 7。"""
-    records = [
-        _record(0, s, "browser:get") for s in range(5)
-    ] + [
+    records = [_record(0, s, "browser:get") for s in range(5)] + [
         _record(0, 10, "browser:open"),
         _record(0, 20, "user-articles"),
     ]
@@ -57,7 +55,7 @@ def test_local_commands_do_not_count_toward_site_peak():
 
 def test_site_failed_counts_only_site_operations():
     records = [
-        _record(0, 1, "browser:open", ok=False),   # 站点失败
+        _record(0, 1, "browser:open", ok=False),  # 站点失败
         _record(0, 2, "browser:extract", ok=False),  # 本地失败，不算风控压力
         _record(0, 3, "user-articles", ok=True),
     ]
@@ -74,11 +72,18 @@ def test_every_throttled_operation_is_classified_as_site():
     `_should_throttle` 放行的形态是 `browser open` 与 `xueqiu <子命令>`；
     SITE_OPERATIONS 是它们在台账 `operation` 字段里的名字。
     """
-    assert SITE_OPERATIONS == frozenset({
-        "browser:open",
-        "news", "comments", "replies", "stock-notices", "user-articles",
-        "stock", "search",
-    })
+    assert SITE_OPERATIONS == frozenset(
+        {
+            "browser:open",
+            "news",
+            "comments",
+            "replies",
+            "stock-notices",
+            "user-articles",
+            "stock",
+            "search",
+        }
+    )
     for local in ("browser:get", "browser:extract", "browser:close"):
         assert local not in SITE_OPERATIONS
 

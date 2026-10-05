@@ -19,7 +19,9 @@ def test_minimax_config_uses_ark_coding_model(monkeypatch):
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     monkeypatch.delenv("BAILIAN_API_KEY", raising=False)
 
-    cfg = yaml.safe_load((_project_root / "config" / "config.yaml").read_text(encoding="utf-8"))
+    cfg = yaml.safe_load(
+        (_project_root / "config" / "config.yaml").read_text(encoding="utf-8")
+    )
 
     assert cfg["analysis"]["models"]["minimax"] == "deepseek-v4-flash-ga-260731"
 

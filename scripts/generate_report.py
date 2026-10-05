@@ -5,7 +5,6 @@
 配合新的 analyzer.py 使用
 """
 
-import os
 import sys
 import json
 import yaml
@@ -14,14 +13,16 @@ from pathlib import Path
 
 # 自动加载 .env（如存在）
 from dotenv import load_dotenv
+
 _dotenv_path = Path(__file__).resolve().parent.parent / '.env'
 if _dotenv_path.exists():
     load_dotenv(_dotenv_path, override=True)
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from logging_utils import get_logger, log_execution_stage, log_execution_summary
-from analyzer import ArticleAnalyzer, check_article_quality, generate_daily_report
+from logging_utils import get_logger, log_execution_summary
+from analyzer import ArticleAnalyzer, generate_daily_report
+
 # 风控页判定统一走 xueqiu_analyzer.waf（唯一实现，见 scripts/waf_bridge.py）
 from waf_bridge import is_error_page
 
@@ -57,15 +58,17 @@ def get_today_articles(data_dir: str = 'data') -> list:
                     except OSError as e:
                         print(f"读取文章失败 {filepath}: {e}")
                         continue
-                    articles.append({
-                        'article_id': article_id,
-                        'user_id': info.get('user_id', ''),
-                        'title': info.get('title', ''),
-                        'author': info.get('author', ''),
-                        'publish_time': info.get('publish_time', ''),
-                        'content': content,
-                        'filepath': filepath
-                    })
+                    articles.append(
+                        {
+                            'article_id': article_id,
+                            'user_id': info.get('user_id', ''),
+                            'title': info.get('title', ''),
+                            'author': info.get('author', ''),
+                            'publish_time': info.get('publish_time', ''),
+                            'content': content,
+                            'filepath': filepath,
+                        }
+                    )
     else:
         index = {'articles': {}}
 
@@ -98,16 +101,20 @@ def get_today_articles(data_dir: str = 'data') -> list:
                 if line.startswith('# ') and not title:
                     title = line[2:].strip()
                 if '作者：' in line and not author:
-                    author = line.split('作者：')[-1].split('|')[0].split('｜')[0].strip()
-            articles.append({
-                'article_id': article_id,
-                'user_id': user_dir.name,
-                'title': title,
-                'author': author,
-                'publish_time': '',
-                'content': content,
-                'filepath': str(md_file)
-            })
+                    author = (
+                        line.split('作者：')[-1].split('|')[0].split('｜')[0].strip()
+                    )
+            articles.append(
+                {
+                    'article_id': article_id,
+                    'user_id': user_dir.name,
+                    'title': title,
+                    'author': author,
+                    'publish_time': '',
+                    'content': content,
+                    'filepath': str(md_file),
+                }
+            )
             fs_articles += 1
 
     if fs_articles:
@@ -124,8 +131,12 @@ def get_today_articles(data_dir: str = 'data') -> list:
     return filtered
 
 
-def generate_today_report(data_dir: str = 'data', output_path: str = None,
-                          api_key: str = None, limit: int = 50) -> str:
+def generate_today_report(
+    data_dir: str = 'data',
+    output_path: str = None,
+    api_key: str = None,
+    limit: int = 50,
+) -> str:
     """
     分析今日文章并生成日报（可 import 调用）
 
@@ -141,7 +152,7 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
     logger = get_logger()
     logger.info("=" * 50)
     logger.info("开始生成每日分析报告")
-    
+
     # 获取今日文章
     articles = get_today_articles(data_dir)
 
@@ -166,14 +177,18 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
 
     # 初始化分析器（从 config.yaml 读取模型配置）
     config_path = Path(__file__).resolve().parent.parent / 'config' / 'config.yaml'
-    cfg = yaml.safe_load(config_path.read_text(encoding='utf-8')) if config_path.exists() else {}
+    cfg = (
+        yaml.safe_load(config_path.read_text(encoding='utf-8'))
+        if config_path.exists()
+        else {}
+    )
     analyzer = ArticleAnalyzer(api_key=api_key, config=cfg)
 
     # 分析每篇文章
     results = []
     for i, article in enumerate(articles):
         title = article.get('title', '')[:40]
-        logger.debug(f"分析 [{i+1}/{len(articles)}]: {title}")
+        logger.debug(f"分析 [{i + 1}/{len(articles)}]: {title}")
 
         result = analyzer.analyze_article(article)
         results.append(result)
@@ -181,7 +196,11 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
         # 输出状态
         if result.get('quality_passed'):
             priority = result.get('priority', 'reference')
-            priority_emoji = {'must_read': '🔴', 'worth_reading': '🟡', 'reference': '🔵'}
+            priority_emoji = {
+                'must_read': '🔴',
+                'worth_reading': '🟡',
+                'reference': '🔵',
+            }
             status = f"{priority_emoji.get(priority, '🔵')} {priority}"
             logger.debug(f"  ✅ {title}: {status}")
         else:
@@ -198,25 +217,34 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
     if stats_file.exists():
         try:
             crawl_stats = json.loads(stats_file.read_text(encoding='utf-8'))
-            logger.info(f"爬取统计: {crawl_stats.get('successful', 0)}/{crawl_stats.get('total_users', 0)} 账号成功")
+            logger.info(
+                f"爬取统计: {crawl_stats.get('successful', 0)}/{crawl_stats.get('total_users', 0)} 账号成功"
+            )
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"读取爬取统计失败: {e}")
 
-    report = generate_daily_report(articles, results, output_path, crawl_stats=crawl_stats,
-                                   model_name=analyzer.model_name)
-    
+    report = generate_daily_report(
+        articles,
+        results,
+        output_path,
+        crawl_stats=crawl_stats,
+        model_name=analyzer.model_name,
+    )
+
     # 输出统计
     passed = sum(1 for r in results if r.get('quality_passed'))
     must_read = sum(1 for r in results if r.get('priority') == 'must_read')
     worth_reading = sum(1 for r in results if r.get('priority') == 'worth_reading')
-    
+
     # 记录分析器统计
     analyzer_stats = analyzer.get_stats()
-    
+
     total_latency_ms = analyzer_stats.get("total_latency_ms", 0)
     success_calls = analyzer_stats.get("success_calls", 0)
-    avg_latency = f"{total_latency_ms / success_calls / 1000:.1f}s" if success_calls else "N/A"
-    
+    avg_latency = (
+        f"{total_latency_ms / success_calls / 1000:.1f}s" if success_calls else "N/A"
+    )
+
     summary = {
         "total_articles": len(articles),
         "passed_analysis": passed,
@@ -235,12 +263,12 @@ def generate_today_report(data_dir: str = 'data', output_path: str = None,
     log_execution_summary(summary)
     logger.info(
         f"报告生成完成: {len(articles)}篇, 有效{passed}篇, 必读{must_read}篇, "
-        f"LLM调用{analyzer_stats.get('total_calls',0)}次, "
-        f"成功{analyzer_stats.get('success_calls',0)}次, 重试{analyzer_stats.get('retry_count',0)}次, "
+        f"LLM调用{analyzer_stats.get('total_calls', 0)}次, "
+        f"成功{analyzer_stats.get('success_calls', 0)}次, 重试{analyzer_stats.get('retry_count', 0)}次, "
         f"平均延迟{avg_latency}, "
-        f"解析成功{analyzer_stats.get('parse_success',0)}次, 解析失败{analyzer_stats.get('parse_failed',0)}次"
+        f"解析成功{analyzer_stats.get('parse_success', 0)}次, 解析失败{analyzer_stats.get('parse_failed', 0)}次"
     )
-    
+
     return report
 
 
