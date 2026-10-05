@@ -21,7 +21,6 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -37,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 BROWSER_SESSION_PREFIX = "xq-crawler"
 
+
 def is_available() -> bool:
     """Check if opencli is installed and the Chrome extension is connected."""
     if not shutil.which("opencli"):
@@ -44,7 +44,9 @@ def is_available() -> bool:
     try:
         result = subprocess.run(
             ["opencli", "doctor"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         return "[OK] Extension: connected" in result.stdout
     except Exception:
@@ -65,7 +67,9 @@ def is_user_articles_available() -> bool:
     return result.returncode == 0 and "user-articles" in result.stdout
 
 
-def _run(*args: str, timeout: int = 30, check: bool = False) -> subprocess.CompletedProcess:
+def _run(
+    *args: str, timeout: int = 30, check: bool = False
+) -> subprocess.CompletedProcess:
     """Run opencli command, suppressing stderr noise."""
     cmd = ["opencli"] + list(args)
     logger.debug(f"opencli: {' '.join(cmd)}")
@@ -112,10 +116,14 @@ def get_user_articles(user_id: str, count: int = 20) -> list[dict]:
     """
     try:
         result = _run(
-            "xueqiu", "user-articles",
-            "--user_id", str(user_id),
-            "--count", str(count),
-            "-f", "json",
+            "xueqiu",
+            "user-articles",
+            "--user_id",
+            str(user_id),
+            "--count",
+            str(count),
+            "-f",
+            "json",
             timeout=30,
             check=True,
         )
@@ -131,7 +139,9 @@ def get_user_articles(user_id: str, count: int = 20) -> list[dict]:
         return []
 
 
-def get_article_content(url: str, session_name: str = "xq-crawler", max_retries: int = 2) -> dict:
+def get_article_content(
+    url: str, session_name: str = "xq-crawler", max_retries: int = 2
+) -> dict:
     """Extract full article content from a xueqiu article URL.
 
     Returns dict with keys: url, title, content (markdown).
@@ -166,14 +176,18 @@ def get_article_content(url: str, session_name: str = "xq-crawler", max_retries:
             try:
                 data = json.loads(cleaned)
                 result["content"] = data.get("content", "")
-                result["title"] = result["title"] or data.get("title", "").replace(" - 雪球", "")
+                result["title"] = result["title"] or data.get("title", "").replace(
+                    " - 雪球", ""
+                )
             except json.JSONDecodeError:
                 logger.error(f"Failed to parse extract JSON for {url}")
                 continue
 
         # Check if content is an error page
         if _is_error_page(result["content"]):
-            logger.warning(f"Error page detected for {url[-30:]} (attempt {attempt+1})")
+            logger.warning(
+                f"Error page detected for {url[-30:]} (attempt {attempt + 1})"
+            )
             result["content"] = ""
             result["title"] = ""
             continue

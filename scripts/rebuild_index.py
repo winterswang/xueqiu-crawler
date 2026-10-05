@@ -10,8 +10,6 @@
 用于修复因 OOM/SIGKILL 导致的 index.json 丢失问题。
 """
 
-import os
-import sys
 import json
 import re
 from pathlib import Path
@@ -116,10 +114,12 @@ def rebuild_index(data_dir: str = 'data', apply: bool = False, backup: bool = Tr
     if apply:
         existing['articles'] = articles
         existing['last_update'] = datetime.now().isoformat()
-        index_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding='utf-8')
-        print(f"\n✅ 索引已更新:")
+        index_file.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=2), encoding='utf-8'
+        )
+        print("\n✅ 索引已更新:")
     else:
-        print(f"\n🔍 预览模式 (加 --apply 执行写入):")
+        print("\n🔍 预览模式 (加 --apply 执行写入):")
 
     print(f"  现有文章: {exist_count}")
     print(f"  新增补录: {new_count}")
@@ -131,9 +131,12 @@ def rebuild_index(data_dir: str = 'data', apply: bool = False, backup: bool = Tr
 
 if __name__ == '__main__':
     import argparse
+
     parser = argparse.ArgumentParser(description='从 .md 文件重建 index.json')
     parser.add_argument('--apply', action='store_true', help='实际写入（默认 dry-run）')
-    parser.add_argument('--backup', action='store_true', default=True, help='修复前备份')
+    parser.add_argument(
+        '--backup', action='store_true', default=True, help='修复前备份'
+    )
     parser.add_argument('--data-dir', default='data', help='数据目录')
     args = parser.parse_args()
 

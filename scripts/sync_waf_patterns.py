@@ -36,6 +36,7 @@ _GUARD_RE = re.compile(r'(return /)([^/]*)(/\.test\(t\))')
 def expected_patterns() -> str:
     """opencli 适配器里应该出现的正则交替式。"""
     from waf_bridge import block_guard_js
+
     return block_guard_js()
 
 
@@ -69,7 +70,9 @@ def check_file(path: Path, patterns: str) -> list[str]:
         if 'const BLOCK_GUARD' not in line:
             continue
         if rewrite_line(line, patterns) != line:
-            problems.append(f'{path.name}:{lineno} BLOCK_GUARD 与 waf.CONTENT_PATTERNS 不一致')
+            problems.append(
+                f'{path.name}:{lineno} BLOCK_GUARD 与 waf.CONTENT_PATTERNS 不一致'
+            )
     return problems
 
 
@@ -90,8 +93,10 @@ def main(argv: list[str]) -> int:
             for p in problems:
                 print('  ' + p)
             return 1
-        print('BLOCK_GUARD 与 waf.CONTENT_PATTERNS 一致（%d 个模式，%d 个文件）'
-              % (len(CONTENT_PATTERNS), len(ADAPTER_FILES)))
+        print(
+            'BLOCK_GUARD 与 waf.CONTENT_PATTERNS 一致（%d 个模式，%d 个文件）'
+            % (len(CONTENT_PATTERNS), len(ADAPTER_FILES))
+        )
         return 0
 
     changed = []

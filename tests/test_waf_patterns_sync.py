@@ -53,7 +53,7 @@ def test_opencli_extractor_no_longer_flags_405_in_body():
     """回归：opencli_extractor 旧实现把 '405' 当正文子串，误判正常文章并重试。"""
     from opencli_extractor import _is_error_page
 
-    assert _is_error_page('滑动验证') is False          # 太短 → 不判
+    assert _is_error_page('滑动验证') is False  # 太短 → 不判
     assert _is_error_page('滑动验证' + '填充' * 100) is True
     assert _is_error_page('贵州茅台 405 亿元营收' + '正文' * 200) is False
 

@@ -29,9 +29,13 @@ FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 # OpenAI 兼容客户端（字节 coding plan，模型与 config.yaml 保持同步）
 client = OpenAI(
     api_key=os.environ.get("ARK_API_KEY", os.environ.get("MINIMAX_API_KEY", "")),
-    base_url=os.environ.get("ARK_CODING_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"),
+    base_url=os.environ.get(
+        "ARK_CODING_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"
+    ),
 )
-MODEL = os.environ.get("ANALYZE_LLM_MODEL", "deepseek-v4-flash-ga-260731")  # 2026-09-03: 与 config.yaml 同步升级 flash-ga
+MODEL = os.environ.get(
+    "ANALYZE_LLM_MODEL", "deepseek-v4-flash-ga-260731"
+)  # 2026-09-03: 与 config.yaml 同步升级 flash-ga
 
 
 def read_today_report(date: str = None) -> str:
@@ -48,7 +52,7 @@ def extract_must_read(report_md: str) -> list:
     """从日报中提取 🔴必读 文章列表"""
     must_read = []
     in_must_read = False
-    
+
     for line in report_md.split("\n"):
         if "### 🔴 必读" in line:
             in_must_read = True
@@ -63,7 +67,7 @@ def extract_must_read(report_md: str) -> list:
             if len(title) > 70:
                 title = title[:70] + "..."
             must_read.append(title)
-    
+
     return must_read
 
 
@@ -84,15 +88,15 @@ def generate_hot_topics_summary(report_md: str) -> str:
             count += 1
             if count > 15:
                 break
-    
+
     articles_text = "\n".join(lines)
-    
+
     prompt = f"""以下是今天雪球价值投资日报的主要文章标题：
 
 {articles_text}
 
 请用3句话总结今天大V们讨论的核心热点话题，每句不超过50字，口语化，直接说重点。不要开场白，直接输出3句话。"""
-    
+
     try:
         resp = client.chat.completions.create(
             model=MODEL,
@@ -107,91 +111,92 @@ def generate_hot_topics_summary(report_md: str) -> str:
         return "今日热点摘要生成失败，请查看完整日报。"
 
 
-def send_feishu_card(date: str, hot_topics: str, must_read: list, note_url: str, stats: dict):
+def send_feishu_card(
+    date: str, hot_topics: str, must_read: list, note_url: str, stats: dict
+):
     """发送飞书卡片消息"""
     if not FEISHU_WEBHOOK:
         _logger.warning("未配置 FEISHU_WEBHOOK，跳过飞书推送")
         return False
-    
+
     # 构建卡片内容
     elements = [
         {
             "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": f"**📰 今日热点**\n{hot_topics}"
-            }
+            "text": {"tag": "lark_md", "content": f"**📰 今日热点**\n{hot_topics}"},
         },
         {"tag": "hr"},
     ]
-    
+
     # 必读部分
     if must_read:
-        elements.append({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": "**🔴 必读文章（" + str(len(must_read)) + "篇）**"
-            }
-        })
-        for i, title in enumerate(must_read[:5], 1):  # 最多显示5篇
-            elements.append({
+        elements.append(
+            {
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"{i}. {title[:80]}"
+                    "content": "**🔴 必读文章（" + str(len(must_read)) + "篇）**",
+                },
+            }
+        )
+        for i, title in enumerate(must_read[:5], 1):  # 最多显示5篇
+            elements.append(
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": f"{i}. {title[:80]}"},
                 }
-            })
+            )
         elements.append({"tag": "hr"})
-    
+
     # 统计部分
-    elements.append({
-        "tag": "div",
-        "text": {
-            "tag": "lark_md",
-            "content": f"**📊 统计**\n🔴 必读 {stats['must_read']} 篇 | 🟡 值得关注 {stats['worth_reading']} 篇 | 📰 市场资讯 {stats['market_news']} 篇"
+    elements.append(
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"**📊 统计**\n🔴 必读 {stats['must_read']} 篇 | 🟡 值得关注 {stats['worth_reading']} 篇 | 📰 市场资讯 {stats['market_news']} 篇",
+            },
         }
-    })
-    
+    )
+
     # 跳转按钮
     if note_url:
-        elements.append({
-            "tag": "action",
-            "actions": [
-                {
-                    "tag": "button",
-                    "text": {
-                        "tag": "plain_text",
-                        "content": "📄 查看完整日报 (IMA)"
-                    },
-                    "type": "primary",
-                    "url": note_url
-                }
-            ]
-        })
-    
+        elements.append(
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": "📄 查看完整日报 (IMA)",
+                        },
+                        "type": "primary",
+                        "url": note_url,
+                    }
+                ],
+            }
+        )
+
     card = {
         "msg_type": "interactive",
         "card": {
             "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": f"📊 价值投资日报 - {date}"
-                },
-                "template": "blue"
+                "title": {"tag": "plain_text", "content": f"📊 价值投资日报 - {date}"},
+                "template": "blue",
             },
-            "elements": elements
-        }
+            "elements": elements,
+        },
     }
-    
+
     # 发送请求
     req = urllib.request.Request(
         FEISHU_WEBHOOK,
         data=json.dumps(card, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json"},
-        method="POST"
+        method="POST",
     )
-    
+
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read().decode("utf-8"))
@@ -216,22 +221,22 @@ def extract_stats(report_md: str) -> dict:
         if "🔴 必读" in parts[1]:
             try:
                 stats["must_read"] = int(parts[2])
-            except:
+            except ValueError:
                 pass
         elif "🟡 值得关注" in parts[1]:
             try:
                 stats["worth_reading"] = int(parts[2])
-            except:
+            except ValueError:
                 pass
         elif "📰 市场资讯" in parts[1]:
             try:
                 stats["market_news"] = int(parts[2])
-            except:
+            except ValueError:
                 pass
         elif "🔵 参考" in parts[1]:
             try:
                 stats["reference"] = int(parts[2])
-            except:
+            except ValueError:
                 pass
     return stats
 
@@ -239,7 +244,7 @@ def extract_stats(report_md: str) -> dict:
 def main():
     date = datetime.now().strftime("%Y-%m-%d")
     _logger.info(f"生成日报推送摘要 - {date}")
-    
+
     # 1. 读取日报
     try:
         report_md = read_today_report(date)
@@ -248,23 +253,23 @@ def main():
         _logger.error(str(e))
         print("⚠️ 今日日报文件不存在")
         return 1
-    
+
     # 2. 提取数据
     must_read = extract_must_read(report_md)
     stats = extract_stats(report_md)
-    
+
     # 3. 生成热点摘要
     _logger.info("生成今日热点摘要...")
     hot_topics = generate_hot_topics_summary(report_md)
-    
+
     # 4. IMA 链接（从环境变量读取）
     note_url = os.environ.get("IMA_NOTE_URL", "")
-    
+
     # 5. 直接输出 markdown 摘要，由 cron agent 发送
     output = []
     output.append(f"📊 **价值投资日报 - {date}**")
     output.append("")
-    output.append(f"📰 **今日热点**")
+    output.append("📰 **今日热点**")
     output.append(hot_topics)
     output.append("")
     output.append(f"🔴 **必读文章（{stats['must_read']}篇）**")
@@ -274,15 +279,17 @@ def main():
     else:
         output.append("今日无必读文章")
     output.append("")
-    output.append(f"📊 统计：🔴 必读 {stats['must_read']} | 🟡 值得关注 {stats['worth_reading']} | 📰 市场资讯 {stats['market_news']}")
+    output.append(
+        f"📊 统计：🔴 必读 {stats['must_read']} | 🟡 值得关注 {stats['worth_reading']} | 📰 市场资讯 {stats['market_news']}"
+    )
     if note_url:
         output.append("")
         output.append(f"📄 查看完整日报：{note_url}")
-    
+
     result = "\n".join(output)
     print(result)
     _logger.info("摘要生成完成")
-    
+
     return 0
 
 

@@ -85,7 +85,13 @@ def _assert_full_analysis(analysis):
     assert len(analysis["core_points"]) >= 3
     assert all("[解析异常]" not in point for point in analysis["core_points"])
     deep = analysis["deep_analysis"]
-    for key in ["business_quality", "management", "key_risks", "competitive_position", "outlook"]:
+    for key in [
+        "business_quality",
+        "management",
+        "key_risks",
+        "competitive_position",
+        "outlook",
+    ]:
         assert key in deep
         assert "[解析异常]" not in deep[key]
         assert len(deep[key]) > 30

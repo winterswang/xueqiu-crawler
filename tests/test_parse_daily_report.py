@@ -1,4 +1,5 @@
 """单测 for parse_daily_report (W32 2026-07-20)"""
+
 import pytest
 from pathlib import Path
 import sys
@@ -125,7 +126,9 @@ def test_extract_selected_dedupes_duplicate_links(tmp_daily_dir):
     selected = extract_selected_articles("2026-07-21", report_dir=tmp_daily_dir)
     user_ids = [art["user_id"] for art in selected]
     # 1425236713 应该只出现一次
-    assert user_ids.count("1425236713") == 1, f"1425236713 出现 {user_ids.count('1425236713')} 次"
+    assert user_ids.count("1425236713") == 1, (
+        f"1425236713 出现 {user_ids.count('1425236713')} 次"
+    )
 
 
 def test_find_raw_article_path_existing(tmp_path):

@@ -5,18 +5,19 @@ Phase 2: 阿里云智能滑块验证识别
 
 用法: python scripts/slider_solver.py [--debug]
 """
+
 import argparse
 import json
 import logging
-import math
 import random
-import sys
 import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -33,7 +34,9 @@ def load_all_cookies():
             d = json.load(f)
         if isinstance(d.get("cookies"), dict):
             for k, v in d["cookies"].items():
-                all_cookies.append({"name": k, "value": v, "domain": ".xueqiu.com", "path": "/"})
+                all_cookies.append(
+                    {"name": k, "value": v, "domain": ".xueqiu.com", "path": "/"}
+                )
 
     # monitor cookies
     mf = Path("/root/.xueqiu_crawler/cookies.json")
@@ -65,7 +68,9 @@ def human_like_slide(page, slider_el, track_width, debug=False):
     start_y = box["y"] + box["height"] / 2
     end_x = start_x + track_width
 
-    logger.info(f"  滑块: ({start_x:.0f}, {start_y:.0f}) -> ({end_x:.0f}, {start_y:.0f}), 距离={track_width:.0f}px")
+    logger.info(
+        f"  滑块: ({start_x:.0f}, {start_y:.0f}) -> ({end_x:.0f}, {start_y:.0f}), 距离={track_width:.0f}px"
+    )
 
     # Step 1: 鼠标移动到滑块（带随机偏移）
     page.mouse.move(
@@ -84,7 +89,6 @@ def human_like_slide(page, slider_el, track_width, debug=False):
     # 阶段C: 减速到停止 (90-100%)
 
     total_steps = random.randint(60, 100)
-    current_x = start_x
 
     for i in range(total_steps):
         progress = i / total_steps
@@ -167,7 +171,9 @@ def solve_slider(page, debug=False):
             body_box = body.first.bounding_box()
             slider_box = slider_el.bounding_box()
             track_width = body_box["width"] - slider_box["width"]
-            logger.info(f"  轨道宽={body_box['width']:.0f}, 滑块宽={slider_box['width']:.0f}, 距离={track_width:.0f}")
+            logger.info(
+                f"  轨道宽={body_box['width']:.0f}, 滑块宽={slider_box['width']:.0f}, 距离={track_width:.0f}"
+            )
         else:
             track_width = 320  # 默认
             logger.info(f"  使用默认距离={track_width}")
@@ -202,9 +208,13 @@ def wait_for_result(page, timeout=15):
                 return True
 
         # 检查是否有新的验证（多阶段）
-        text = page.locator("#aliyunCaptcha-sliding-text").inner_text() if page.locator("#aliyunCaptcha-sliding-text").count() > 0 else ""
+        text = (
+            page.locator("#aliyunCaptcha-sliding-text").inner_text()
+            if page.locator("#aliyunCaptcha-sliding-text").count() > 0
+            else ""
+        )
         if "验证通过" in text:
-            logger.info(f"  ✅ 滑块通过检测!")
+            logger.info("  ✅ 滑块通过检测!")
             # 等页面刷新
             time.sleep(2)
             return True
@@ -248,7 +258,9 @@ def main():
             timezone_id="Asia/Shanghai",
         )
         context.add_cookies(cookies)
-        context.add_init_script("Object.defineProperty(navigator, 'webdriver', { get: () => false });")
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => false });"
+        )
 
         page = context.new_page()
         page.goto("https://xueqiu.com", timeout=30000)
@@ -262,7 +274,7 @@ def main():
 
         passed = False
         for attempt in range(1, args.max_tries + 1):
-            logger.info(f"\n{'='*50}")
+            logger.info(f"\n{'=' * 50}")
             logger.info(f"🔄 第 {attempt}/{args.max_tries} 次尝试")
 
             # 检查是否已经通过

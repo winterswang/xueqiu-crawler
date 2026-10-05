@@ -2,7 +2,6 @@
 """单元测试：核心函数"""
 
 import sys
-import json
 from pathlib import Path
 
 # 添加项目根目录和 scripts 目录到 path
@@ -24,6 +23,7 @@ from analyzer import (
 # ============================================================
 # classify_stock_market
 # ============================================================
+
 
 def test_classify_hk_stocks():
     """港股格式识别"""
@@ -68,6 +68,7 @@ def test_classify_unknown():
 # group_stocks_by_market
 # ============================================================
 
+
 def test_group_stocks_by_market():
     """按市场分组"""
     stocks = ["AAPL", "00883.HK", "600519", "TSLA", "09988.HK"]
@@ -88,6 +89,7 @@ def test_group_stocks_empty():
 # ============================================================
 # check_article_quality
 # ============================================================
+
 
 def test_quality_passed():
     """完整文章通过检测"""
@@ -158,11 +160,13 @@ def test_quality_missing_publish_time():
 # calculate_priority_score
 # ============================================================
 
+
 def test_calculate_priority_score_deep_article():
     """高质量长文 → 高分"""
     article = {
         "title": "深度分析：中海油估值与护城河",
-        "content": "估值 PE PB ROE 自由现金流 护城河 安全边际 商业模式" * 50,  # ~5000 char with keywords
+        "content": "估值 PE PB ROE 自由现金流 护城河 安全边际 商业模式"
+        * 50,  # ~5000 char with keywords
     }
     scores = calculate_priority_score(article)
     assert scores["total"] >= 30
@@ -184,11 +188,13 @@ def test_calculate_priority_score_short():
 # classify_priority
 # ============================================================
 
+
 def test_classify_priority_must_read():
     """高分文章 → 必读"""
     article = {
         "title": "深度分析：中海油估值与护城河",
-        "content": "估值 PE PB ROE 自由现金流 护城河 安全边际 商业模式 财报 年报 业绩 内在价值 毛利率 净利率 管理层 资本配置" * 150,  # >5000 chars + rich keywords
+        "content": "估值 PE PB ROE 自由现金流 护城河 安全边际 商业模式 财报 年报 业绩 内在价值 毛利率 净利率 管理层 资本配置"
+        * 150,  # >5000 chars + rich keywords
     }
     priority = classify_priority(article)
     assert priority == "must_read", f"got {priority}"
@@ -208,6 +214,7 @@ def test_classify_priority_reference():
 # _format_article / _format_article_brief
 # ============================================================
 
+
 def test_format_article():
     """文章格式化不抛异常"""
     article = {
@@ -220,7 +227,14 @@ def test_format_article():
     result = {
         "quality_passed": True,
         "priority": "must_read",
-        "scores": {"total": 80, "content_depth": 30, "keywords": 25, "category": 10, "core_points": 10, "title_quality": 5},
+        "scores": {
+            "total": 80,
+            "content_depth": 30,
+            "keywords": 25,
+            "category": 10,
+            "core_points": 10,
+            "title_quality": 5,
+        },
         "analysis": {
             "category": "公司研究",
             "related_stocks": ["AAPL", "TSLA"],
@@ -236,9 +250,9 @@ def test_format_article():
         },
     }
     lines = _format_article(1, article, result)
-    assert any("测试标题" in l for l in lines)
-    assert any("AAPL" in l for l in lines)
-    assert any("TSLA" in l for l in lines)
+    assert any("测试标题" in ln for ln in lines)
+    assert any("AAPL" in ln for ln in lines)
+    assert any("TSLA" in ln for ln in lines)
 
 
 def test_format_article_brief():
@@ -251,7 +265,7 @@ def test_format_article_brief():
     }
     result = {"quality_passed": True, "issues": []}
     lines = _format_article_brief(1, article, result)
-    assert any("测试标题" in l for l in lines)
+    assert any("测试标题" in ln for ln in lines)
 
 
 if __name__ == "__main__":
@@ -288,7 +302,7 @@ if __name__ == "__main__":
             print(f"  ❌ {test.__name__}: {e}")
             failed += 1
 
-    print(f"\n{'='*40}")
-    print(f"结果: {passed}/{passed+failed} 通过")
+    print(f"\n{'=' * 40}")
+    print(f"结果: {passed}/{passed + failed} 通过")
     if failed:
         print(f"失败: {failed}")

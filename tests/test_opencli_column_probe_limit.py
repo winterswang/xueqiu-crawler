@@ -25,10 +25,18 @@ def test_opencli_mode_probes_at_most_three_non_columns(monkeypatch, tmp_path):
 
     crawler._extract_and_save_opencli = extract
     articles = [
-        {"article_id": f"col-{i}", "url": f"https://xueqiu.com/1/col{i}", "is_column": True}
+        {
+            "article_id": f"col-{i}",
+            "url": f"https://xueqiu.com/1/col{i}",
+            "is_column": True,
+        }
         for i in range(2)
     ] + [
-        {"article_id": f"other-{i}", "url": f"https://xueqiu.com/1/other{i}", "is_column": False}
+        {
+            "article_id": f"other-{i}",
+            "url": f"https://xueqiu.com/1/other{i}",
+            "is_column": False,
+        }
         for i in range(10)
     ]
     monkeypatch.setattr(

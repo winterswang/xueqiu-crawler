@@ -55,8 +55,9 @@ def test_no_articles_does_not_call_llm(tmp_path):
     data_dir = _empty_data_dir(tmp_path)
     out = data_dir / 'daily_reports' / 'no-update.md'
 
-    report = generate_today_report(data_dir=str(data_dir), output_path=str(out),
-                                   api_key='sk-should-not-be-used')
+    report = generate_today_report(
+        data_dir=str(data_dir), output_path=str(out), api_key='sk-should-not-be-used'
+    )
 
     assert out.exists()
     assert report

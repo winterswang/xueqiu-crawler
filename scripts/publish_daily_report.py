@@ -67,18 +67,18 @@ def check_existing_note(date: str) -> Optional[str]:
         "search_type": 0,
         "query_info": {"title": "价值投资日报"},
         "start": 0,
-        "end": 10
+        "end": 10,
     }
     headers = {
         "ima-openapi-clientid": IMA_CLIENT_ID,
         "ima-openapi-apikey": IMA_API_KEY,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
     req = urllib.request.Request(
         url,
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers=headers,
-        method="POST"
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -90,7 +90,9 @@ def check_existing_note(date: str) -> Optional[str]:
                         create_time = basic.get("create_time", 0)
                         try:
                             create_ts = int(create_time) / 1000 if create_time else 0
-                            note_date = datetime.fromtimestamp(create_ts).strftime("%Y-%m-%d")
+                            note_date = datetime.fromtimestamp(create_ts).strftime(
+                                "%Y-%m-%d"
+                            )
                             if note_date == date:
                                 return basic.get("docid")
                         except (ValueError, OSError):
@@ -120,28 +122,34 @@ def create_ima_note(title: str, content: str) -> Optional[str]:
     headers = {
         "ima-openapi-clientid": IMA_CLIENT_ID,
         "ima-openapi-apikey": IMA_API_KEY,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
     req = urllib.request.Request(
         url,
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers=headers,
-        method="POST"
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read().decode("utf-8"))
             code = result.get("code")
-            _logger.info(f"IMA API 响应: code={code}, msg={result.get('message', 'N/A')}")
+            _logger.info(
+                f"IMA API 响应: code={code}, msg={result.get('message', 'N/A')}"
+            )
             if code == 0:
                 note_id = result.get("data", {}).get("note_id")
                 _logger.info(f"IMA 笔记创建成功: note_id={note_id}")
                 return note_id
             else:
-                _logger.error(f"IMA 笔记创建失败: code={code}, response={json.dumps(result, ensure_ascii=False)[:500]}")
+                _logger.error(
+                    f"IMA 笔记创建失败: code={code}, response={json.dumps(result, ensure_ascii=False)[:500]}"
+                )
                 log_execution_stage("ima_push", "failed", f"code={code}")
     except urllib.error.HTTPError as e:
-        _logger.error(f"IMA HTTP 错误: {e.code} {e.reason}, body={e.read().decode('utf-8', errors='replace')[:500]}")
+        _logger.error(
+            f"IMA HTTP 错误: {e.code} {e.reason}, body={e.read().decode('utf-8', errors='replace')[:500]}"
+        )
         log_execution_stage("ima_push", "failed", f"HTTP {e.code}")
     except Exception as e:
         _logger.error(f"IMA 请求异常: {e}", exc_info=True)
@@ -188,7 +196,9 @@ def main(force: bool = False):
     # 幂等检查：只有「当天 + 内容一致」才复用已有笔记（见 _should_reuse_note）。
     # 2026-10-05 实测踩到过只比日期的坑：08:07 发布了 0 篇笔记 7512664842445628，
     # 10:10 过了验证页重跑 —— 旧逻辑会打印那篇空笔记的 URL 并 return 0。
-    state_file = Path(__file__).resolve().parent.parent / "data" / ".last_published_note.json"
+    state_file = (
+        Path(__file__).resolve().parent.parent / "data" / ".last_published_note.json"
+    )
     if not force and state_file.exists():
         try:
             state = json.loads(state_file.read_text(encoding="utf-8"))
@@ -213,12 +223,18 @@ def main(force: bool = False):
         _logger.info(f"IMA 笔记: {note_url}")
         # 写入状态文件，避免重复发布
         state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(json.dumps({
-            "date": date,
-            "note_id": note_id,
-            "content_digest": digest,
-            "published_at": datetime.now().isoformat()
-        }, ensure_ascii=False), encoding="utf-8")
+        state_file.write_text(
+            json.dumps(
+                {
+                    "date": date,
+                    "note_id": note_id,
+                    "content_digest": digest,
+                    "published_at": datetime.now().isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         print(note_url)
     else:
         _logger.error("IMA 推送失败")

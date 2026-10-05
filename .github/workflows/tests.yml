@@ -1,4 +1,4 @@
-name: tests
+name: checks
 
 # analyzer 已 public，跨仓库 checkout 用默认凭据即可，无需 PAT secret。
 
@@ -13,6 +13,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本固定：ruff 升级会引入新规则，不锁的话 CI 会在没有任何代码改动时突然变红。
+      # 升级 ruff 时同步跑一遍 ruff check --fix / ruff format，当作一次独立改动提交。
+      - name: Install ruff
+        run: pip install ruff==0.12.4
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
   pytest:
     runs-on: ubuntu-latest
     timeout-minutes: 20

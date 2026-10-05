@@ -10,7 +10,7 @@ W32 2026-07-20 改造：只同步日报中分类为 🔴必读/🟡值得关注/
 - 非阻塞：上传失败不影响主日报流程，只打印日志
 - 凌晨空跑保护：08:00 之前日报可能未生成 → 返回 0
 """
-import os
+
 import sys
 import json
 import shutil
@@ -23,7 +23,12 @@ from datetime import datetime, timezone, timedelta
 # Add xueqiu-analyzer-skill to path for ima_kb_uploader
 # 兄弟目录推导（远程 /root/code 与本地 ~/code/claude_code 同构）；
 # 目录不存在时无害——回退到 venv 里 pip install -e 的包
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'xueqiu-analyzer-skill' / 'src'))
+sys.path.insert(
+    0,
+    str(
+        Path(__file__).resolve().parent.parent.parent / 'xueqiu-analyzer-skill' / 'src'
+    ),
+)
 from xueqiu_analyzer.ima_kb_uploader import upload_file
 
 # Add scripts to path for parse_daily_report
@@ -33,7 +38,7 @@ from parse_daily_report import extract_selected_articles, find_raw_article_path
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    datefmt='%Y-%m-%d %H:%M:%S',
 )
 logger = logging.getLogger(__name__)
 
@@ -110,7 +115,9 @@ def find_selected_article_files(date_str: str) -> tuple[list[Path], int, int]:
             missing += 1
             logger.warning(
                 "  ⚠️ 入选文章 raw 找不到: %s/%s (%s)",
-                art["user_id"], art["post_id"], art.get("title", "")[:50]
+                art["user_id"],
+                art["post_id"],
+                art.get("title", "")[:50],
             )
     return sorted(paths), total, missing
 
@@ -150,6 +157,7 @@ def extract_article_title(md_path: Path) -> str:
 def main():
     # W32 2026-07-20: 接受可选 --date 参数，默认今天
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=None, help="日报日期 YYYY-MM-DD（默认今天）")
     args = parser.parse_args()
@@ -166,14 +174,14 @@ def main():
     # 凌晨空跑保护：日报不存在 → 0 上传 0 错误返回
     daily_path = DATA_DIR / "daily_reports" / f"{target_date}.md"
     if not daily_path.exists():
-        logger.info(
-            f"⏰ 日报文件不存在 ({daily_path}) —— 凌晨空跑保护，返回 0。"
-        )
+        logger.info(f"⏰ 日报文件不存在 ({daily_path}) —— 凌晨空跑保护，返回 0。")
         return 0
 
     # W32: 改用入选文件列表（不再 find_article_files 全部）
     all_files, total_selected, missing = find_selected_article_files(target_date)
-    logger.info(f"日报入选: {total_selected} 篇，找到 raw: {len(all_files)} 篇，missing: {missing} 篇")
+    logger.info(
+        f"日报入选: {total_selected} 篇，找到 raw: {len(all_files)} 篇，missing: {missing} 篇"
+    )
 
     if not all_files:
         logger.info("✅ 没有入选文章需要同步（可能日报为空或全部 missing）")
@@ -205,7 +213,9 @@ def main():
 
         pending.append((key, f))
 
-    logger.info(f"待上传: {len(pending)} 篇（已上传: {len(all_files) - len(pending)} 篇）")
+    logger.info(
+        f"待上传: {len(pending)} 篇（已上传: {len(all_files) - len(pending)} 篇）"
+    )
 
     if not pending:
         logger.info("✅ 没有新文章需要同步（全部已上传）")
@@ -236,12 +246,10 @@ def main():
         shutil.copy2(fpath, tmp_path)
 
         try:
-            logger.info(f"[{i}/{len(pending)}] 上传: {fpath.name} → {upload_title[:50]}...")
-            media_id = upload_file(
-                str(tmp_path),
-                KB_ID,
-                title=upload_title
+            logger.info(
+                f"[{i}/{len(pending)}] 上传: {fpath.name} → {upload_title[:50]}..."
             )
+            media_id = upload_file(str(tmp_path), KB_ID, title=upload_title)
             logger.info(f"✅ ({media_id[:20]}...)")
 
             # 记录成功状态，清除失败计数
@@ -253,7 +261,7 @@ def main():
                 "upload_time": datetime.now(timezone(timedelta(hours=8))).isoformat(),
                 "fail_count": 0,
                 "last_error": None,
-                "last_fail_time": None
+                "last_fail_time": None,
             }
             success += 1
 
@@ -275,7 +283,9 @@ def main():
                 "upload_time": None,
                 "fail_count": fail_count,
                 "last_error": err_short,
-                "last_fail_time": datetime.now(timezone(timedelta(hours=8))).isoformat()
+                "last_fail_time": datetime.now(
+                    timezone(timedelta(hours=8))
+                ).isoformat(),
             }
             fail += 1
             save_sync_state(state)
@@ -284,6 +294,7 @@ def main():
             if '403' in err or '限频' in err or 'rate' in err.lower() or '429' in err:
                 logger.warning(f"检测到限频，等待 {RATE_LIMIT_DELAY} 秒后继续...")
                 import time
+
                 time.sleep(RATE_LIMIT_DELAY)
 
         finally:
@@ -294,13 +305,19 @@ def main():
     save_sync_state(state)
 
     # 统计永久失败数量
-    permanent_fail = sum(1 for entry in state.values() if entry.get('fail_count', 0) >= MAX_RETRIES)
+    permanent_fail = sum(
+        1 for entry in state.values() if entry.get('fail_count', 0) >= MAX_RETRIES
+    )
 
     logger.info("=" * 60)
     logger.info(f"同步完成！成功: {success}, 失败: {fail}, 跳过(永久失败): {skip}")
-    logger.info(f"累计已上传成功: {len([e for e in state.values() if e.get('media_id')])} 篇")
+    logger.info(
+        f"累计已上传成功: {len([e for e in state.values() if e.get('media_id')])} 篇"
+    )
     if permanent_fail > 0:
-        logger.info(f"永久失败（已重试{MAX_RETRIES}次）: {permanent_fail} 篇，不会再自动重试")
+        logger.info(
+            f"永久失败（已重试{MAX_RETRIES}次）: {permanent_fail} 篇，不会再自动重试"
+        )
     return 0 if fail == 0 else 1
 
 

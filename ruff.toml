@@ -1,0 +1,23 @@
+# ruff 配置 —— 本仓库此前没有任何 ruff 配置，代码也从未被 ruff format 过。
+#
+# quote-style = "preserve"：仓库的引号风格是混用的（多数文件单引号，少数双引号）。
+# 若按默认值统一成双引号、或统一成单引号，都会把另一半个仓库整体翻一遍。
+# 保留原样可让 format 的改动收敛在换行、尾逗号、空行空白这类纯排版上
+# —— 实测能少改约一半的行（4637 → 2354）。
+
+target-version = "py311"
+
+[format]
+quote-style = "preserve"
+
+[lint.per-file-ignores]
+# E402：以下文件结构上必须先做 sys.path 注入（或先加载 .env）再导入本仓库模块，
+# 无法把 import 提到文件顶部。这不是笔误，是必需的前置动作。
+"scripts/crawler_nodriver.py" = ["E402"]
+"scripts/generate_report.py" = ["E402"]
+"scripts/parse_daily_report.py" = ["E402"]
+"tests/test_analyzer_config.py" = ["E402"]
+"tests/test_analyzer_json_repair.py" = ["E402"]
+"tests/test_core.py" = ["E402"]
+"tests/test_generate_report_no_articles.py" = ["E402"]
+"tests/test_waf_patterns_sync.py" = ["E402"]
