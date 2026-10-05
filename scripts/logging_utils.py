@@ -9,12 +9,25 @@
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-LOG_DIR = PROJECT_DIR / "logs"
+
+# 日志目录默认落在仓库内 logs/，但允许 XUEQIU_LOG_DIR 覆盖。
+#
+# 为什么必须能覆盖：本模块在**导入时**就会建目录并挂上 cron_daily.log 的
+# RotatingFileHandler，于是任何导入它的测试都会直接往**生产日志**里写。
+# 2026-10-05 实测 cron_daily.log 里积了 69 行 pytest 噪音，其中
+# 「已生成「今日无新增」最小日报: /private/var/folders/.../pytest-35/...」
+# 与真实产出**字样完全同形** —— 而 09:00 的巡检 prompt 正是要求读这个日志的
+# 末尾来判断当天爬取跑没跑完，足以把判断带偏。tests/conftest.py 会把这里
+# 重定向到临时目录。
+LOG_DIR = Path(
+    os.path.expanduser(os.environ.get("XUEQIU_LOG_DIR") or (PROJECT_DIR / "logs"))
+)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # 主流程 logger
