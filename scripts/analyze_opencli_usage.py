@@ -121,6 +121,7 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
     by_minute_site: Counter[str] = Counter()
     by_minute_local: Counter[str] = Counter()
     failures: list[dict] = []
+    probe_misses: list[dict] = []
 
     for row in rows:
         ts = _parse_ts(row)
@@ -141,10 +142,16 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
         else:
             by_minute_local[minute] += 1
         if not ok:
-            by_hour_fail[hour] += 1
-            by_source_fail[source] += 1
-            by_operation_fail[operation] += 1
-            failures.append(row)
+            # 探针未命中不算失败：调用方（detail_fetcher 的正文选择器循环）
+            # 明确声明过「这次不中」是控制流的一部分。混进失败率会把
+            # browser:extract 报成 75% 失败，而实际上每次抓取都成功了。
+            if row.get("expect_miss"):
+                probe_misses.append(row)
+            else:
+                by_hour_fail[hour] += 1
+                by_source_fail[source] += 1
+                by_operation_fail[operation] += 1
+                failures.append(row)
 
     return {
         "total": len(rows),
@@ -166,6 +173,7 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
             1 for r in failures if str(r.get("operation") or "?") in SITE_OPERATIONS
         ),
         "failures": failures,
+        "probe_misses": probe_misses,
     }
 
 
@@ -191,6 +199,11 @@ def render(summary: dict, top_minutes: int = 8, sample_failures: int = 8) -> str
     if site_peak_count:
         lines.append(
             f"  站点请求分钟峰值 {site_peak_count} 次/分（{site_peak_minute}）"
+        )
+    probe_misses = summary.get("probe_misses", [])
+    if probe_misses:
+        lines.append(
+            f"  另有探针未命中 {len(probe_misses)} 次（调用方声明的预期结果，不计入失败）"
         )
     lines.append(f"时间范围 {summary['first']} → {summary['last']}")
     lines.append("")
@@ -250,6 +263,18 @@ def render(summary: dict, top_minutes: int = 8, sample_failures: int = 8) -> str
                 f"  {row.get('ts', '')}  {row.get('source', '?')}  {row.get('operation', '?')}"
                 f"  rc={row.get('returncode')}  {error}"
             )
+        lines.append("")
+
+    if probe_misses:
+        # 单列，是为了让人一眼看出「这些不是故障」，而不是去追一个不存在的 bug
+        by_op = Counter(str(r.get("operation") or "?") for r in probe_misses)
+        detail = "、".join(f"{op} {n} 次" for op, n in by_op.most_common())
+        lines.append(f"== 探针未命中 {len(probe_misses)} 次（预期控制流，非失败）==")
+        lines.append(f"  {detail}")
+        lines.append(
+            "  这些调用带 expect_miss 标记：调用方按顺序试多个候选，"
+            "不中即换下一个，属正常流程。"
+        )
 
     return "\n".join(lines)
 
@@ -319,6 +344,11 @@ def main() -> int:
             for r in summary["failures"]
             if (ts := _parse_ts(r)) and ts >= cutoff and ts < end
         ]
+        summary["probe_misses"] = [
+            r
+            for r in summary.get("probe_misses", [])
+            if (ts := _parse_ts(r)) and ts >= cutoff and ts < end
+        ]
         summary["site_failed"] = sum(
             1
             for r in summary["failures"]
@@ -336,6 +366,7 @@ def main() -> int:
                     "site_total": summary.get("site_total", 0),
                     "local_total": summary.get("local_total", 0),
                     "site_failed": summary.get("site_failed", 0),
+                    "probe_misses": len(summary.get("probe_misses", [])),
                     "site_peak": {"minute": site_minute, "count": site_count},
                     "local_peak": {"minute": local_minute, "count": local_count},
                     "by_hour": dict(summary["by_hour"]),
