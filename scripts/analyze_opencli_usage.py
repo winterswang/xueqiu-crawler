@@ -30,6 +30,18 @@ from pathlib import Path
 
 DEFAULT_LOG = Path.home() / ".opencli" / "xueqiu-calls.jsonl"
 
+# 会**真正发起雪球站点请求**的操作 —— 只有这些才计入限流风险。
+# 台账把所有 opencli 调用都记了，其中 browser:get / browser:extract / browser:close
+# 只跟已打开的本地标签页交互，不发新请求（限速器也不限它们，见
+# opencli_rate_limiter._should_throttle）。
+# 2026-10-05 踩过：不分青红皂白算「分钟峰值」会得出 16 次/分的假高，
+# 而同期真正的站点请求峰值只有 6 次/分 —— 口径不对会把结论带偏一个量级。
+SITE_OPERATIONS = frozenset({
+    "browser:open",   # 导航到目标页面
+    "news", "comments", "replies", "stock-notices", "user-articles",
+    "stock", "search",
+})
+
 
 def _log_path(explicit: str | None) -> Path:
     if explicit:
@@ -70,6 +82,15 @@ def _pct(part: int, whole: int) -> str:
     return f"{(100.0 * part / whole):.1f}%" if whole else "—"
 
 
+def _peak(counter) -> tuple[str, int]:
+    """返回 (峰值所在的分钟, 次数)；空则 ("", 0)。同分并列取最早的一分钟。"""
+    if not counter:
+        return "", 0
+    top = max(counter.values())
+    minute = min(key for key, value in counter.items() if value == top)
+    return minute, top
+
+
 def _bar(count: int, peak: int, width: int = 24) -> str:
     if peak <= 0:
         return ""
@@ -88,6 +109,8 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
     by_operation: Counter[str] = Counter()
     by_operation_fail: Counter[str] = Counter()
     by_minute: Counter[str] = Counter()
+    by_minute_site: Counter[str] = Counter()
+    by_minute_local: Counter[str] = Counter()
     failures: list[dict] = []
 
     for row in rows:
@@ -104,6 +127,10 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
         by_source[source] += 1
         by_operation[operation] += 1
         by_minute[minute] += 1
+        if operation in SITE_OPERATIONS:
+            by_minute_site[minute] += 1
+        else:
+            by_minute_local[minute] += 1
         if not ok:
             by_hour_fail[hour] += 1
             by_source_fail[source] += 1
@@ -122,6 +149,13 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
         "by_operation": by_operation,
         "by_operation_fail": by_operation_fail,
         "by_minute": by_minute,
+        "by_minute_site": by_minute_site,
+        "by_minute_local": by_minute_local,
+        "site_total": sum(by_minute_site.values()),
+        "local_total": sum(by_minute_local.values()),
+        "site_failed": sum(
+            1 for r in failures if str(r.get("operation") or "?") in SITE_OPERATIONS
+        ),
         "failures": failures,
     }
 
@@ -132,7 +166,17 @@ def render(summary: dict, top_minutes: int = 8, sample_failures: int = 8) -> str
     if not total:
         return "台账里这个时间窗内没有记录（检查 ~/.opencli/xueqiu-calls.jsonl 是否存在）"
 
+    site_total = summary.get("site_total", 0)
+    local_total = summary.get("local_total", 0)
+    site_peak_minute, site_peak_count = _peak(summary.get("by_minute_site", {}))
+
     lines.append(f"总调用 {total} 次，失败 {summary['failed']} 次（{_pct(summary['failed'], total)}）")
+    lines.append(
+        f"  其中站点请求 {site_total} 次，本地命令 {local_total} 次"
+        f"（只有站点请求会触发风控，判定以站点口径为准）"
+    )
+    if site_peak_count:
+        lines.append(f"  站点请求分钟峰值 {site_peak_count} 次/分（{site_peak_minute}）")
     lines.append(f"时间范围 {summary['first']} → {summary['last']}")
     lines.append("")
 
@@ -157,8 +201,20 @@ def render(summary: dict, top_minutes: int = 8, sample_failures: int = 8) -> str
         lines.append(f"  {count:>5}  {_pct(failed, count):>7} 失败  {operation}")
     lines.append("")
 
-    # 分钟峰值 —— 判定「访问频率异常」最直接的证据
-    lines.append(f"== 分钟峰值 Top {top_minutes}（同一分钟内打了多少次）==")
+    # 分钟峰值 —— 判定「访问频率异常」最直接的证据。
+    # 只有**站点请求**才该拿来和风控阈值比；本地命令（browser get/extract/close）
+    # 混进来会把峰值抬高一档，见文件头 SITE_OPERATIONS 的注释。
+    lines.append(f"== 站点请求分钟峰值 Top {top_minutes}（决定风控的那一列）==")
+    for minute, count in summary.get("by_minute_site", Counter()).most_common(top_minutes):
+        lines.append(f"  {minute}  {count:>3} 次")
+    lines.append("")
+
+    lines.append(f"== 本地命令分钟峰值 Top {top_minutes}（不触发风控，仅供排查耗时）==")
+    for minute, count in summary.get("by_minute_local", Counter()).most_common(top_minutes):
+        lines.append(f"  {minute}  {count:>3} 次")
+    lines.append("")
+
+    lines.append(f"== 全部调用分钟峰值 Top {top_minutes}（站点+本地，不等于风控压力）==")
     for minute, count in summary["by_minute"].most_common(top_minutes):
         lines.append(f"  {minute}  {count:>3} 次")
     lines.append("")
@@ -205,24 +261,48 @@ def main() -> int:
     if args.date:
         # 只保留当天
         end = cutoff + timedelta(days=1)
-        summary["by_hour"] = Counter(
-            {k: v for k, v in summary["by_hour"].items() if cutoff <= datetime.strptime(k, "%Y-%m-%d %H:00") < end}
-        )
+
+        def _in_window(key: str, fmt: str) -> bool:
+            return cutoff <= datetime.strptime(key, fmt) < end
+
+        for key in ("by_hour", "by_hour_fail", "by_minute",
+                    "by_minute_site", "by_minute_local"):
+            summary[key] = Counter(
+                {k: v for k, v in summary[key].items() if _in_window(k, "%Y-%m-%d %H:%M")}
+                if key.startswith("by_minute")
+                else {k: v for k, v in summary[key].items() if _in_window(k, "%Y-%m-%d %H:00")}
+            )
         summary["total"] = sum(summary["by_hour"].values())
-        summary["failed"] = sum(
-            v for k, v in summary["by_hour_fail"].items()
-            if cutoff <= datetime.strptime(k, "%Y-%m-%d %H:00") < end
+        summary["failed"] = sum(summary["by_hour_fail"].values())
+        summary["site_total"] = sum(summary["by_minute_site"].values())
+        summary["local_total"] = sum(summary["by_minute_local"].values())
+        summary["failures"] = [
+            r for r in summary["failures"]
+            if (ts := _parse_ts(r)) and ts >= cutoff and ts < end
+        ]
+        summary["site_failed"] = sum(
+            1 for r in summary["failures"] if str(r.get("operation") or "?") in SITE_OPERATIONS
         )
 
     if args.json:
+        site_minute, site_count = _peak(summary.get("by_minute_site", {}))
+        local_minute, local_count = _peak(summary.get("by_minute_local", {}))
         print(json.dumps(
             {
                 "total": summary["total"],
                 "failed": summary["failed"],
+                "site_total": summary.get("site_total", 0),
+                "local_total": summary.get("local_total", 0),
+                "site_failed": summary.get("site_failed", 0),
+                "site_peak": {"minute": site_minute, "count": site_count},
+                "local_peak": {"minute": local_minute, "count": local_count},
                 "by_hour": dict(summary["by_hour"]),
                 "by_source": dict(summary["by_source"]),
                 "by_operation": dict(summary["by_operation"]),
-                "peak_minutes": dict(summary["by_minute"].most_common(20)),
+                "peak_minutes_site": dict(
+                    summary.get("by_minute_site", Counter()).most_common(20)
+                ),
+                "peak_minutes_all": dict(summary["by_minute"].most_common(20)),
             },
             ensure_ascii=False,
             indent=1,
