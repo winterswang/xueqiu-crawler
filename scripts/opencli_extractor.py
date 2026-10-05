@@ -70,7 +70,7 @@ def _run(*args: str, timeout: int = 30, check: bool = False) -> subprocess.Compl
     cmd = ["opencli"] + list(args)
     logger.debug(f"opencli: {' '.join(cmd)}")
     source = os.environ.get("XUEQIU_CALL_SOURCE", "xueqiu-crawler:opencli_extractor")
-    slot = acquire_opencli_slot(" ".join(args[:2]))
+    slot = acquire_opencli_slot(" ".join(args[:2]), cmd)
     started_at = time.time()
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
