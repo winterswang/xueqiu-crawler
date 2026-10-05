@@ -104,3 +104,72 @@ def test_render_headlines_the_site_peak():
     assert "本地命令 5 次" in text
     assert "站点请求分钟峰值 2 次/分" in text
     assert "站点请求分钟峰值 Top" in text
+
+
+# ── 探针未命中不计入失败 ────────────────────────────────────────────────────
+#
+# 2026-10-05 实测：detail_fetcher 试 8 个正文选择器，没命中就换下一个。两个
+# 页面各留 3 条 rc=2，台账把 browser:extract 报成「75% 失败」—— 而两次抓取
+# 都成功了、管线 7/7。调用方现在用 expect_miss 声明这类调用。
+
+
+def _probe(minute: int, second: int, selector: str) -> dict:
+    row = _record(minute, second, "browser:extract", ok=False)
+    row["expect_miss"] = True
+    row["command"] = [
+        "opencli",
+        "browser",
+        "detailfetch0",
+        "extract",
+        "--selector",
+        selector,
+    ]
+    return row
+
+
+def test_probe_misses_are_not_failures():
+    """3 次探针未命中 + 1 次真失败：失败数必须是 1，探针单列 3。"""
+    records = [
+        _probe(0, 1, "div.article"),
+        _probe(0, 2, "#artibody"),
+        _probe(0, 3, ".article-content"),
+        _record(0, 4, "user-articles", ok=False),  # 真失败
+    ]
+
+    summary = summarize(records, BASE - timedelta(hours=1))
+
+    assert summary["failed"] == 1
+    assert len(summary["probe_misses"]) == 3
+    assert [r["operation"] for r in summary["failures"]] == ["user-articles"]
+    # 全部调用数不受影响 —— 探针确实发生了，只是不该算失败
+    assert summary["total"] == 4
+
+
+def test_probe_misses_stay_out_of_hour_failure_counts():
+    records = [_probe(0, 1, "div.article"), _probe(0, 2, "#artibody")]
+
+    summary = summarize(records, BASE - timedelta(hours=1))
+
+    assert summary["by_hour_fail"]["2026-10-05 13:00"] == 0
+    assert summary["by_operation_fail"]["browser:extract"] == 0
+    assert summary["failed"] == 0
+
+
+def test_records_without_the_flag_still_count_as_failures():
+    """旧台账没有 expect_miss 字段 —— 必须仍按失败计（安全方向）。"""
+    records = [_record(0, 1, "browser:extract", ok=False)]
+
+    summary = summarize(records, BASE - timedelta(hours=1))
+
+    assert summary["failed"] == 1
+    assert summary["probe_misses"] == []
+
+
+def test_render_separates_probe_misses_from_failures():
+    records = [_probe(0, 1, "div.article"), _record(0, 2, "news", ok=False)]
+
+    text = render(summarize(records, BASE - timedelta(hours=1)))
+
+    assert "探针未命中 1 次（预期控制流，非失败）" in text
+    assert "失败 1 次" in text
+    assert "另有探针未命中 1 次" in text
