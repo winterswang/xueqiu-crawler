@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # 任何开头 500 字里出现 405 的正常文章都会被误判成错误页并重试。
 from scripts.waf_bridge import looks_like_waf_content  # noqa: E402
 from xueqiu_analyzer.opencli_call_logger import record_opencli_call  # noqa: E402
+from xueqiu_analyzer.opencli_rate_limiter import acquire_opencli_slot  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -50,18 +51,37 @@ def is_available() -> bool:
         return False
 
 
+def is_user_articles_available() -> bool:
+    """Check command registration locally without visiting xueqiu.com."""
+    try:
+        result = subprocess.run(
+            ["opencli", "xueqiu", "user-articles", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and "user-articles" in result.stdout
+
+
 def _run(*args: str, timeout: int = 30, check: bool = False) -> subprocess.CompletedProcess:
     """Run opencli command, suppressing stderr noise."""
     cmd = ["opencli"] + list(args)
     logger.debug(f"opencli: {' '.join(cmd)}")
     source = os.environ.get("XUEQIU_CALL_SOURCE", "xueqiu-crawler:opencli_extractor")
+    slot = acquire_opencli_slot(" ".join(args[:2]))
     started_at = time.time()
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except Exception as exc:
-        record_opencli_call(cmd, started_at, error=exc, source=source, caller="_run")
+        record_opencli_call(
+            cmd, started_at, error=exc, source=source, caller="_run", throttle=slot
+        )
         raise
-    record_opencli_call(cmd, started_at, result=result, source=source, caller="_run")
+    record_opencli_call(
+        cmd, started_at, result=result, source=source, caller="_run", throttle=slot
+    )
     if check and result.returncode != 0:
         raise RuntimeError(f"opencli failed: {result.stderr.strip()[:200]}")
     return result
