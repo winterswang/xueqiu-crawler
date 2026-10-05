@@ -1,11 +1,10 @@
 #!/bin/bash
-# 雪球爬虫完整流程 v9 - nodriver 版本（5 步流水线 + WAF 绕过 + 多次 cron 重试）
+# 雪球爬虫完整流程 v9 - nodriver 版本（5 步流水线 + WAF 绕过）
 # 凭证通过 .env 文件或环境变量加载（见 .env.example）
 #
 # 用法:
 #   bash scripts/run_daily.sh               # 完整流程（爬取 + 分析 + 发布）
 #   bash scripts/run_daily.sh --crawl-only  # 仅爬取（不含分析/发布）
-#   bash scripts/run_daily.sh --retry-failed # 重试上次失败的账号
 #   bash scripts/run_daily.sh --skip-crawl  # 跳过爬取（仅分析 + 发布）
 
 set -e
@@ -13,8 +12,9 @@ set -e
 MODE="full"
 case "${1:-}" in
     --crawl-only) MODE="crawl-only" ;;
-    --retry-failed) MODE="retry-failed" ;;
     --skip-crawl) MODE="skip-crawl" ;;
+    "") ;;
+    *) echo "未知参数: $1（可用: --crawl-only / --skip-crawl）" >&2; exit 1 ;;
 esac
 
 # 根据脚本位置自动推断项目目录
@@ -98,27 +98,21 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 # === 爬取阶段（--skip-crawl 时跳过） ===
 if [ "$MODE" != "skip-crawl" ]; then
-    if [ "$MODE" = "retry-failed" ]; then
-        # ── 重试失败账号 ──
-        echo "[retry] 重试上次失败的账号..." >> "$LOG_FILE"
-        $PYTHON_BIN scripts/crawler_nodriver.py --retry-failed >> "$LOG_FILE" 2>&1
-    else
-        # 1. 检查登录态
-        echo "[1/4] 检查登录态..." >> "$LOG_FILE"
-        $PYTHON_BIN scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（nodriver 将直接尝试）" >> "$LOG_FILE"
+    # 1. 检查登录态
+    echo "[1/4] 检查登录态..." >> "$LOG_FILE"
+    $PYTHON_BIN scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（nodriver 将直接尝试）" >> "$LOG_FILE"
 
-        # 2. 爬取新文章（nodriver — 绕过阿里云 WAF）
-        echo "[2/4] 爬取新文章（nodriver）..." >> "$LOG_FILE"
-        $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
-    fi
+    # 2. 爬取新文章（nodriver — 绕过阿里云 WAF）
+    echo "[2/4] 爬取新文章（nodriver）..." >> "$LOG_FILE"
+    $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
 
     # 爬取完成后立即清理 Chrome，释放内存供后续 AI 分析使用
     echo "[清理] 释放浏览器资源..." >> "$LOG_FILE"
     cleanup_chromium
 fi
 
-# === 分析 + 发布阶段（--crawl-only / --retry-failed 时跳过） ===
-if [ "$MODE" != "crawl-only" ] && [ "$MODE" != "retry-failed" ]; then
+# === 分析 + 发布阶段（--crawl-only 时跳过） ===
+if [ "$MODE" != "crawl-only" ]; then
     # 3. 生成分析报告（MINIMAX_API_KEY 从 .env 或环境变量读取）
     echo "[3/4] 生成分析报告..." >> "$LOG_FILE"
     $PYTHON_BIN scripts/generate_report.py --limit 50 >> "$LOG_FILE" 2>&1

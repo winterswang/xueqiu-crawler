@@ -851,10 +851,8 @@ class XueqiuCrawlerNodriver:
         }
 
         if self._use_opencli:
-            # ── OpenCLI 模式：逐用户爬取 + 记录失败账号 ──
+            # ── OpenCLI 模式：逐用户爬取 ──
             self.logger.info(f"🚀 OpenCLI 模式启动，共 {len(self.accounts)} 个用户")
-
-            failed_accounts = []  # 记录保存 0 篇的用户（被 WAF 全部拦截）
 
             for i, account in enumerate(self.accounts):
                 user_id = account.get('id')
@@ -869,18 +867,6 @@ class XueqiuCrawlerNodriver:
                 stats['total_new'] += result.get('new_articles', 0)
                 stats['total_saved'] += result.get('saved_articles', 0)
                 stats['users'].append(result)
-
-                # 记录失败账号（0 篇保存 = 需后续 cron 重试）
-                if result.get('saved_articles', 0) == 0 and result.get('new_articles_available', 0) > 0:
-                    failed_accounts.append(account)
-                    self.logger.info(f"🔴 {user_name}: API 返回 {result['new_articles_available']} 篇但均被 WAF 拦截")
-
-            # 保存失败账号到磁盘，供 --retry-failed 使用
-            if failed_accounts:
-                failed_file = self.data_dir / '.failed_accounts.json'
-                with open(failed_file, 'w', encoding='utf-8') as f:
-                    json.dump(failed_accounts, f, ensure_ascii=False)
-                self.logger.info(f"💾 {len(failed_accounts)} 个失败账号已保存到 {failed_file}")
 
             self._opencli.close()
         else:
@@ -982,48 +968,11 @@ async def main_async():
     parser.add_argument('--user', '-u', help='指定用户ID')
     parser.add_argument('--max', '-m', type=int, default=20, help='最大文章数')
     parser.add_argument('-a', '--all', action='store_true', help='爬取所有用户')
-    parser.add_argument('--retry-failed', action='store_true',
-                        help='从磁盘加载上次失败的账号重试（跨 cron 模式）')
     args = parser.parse_args()
 
     crawler = XueqiuCrawlerNodriver(args.config)
 
-    if args.retry_failed:
-        # ── 跨 cron 重试模式：重试上次失败的账号 ──
-        failed_file = crawler.data_dir / '.failed_accounts.json'
-        if not failed_file.exists():
-            crawler.logger.info("没有待重试的失败账号")
-            return
-        with open(failed_file, 'r', encoding='utf-8') as f:
-            failed_accounts = json.load(f)
-        crawler.logger.info(f"📋 从磁盘加载 {len(failed_accounts)} 个失败账号，开始重试...")
-
-        still_failed = []
-        retried = 0
-        for account in failed_accounts:
-            user_name = account.get('name', account.get('id'))
-            crawler.logger.info(f"🔄 重试: {user_name}")
-            result = await crawler._crawl_one_user_opencli(account, crawler.config.get('crawler', {}).get('max_articles', 20))
-            saved = result.get('saved_articles', 0)
-            if saved == 0 and result.get('new_articles_available', 0) > 0:
-                still_failed.append(account)
-                crawler.logger.info(f"  🔴 仍未成功")
-            else:
-                retried += saved
-                crawler.logger.info(f"  ✅ 成功保存 {saved} 篇")
-
-        # 更新磁盘文件
-        if still_failed:
-            with open(failed_file, 'w', encoding='utf-8') as f:
-                json.dump(still_failed, f, ensure_ascii=False)
-            crawler.logger.info(f"💾 {len(still_failed)} 个账号仍需重试，已更新 {failed_file}")
-        else:
-            failed_file.unlink(missing_ok=True)
-            crawler.logger.info("🎉 所有失败账号已成功爬取")
-
-        if crawler._opencli:
-            crawler._opencli.close()
-    elif args.user:
+    if args.user:
         result = await crawler.crawl_user(args.user, max_articles=args.max)
         print(f"\n结果: {result}")
     else:
