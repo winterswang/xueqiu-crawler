@@ -638,14 +638,31 @@ class XueqiuCrawlerNodriver:
                             if a.get('article_id') and a['article_id'] not in all_known]
             self.logger.info(f"发现 {len(new_articles)} 篇新文章（共 {len(article_list)} 篇）")
 
-            # 3. 提取正文并保存
+            # 3. 提取正文并保存。专栏优先；非专栏多数是回复/短状态，
+            # 只保留少量探测位，避免为明显不收录的内容消耗详情页请求。
+            likely_columns = [a for a in new_articles if a.get('is_column')]
+            likely_others = [a for a in new_articles if not a.get('is_column')]
+            ordered_articles = likely_columns + likely_others
+            other_probe_limit = 3
+            other_probed = 0
             articles_saved = []
-            for i, article in enumerate(new_articles[:max_articles]):
+            for i, article in enumerate(ordered_articles[:max_articles]):
                 url = article.get('url', '')
                 if not url:
                     continue
 
-                self.logger.info(f"OpenCLI 详情 [{i+1}/{min(len(new_articles), max_articles)}]: {url[-30:]}")
+                if not article.get('is_column'):
+                    if other_probed >= other_probe_limit:
+                        remaining = min(len(ordered_articles), max_articles) - i
+                        self.logger.info(
+                            f"OpenCLI 专栏已耗尽，剩余 {remaining} 条非专栏预判，提前结束"
+                        )
+                        break
+                    other_probed += 1
+
+                self.logger.info(
+                    f"OpenCLI 详情 [{i+1}/{min(len(ordered_articles), max_articles)}]: {url[-30:]}"
+                )
 
                 if self._extract_and_save_opencli(article, user_id, user_name):
                     articles_saved.append(article)
