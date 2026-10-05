@@ -102,14 +102,11 @@ class XueqiuCrawlerNodriver:
         self._use_opencli = False
         self._opencli = None
         if opencli_available:
-            # Second: verify the user-articles command actually exists
+            # Second: verify the command is registered. Use --help so the
+            # preflight never spends a real xueqiu.com request or triggers WAF.
             try:
-                from scripts.opencli_extractor import get_user_articles
-                # Test if command works by a dry run (will fail fast if command is missing)
-                test_result = get_user_articles("0", 1)
-                # get_user_articles returns empty list on error, check if command exited normally
-                # If command is missing, we already get empty list from error handling
-                if test_result is not None:
+                from scripts.opencli_extractor import is_user_articles_available
+                if is_user_articles_available():
                     self._use_opencli = True
                     self.logger.info("✅ OpenCLI 可用，启用 Chrome 扩展模式（零 WAF）")
                     self._opencli = OpencliExtractor()
