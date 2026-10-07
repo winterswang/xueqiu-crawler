@@ -144,7 +144,6 @@ if [ "$MODE" != "skip-crawl" ]; then
 
             # 影子目录首次使用前必须与 data/ 对齐已知状态：否则 gateway 会把窗口内
             # 所有文章都当成新文章，两侧「新文章」口径不可比，对比结论全部无意义。
-            # index.json 是累计索引，history/ 提供近 7 天历史，两者足够复原已知集合。
             if [ ! -f "$SHADOW_DIR/index.json" ]; then
                 mkdir -p "$SHADOW_DIR"
                 # 必须把 data/ 下爬虫相关的状态**整体**镜像过去，特别是各账号的
