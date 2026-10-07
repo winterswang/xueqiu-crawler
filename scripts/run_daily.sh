@@ -6,6 +6,12 @@
 #   bash scripts/run_daily.sh               # 完整流程（爬取 + 分析 + 发布）
 #   bash scripts/run_daily.sh --crawl-only  # 仅爬取（不含分析/发布）
 #   bash scripts/run_daily.sh --skip-crawl  # 跳过爬取（仅分析 + 发布）
+#
+# 爬取引擎由 CRAWL_ENGINE 环境变量选择（默认 legacy）：
+#   legacy  = 旧链路写 data/（现状）
+#   gateway = crawl-gateway 写 data/（切换后用）
+#   shadow  = 旧链路写 data/，gateway 同时写 data-gateway/ 并对比，只告警不阻断
+# 例: CRAWL_ENGINE=shadow bash scripts/run_daily.sh --crawl-only
 
 set -e
 
@@ -22,6 +28,20 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_FILE="$PROJECT_DIR/logs/cron_daily.log"
 DATE=$(date +%Y-%m-%d)
+
+# 爬取引擎（见 docs/crawl_gateway_migration_plan.md Step 3/4）
+#   legacy  = 旧链路，写 data/（默认，现状）
+#   gateway = crawl-gateway 写 data/
+#   shadow  = 旧链路照常写 data/；gateway 同时写 data-gateway/ 并对比，只告警不阻断
+# 刻意放在取锁之前：配错引擎应立刻失败，不留锁、不写生产日志。
+CRAWL_ENGINE="${CRAWL_ENGINE:-legacy}"
+case "$CRAWL_ENGINE" in
+    legacy|gateway|shadow) ;;
+    *) echo "未知 CRAWL_ENGINE: $CRAWL_ENGINE（可用: legacy / gateway / shadow）" >&2; exit 1 ;;
+esac
+
+SHADOW_DIR="$PROJECT_DIR/data-gateway"
+GATEWAY_DB="$SHADOW_DIR/gateway.sqlite3"
 
 # 资源清理函数：防止 OOM（僵尸 Chromium 进程）+ 删除锁文件
 cleanup() {
@@ -102,9 +122,53 @@ if [ "$MODE" != "skip-crawl" ]; then
     echo "[1/4] 检查登录态..." >> "$LOG_FILE"
     $PYTHON_BIN scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（nodriver 将直接尝试）" >> "$LOG_FILE"
 
-    # 2. 爬取新文章（nodriver — 绕过阿里云 WAF）
-    echo "[2/4] 爬取新文章（nodriver）..." >> "$LOG_FILE"
-    $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
+    # 2. 爬取新文章
+    echo "[2/4] 爬取新文章（engine=$CRAWL_ENGINE）..." >> "$LOG_FILE"
+    case "$CRAWL_ENGINE" in
+        legacy)
+            # nodriver — 绕过阿里云 WAF
+            $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
+            ;;
+        gateway)
+            # 与旧链路保持一致：爬取失败即中止整个流水线（现状行为）
+            $PYTHON_BIN -m crawl_gateway verify --site xueqiu >> "$LOG_FILE" 2>&1
+            $PYTHON_BIN -m crawl_gateway run --site xueqiu --purpose daily \
+                --all-accounts --execute --data-dir data >> "$LOG_FILE" 2>&1
+            ;;
+        shadow)
+            # 生产链路照常跑
+            $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
+
+            # 影子目录首次使用前必须与 data/ 对齐已知状态：否则 gateway 会把窗口内
+            # 所有文章都当成新文章，两侧「新文章」口径不可比，对比结论全部无意义。
+            # index.json 是累计索引，history/ 提供近 7 天历史，两者足够复原已知集合。
+            if [ ! -f "$SHADOW_DIR/index.json" ]; then
+                mkdir -p "$SHADOW_DIR"
+                for item in index.json history; do
+                    if [ -e "$PROJECT_DIR/data/$item" ]; then
+                        cp -a "$PROJECT_DIR/data/$item" "$SHADOW_DIR/"
+                    fi
+                done
+                echo "[shadow] 已用 data/ 初始化影子目录已知状态" >> "$LOG_FILE"
+            fi
+
+            # 影子运行与对比都只告警、不阻断日报（legacy 才是生产链路）
+            if $PYTHON_BIN -m crawl_gateway --config config/sites.yaml \
+                    --db "$GATEWAY_DB" run --site xueqiu --purpose daily-shadow \
+                    --all-accounts --execute --data-dir "$SHADOW_DIR" >> "$LOG_FILE" 2>&1; then
+                if $PYTHON_BIN scripts/compare_crawl_outputs.py \
+                        --legacy-dir data --gateway-dir "$SHADOW_DIR" \
+                        --gateway-db "$GATEWAY_DB" \
+                        --out "logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE" 2>&1; then
+                    echo "[shadow] ✅ 两侧产物无差异" >> "$LOG_FILE"
+                else
+                    echo "[shadow] ⚠️ 两侧产物有差异，见 logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE"
+                fi
+            else
+                echo "[shadow] ⚠️ gateway 影子运行失败（不影响主流程）" >> "$LOG_FILE"
+            fi
+            ;;
+    esac
 
     # 爬取完成后立即清理 Chrome，释放内存供后续 AI 分析使用
     echo "[清理] 释放浏览器资源..." >> "$LOG_FILE"
