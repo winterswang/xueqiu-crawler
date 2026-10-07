@@ -29,6 +29,16 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_FILE="$PROJECT_DIR/logs/cron_daily.log"
 DATE=$(date +%Y-%m-%d)
 
+# 加载 .env 文件（如有）— 强制导出所有变量
+# 必须在读取 CRAWL_ENGINE 之前：切换/回滚方式就是往 .env 里写 CRAWL_ENGINE。
+if [ -f "$PROJECT_DIR/.env" ]; then
+    set -a
+    source "$PROJECT_DIR/.env"
+    set +a
+    # 显式导出关键变量（防御性）
+    export MINIMAX_API_KEY MINIMAX_BASE_URL BAILIAN_API_KEY ARK_API_KEY ARK_CODING_BASE_URL ANALYZE_LLM_MODEL 2>/dev/null || true
+fi
+
 # 爬取引擎（见 docs/crawl_gateway_migration_plan.md Step 3/4）
 #   legacy  = 旧链路，写 data/（默认，现状）
 #   gateway = crawl-gateway 写 data/
@@ -62,15 +72,6 @@ cleanup() {
 cleanup_chromium() {
     cleanup
 }
-
-# 加载 .env 文件（如有）— 强制导出所有变量
-if [ -f "$PROJECT_DIR/.env" ]; then
-    set -a
-    source "$PROJECT_DIR/.env"
-    set +a
-    # 显式导出关键变量（防御性）
-    export MINIMAX_API_KEY MINIMAX_BASE_URL BAILIAN_API_KEY ARK_API_KEY ARK_CODING_BASE_URL ANALYZE_LLM_MODEL 2>/dev/null || true
-fi
 
 # 内存检查：低于 500MB 可用时告警
 AVAILABLE_MEM=$(awk '/^MemAvailable:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo "unknown")

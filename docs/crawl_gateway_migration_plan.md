@@ -102,6 +102,7 @@ python3 -m crawl_gateway --config config/sites.yaml \
 已知代价：shadow 模式当天**站点访问量翻倍**（legacy + gateway 各跑一遍全量账号）。对 WAF 保护的站点这是额外风控暴露，也是本步骤要连续跑 3 天的成本。gateway 侧自带频控与熔断兜底。
 
 run_daily.sh 的引擎分支行为：
+- 切换/回滚的唯一开关：服务器上 `$PROJECT_DIR/.env` 里的 `CRAWL_ENGINE`。run_daily.sh 读该变量的位置**必须在 source .env 之后**，否则 .env 里写的值会被默认值盖掉、回滚失效（实现时踩到过，已修）。
 - `legacy`（默认）：与现状完全一致。
 - `gateway`：先 `verify` 再 `run`，失败即中止整个流水线——与旧链路爬取失败时的现状行为保持一致（断供窗口最多一个 cron 周期，见风险表）。
 - `shadow`：legacy 照常写 `data/`（生产链路，失败即中止）；gateway 影子运行与对比**只告警不阻断**，保证日报不受影响。未知 `CRAWL_ENGINE` 值在取 cron 锁之前就报错退出，不留锁、不写生产日志。
