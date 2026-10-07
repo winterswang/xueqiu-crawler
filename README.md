@@ -153,7 +153,7 @@ python3 -m crawl_gateway --config config/sites.yaml --db data/gateway.sqlite3 \
 
 #### P1 重要
 
-4. **硬编码路径** — 2026-10-07 复核更正：现行 `publish_daily_report.py` 全文**无** `/root` 路径。生产代码里只剩 3 处，分别在 `scripts/slider_solver.py:42`、`scripts/run_daily.sh:68`、`scripts/test_waf_bypass.py:25`
+4. ~~**硬编码路径**~~ ✅ 2026-10-08 已消除：原先 3 处 `/root/...` 全部改为可移植写法（`Path.home()` / `${XDG_CACHE_HOME:-$HOME/.cache}`），旧 Linux 主机上语义等价。另 `publish_daily_report.py` 全文本就无 `/root` 路径。见 `PROJECT_LOG.md` D-008
 5. **凭证分散** — IMA 凭证在脚本中硬编码（已通过 ~/.config/ima/ 文件读取解决）
 6. ~~**零测试** — 关键函数（`classify_stock_market`、`check_article_quality`）无单元测试~~ **已不成立**（2026-10-07 复核）：两个函数都有单元测试（`tests/test_core.py`），全仓 119 个用例。残余缺口见 `PROJECT_LOG.md` D-006
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 雪球爬虫完整流程 v9 - nodriver 版本（5 步流水线 + WAF 绕过）
+# 雪球爬虫完整流程 v9 - nodriver 版本（6 步流水线 + WAF 绕过）
 # 凭证通过 .env 文件或环境变量加载（见 .env.example）
 #
 # 用法:
@@ -67,7 +67,11 @@ cleanup() {
     sleep 1
   
     # 清理 nodriver 临时 profile（超过 1 小时的）
-    find /root/.cache/openclaw -maxdepth 1 -name 'uc_*' -type d -mmin +60 -exec rm -rf {} \; 2>/dev/null || true
+    # 这是**旧 OpenClaw 宿主**的 cache 位置；当前主机用 opencli，其状态在 ~/.opencli/，
+    # 且 opencli 源码里不存在 uc_ 前缀目录 —— 所以本行在当前主机上是空操作。
+    # 保留是因为它无害，且若运行时回退到 OpenClaw 仍然有效；不再写死 /root，
+    # 以便换主机/换用户后依然指向对的地方（旧 Linux 主机上 HOME=/root，语义等价）。
+    find "${XDG_CACHE_HOME:-$HOME/.cache}/openclaw" -maxdepth 1 -name 'uc_*' -type d -mmin +60 -exec rm -rf {} \; 2>/dev/null || true
 }
 
 # 兼容旧函数名
@@ -122,11 +126,11 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 # === 爬取阶段（--skip-crawl 时跳过） ===
 if [ "$MODE" != "skip-crawl" ]; then
     # 1. 检查登录态
-    echo "[1/4] 检查登录态..." >> "$LOG_FILE"
+    echo "[1/6] 检查登录态..." >> "$LOG_FILE"
     $PYTHON_BIN scripts/cookies.py --check >> "$LOG_FILE" 2>&1 || echo "Cookies 未配置（nodriver 将直接尝试）" >> "$LOG_FILE"
 
     # 2. 爬取新文章
-    echo "[2/4] 爬取新文章（engine=$CRAWL_ENGINE）..." >> "$LOG_FILE"
+    echo "[2/6] 爬取新文章（engine=$CRAWL_ENGINE）..." >> "$LOG_FILE"
     case "$CRAWL_ENGINE" in
         legacy)
             # nodriver — 绕过阿里云 WAF
@@ -190,7 +194,7 @@ fi
 # === 分析 + 发布阶段（--crawl-only 时跳过） ===
 if [ "$MODE" != "crawl-only" ]; then
     # 3. 生成分析报告（MINIMAX_API_KEY 从 .env 或环境变量读取）
-    echo "[3/4] 生成分析报告..." >> "$LOG_FILE"
+    echo "[3/6] 生成分析报告..." >> "$LOG_FILE"
     $PYTHON_BIN scripts/generate_report.py --limit 50 >> "$LOG_FILE" 2>&1
 
     # 4. 发布到 IMA 笔记并发送链接

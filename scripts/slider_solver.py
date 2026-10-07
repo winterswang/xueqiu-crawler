@@ -38,8 +38,8 @@ def load_all_cookies():
                     {"name": k, "value": v, "domain": ".xueqiu.com", "path": "/"}
                 )
 
-    # monitor cookies
-    mf = Path("/root/.xueqiu_crawler/cookies.json")
+    # monitor cookies（旧位置在 /root，即 Linux 主机上的 $HOME；用 Path.home() 保持等价且可移植）
+    mf = Path.home() / ".xueqiu_crawler" / "cookies.json"
     if mf.exists():
         with open(mf) as f:
             mon = json.load(f)
