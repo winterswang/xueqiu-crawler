@@ -36,7 +36,7 @@
 | F-013 | 全面反检测增强 + Chromium new headless 模式 | P0 | 已发布 | winterswang | - | v2.12 | - | c780800 |
 | F-014 | 超时统一读 config.yaml (30s→60s) | P1 | 已发布 | winterswang | - | v2.7 | #12 | 64297e1 |
 | F-015 | 数据统计与分析报告生成 | P2 | 已发布 | winterswang | - | v2.0 | - | scripts/generate_report.py |
-| F-016 | Info Card 生成 + IMA 知识库推送 + 飞书推送 | P0 | 已发布 | winterswang | - | v2.6+ | - | publish_daily_report_v3.py |
+| F-016 | Info Card 生成 + IMA 知识库推送 + 飞书推送 | P0 | 已发布 | winterswang | - | v2.6+ | - | 现由 `scripts/publish_daily_report.py` + `scripts/push_feishu.py` 承担（`_v3.py` 已于 f816595 删除） |
 | F-017 | MiniMax API 详细执行日志 + 指数退避重试 | P1 | 已发布 | winterswang | 2026-05-24 | v2.13 | #13 | 096f90a |
 | F-018 | LLM 响应字段完整性校验 + 修复机制 | P1 | 已发布 | winterswang | 2026-05-23 | v2.6 | #7 | 77ee580 |
 | F-019 | Mock 分析警告标记（日报头部插 ⚠️ 提示） | P2 | 已发布 | winterswang | 2026-05-23 | v2.6 | #7 | 77ee580 |
@@ -71,8 +71,9 @@
 
 | 日期 | 审查人 | 审查范围 | 类型 | 发现的问题 | 处理状态 | 关联PR/MR |
 |------|--------|---------|------|-----------|---------|-----------|
-| 2026-03 待补充 | - | 全仓库架构审查 | 架构审查 | 三个发布版本并存、check_article_quality 重复定义、index.json 无写入保护、硬编码路径等 | 部分修复 | CLAUDE.md 记录 |
-| 2026-03 待补充 | - | analyzer.py / quality_check.py | 代码规范 | check_article_quality 重复定义（2项 vs 4项） | 待处理 | README.md 记录 |
+| 2026-03 待补充 | - | 全仓库架构审查 | 架构审查 | 三个发布版本并存、check_article_quality 重复定义、index.json 无写入保护、硬编码路径等 | 已并入技术债务表（D-001~D-004） | CLAUDE.md 记录 |
+| 2026-03 待补充 | - | analyzer.py / quality_check.py | 代码规范 | check_article_quality 重复定义（2项 vs 4项） | ✅ 已解决（f816595） | README.md 记录 |
+| 2026-10-07 | Claude | 全仓库债务复核 | 架构审查 | 逐条核实 T-001~T-008 / D-001~D-008；8 条里 4 条已解决、4 条部分解决；新记 D-009~D-012 | 见技术债务表 | 本次复核 |
 | 2026-05-22 | winterswang | README.md 质量评估 | 架构审查 | 整体评分 7/10，关键问题标记为 P0/P1/P2 | 部分修复 | README.md |
 
 **类型说明**：功能审查 / 安全审查 / 性能审查 / 代码规范 / 架构审查
@@ -84,17 +85,18 @@
 
 | ID | 事项 | 优先级 | 状态 | 创建日期 | 截止日期 | 负责人 | 关联 | 备注 |
 |----|------|--------|------|----------|----------|--------|------|------|
-| T-001 | 删除 publish_daily_report.py 和 publish_daily_report_v2.py（三个版本并存） | 高 | 待开始 | 2026-05-22 | - | - | P0 | - |
-| T-002 | 合并 analyzer.py 和 quality_check.py 的 check_article_quality | 高 | 待开始 | 2026-05-22 | - | - | P0 | 检测项不一致 |
-| T-003 | index.json 加写入锁或迁移到 SQLite | 高 | 待开始 | 2026-05-22 | - | - | P0 | 并发安全 |
-| T-004 | 消除 publish_daily_report_v3.py 中的硬编码路径 | 中 | 待开始 | 2026-05-22 | - | - | P1 | /root/.openclaw/... |
-| T-005 | 统一凭证管理（集中到 config.yaml） | 中 | 待开始 | 2026-05-22 | - | - | P1 | - |
-| T-006 | 写单元测试（classify_stock_market / check_article_quality） | 中 | 待开始 | 2026-05-22 | - | - | P1 | - |
-| T-007 | generate_report.py 改为可导入模块 | 低 | 待开始 | 2026-05-22 | - | - | P2 | 目前只能 CLI |
-| T-008 | 所有路径和凭证移到 config/config.yaml | 中 | 待开始 | 2026-05-22 | - | - | P1 | - |
+| T-001 | 删除 publish_daily_report.py 和 publish_daily_report_v2.py（三个版本并存） | 高 | ✅ 已完成 | 2026-05-22 | - | - | P0 | 2026-10-07 核实：`_v2`/`_v3` 均已删除（f816595「版本清理」），只剩 `scripts/publish_daily_report.py` |
+| T-002 | 合并 analyzer.py 和 quality_check.py 的 check_article_quality | 高 | ✅ 已完成 | 2026-05-22 | - | - | P0 | 2026-10-07 核实：`scripts/quality_check.py` 已删除，实现统一到 `scripts/analyzer.py:89`，README:148 标注已统一 |
+| T-003 | index.json 加写入锁或迁移到 SQLite | 高 | 🟡 部分完成 | 2026-05-22 | - | - | P0 | 已改成 tmp + `os.replace` 原子写（`crawler_nodriver.py:164`、`crawl_gateway/adapters/xueqiu.py:123`），不再有半写损坏；但**无文件锁**（全仓无 fcntl/flock），并发仍是后写覆盖。实际由 `.cron_running.lock`（60 分钟窗口）与 gateway 的 SQLite `site_locks` 在进程层挡住。`scripts/rebuild_index.py` 是 OOM/SIGKILL 丢索引的恢复工具 |
+| T-004 | 消除 publish_daily_report_v3.py 中的硬编码路径 | 中 | ✅ 已完成 | 2026-05-22 | - | - | P1 | 随文件删除一并消失；现行 `scripts/publish_daily_report.py` 全文无 `/root` 路径 |
+| T-005 | 统一凭证管理（集中到 config.yaml） | 中 | 🟢 以其它方式达成 | 2026-05-22 | - | - | P1 | 目标（凭证不落码）已达成，但没有走 config.yaml：凭证全在 `.env` + `~/.config/ima/`。`config.yaml` 内无任何 key/token/secret 字段。原方案未做，保持不变即可 |
+| T-006 | 写单元测试（classify_stock_market / check_article_quality） | 中 | ✅ 已完成 | 2026-05-22 | - | - | P1 | `tests/test_core.py:28-64`（5 例）与 `:94-156`（5 例）分别覆盖两个函数 |
+| T-007 | generate_report.py 改为可导入模块 | 低 | ✅ 已完成 | 2026-05-22 | - | - | P2 | 实测 `import scripts.generate_report` 成功，且 `tests/test_generate_report_no_articles.py:21` 就在 import 它。**但**模块级有副作用（`load_dotenv(override=True)` + `sys.path.insert`），故仍是「约定上只作 CLI 用」，见 D-007 |
+| T-008 | 所有路径和凭证移到 config/config.yaml | 中 | 🟡 部分完成 | 2026-05-22 | - | - | P1 | 路径改由 `Path(__file__)` 相对推导解决，未配置化；生产代码仍剩 3 处硬编码绝对路径，见 D-008 |
 
 **优先级**：高 / 中 / 低
-**状态说明**：待开始 / 进行中 / 已完成 / 已取消
+**状态说明**：待开始 / 进行中 / ✅ 已完成 / 🟡 部分完成 / 🟢 以其它方式达成 / 已取消
+**核实说明**：本表 2026-10-07 逐条对着代码复核过，每行「备注」里的 `文件:行号` 是当时的证据。落地提交一栏留给后续补充。
 
 ---
 
@@ -224,16 +226,43 @@
 
 | ID | 债务描述 | 影响范围 | 优先级 | 计划处理版本 | 创建日期 | 状态 |
 |----|---------|---------|--------|-------------|----------|------|
-| D-001 | 三个发布版本并存（.py / v2 / v3），功能重叠 | publish_* | P0 | v2.13 | 2026-05-22 | 待处理 |
-| D-002 | check_article_quality 在 analyzer.py 和 quality_check.py 中重复定义 | 质量分析 | P0 | v2.13 | 2026-05-22 | 待处理 |
-| D-003 | index.json 无写入保护，并发写入会损坏数据 | 数据层 | P0 | v2.13 | 2026-05-22 | 待处理 |
-| D-004 | publish_daily_report_v3.py 硬编码路径 /root/.openclaw/... | 发布层 | P1 | v2.13 | 2026-05-22 | 待处理 |
-| D-005 | IMA 凭证曾在脚本中硬编码（已通过 ~/.config/ima/ 解决） | 安全 | P1 | 已解决 | 2026-05-22 | 已解决 |
-| D-006 | 零测试覆盖 — 关键函数无单元测试 | 全局 | P1 | v2.13 | 2026-05-22 | 待处理 |
-| D-007 | generate_report.py 不可导入（只能 CLI） | 报告层 | P2 | v2.14 | 2026-05-22 | 待处理 |
-| D-008 | 路径和凭证分散在各脚本中 | 全局 | P1 | v2.13 | 2026-05-22 | 待处理 |
+| D-001 | 三个发布版本并存（.py / v2 / v3），功能重叠 | publish_* | P0 | v2.13 | 2026-05-22 | ✅ 已解决（f816595） |
+| D-002 | check_article_quality 在 analyzer.py 和 quality_check.py 中重复定义 | 质量分析 | P0 | v2.13 | 2026-05-22 | ✅ 已解决（f816595） |
+| D-003 | index.json 无写入保护，并发写入会损坏数据 | 数据层 | P0 | v2.13 | 2026-05-22 | 🟡 部分解决（已原子写、仍无锁） |
+| D-004 | publish_daily_report_v3.py 硬编码路径 /root/.openclaw/... | 发布层 | P1 | v2.13 | 2026-05-22 | ✅ 已解决（随文件删除） |
+| D-005 | IMA 凭证曾在脚本中硬编码（已通过 ~/.config/ima/ 解决） | 安全 | P1 | 已解决 | 2026-05-22 | ✅ 已解决 |
+| D-006 | 零测试覆盖 — 关键函数无单元测试 | 全局 | P1 | v2.13 | 2026-05-22 | 🟡 部分解决（原判断已不成立，见下） |
+| D-007 | generate_report.py 不可导入（只能 CLI） | 报告层 | P2 | v2.14 | 2026-05-22 | ✅ 事实已不成立（可 import，但有导入副作用） |
+| D-008 | 路径和凭证分散在各脚本中 | 全局 | P1 | v2.13 | 2026-05-22 | 🟡 部分解决（凭证已收口，路径剩 3 处） |
 
-**状态说明**：待处理 / 处理中 / 已解决
+**状态说明**：待处理 / 处理中 / ✅ 已解决 / 🟡 部分解决（核实于 2026-10-07）
+
+**逐条核实说明（2026-10-07，均带代码证据）**
+
+- **D-001 / D-002 / D-004 / D-005**：均已实打实解决。`publish_daily_report_v2.py`、`_v3.py`、`scripts/quality_check.py` 在工作区与 HEAD 中都不存在；现行 `publish_daily_report.py` 无 `/root` 路径，凭证走 `publish_daily_report.py:34-45`（env → `~/.config/ima/`）。
+- **D-003**：`crawler_nodriver.py:164` 与 `crawl_gateway/adapters/xueqiu.py:123` 都已是 tmp + `os.replace` 原子替换，**半写损坏**这一项已解决。剩余风险是**并发丢更新**（无文件锁，全仓 grep 无 fcntl/flock）。缓解措施是进程层：`.cron_running.lock`（60 分钟窗口，见 `run_daily.sh`）保证 cron 单实例；gateway 侧另有 SQLite `site_locks` 站点租约。若要彻底闭环，需给 index 写入加锁，或让 gateway 完全接管索引写入。
+- **D-006**：**「零测试覆盖」这个整体判断已经为假**，宜按「部分解决」重估。现状：`tests/` 下 17 个 pytest 文件、116 个 `def test_`（约 119 个用例），覆盖 `analyzer`、`crawler_nodriver`、`opencli_extractor`、`generate_report`、`publish_daily_report`、`parse_daily_report`、`sync_waf_patterns` 及整个 `crawl_gateway`。**残余缺口**（按「在生产 cron 路径上 + 完全无测试」排序）：
+  1. `scripts/sync_raw_articles_to_ima.py`（325 行，`run_daily.sh` 步骤 5/6）— 完全无测试
+  2. `scripts/push_feishu.py`（297 行，步骤 6/6）— 完全无测试
+  3. `scripts/cookies.py`（263 行，步骤 1/4 的 `--check`）— 完全无测试（`is_expired`/`is_valid` 等纯逻辑易测却未测）
+  4. `scripts/slider_solver.py`（319 行，风控时被爬虫路径间接调用）— 完全无测试，逻辑复杂、失败代价高
+  5. `scripts/analyzer.py` 主体（1686 行）— 仅核心纯函数被测，AI 调用链与 `generate_daily_report` 主流程未测
+- **D-007**：「不可导入」在事实上不成立（见 T-007）。**但**该文件模块级就执行 `load_dotenv(..., override=True)` 与 `sys.path.insert`，导入会污染调用方的环境变量，所以「不要随手 import」这条**约定仍然成立**，只是原因从「做不到」变成「有副作用」。README:159 与 PROJECT_RECORD.md:161 的表述已按此更正。
+- **D-008**：凭证侧已收口（无任何 key/token/password 字面量）。路径侧仍有 **3 处**生产硬编码绝对路径：
+  - `scripts/slider_solver.py:42` — `/root/.xueqiu_crawler/cookies.json`（有 `if mf.exists()` 守卫，本地静默跳过）
+  - `scripts/run_daily.sh:68` — `find /root/.cache/openclaw`（清理 nodriver 临时 profile，已用 `2>/dev/null || true` 吞错，**有意面向 Linux 生产**，属可移植性瑕疵而非缺陷；修的话应改成 `"$HOME/.cache/openclaw"` 或加环境变量开关）
+  - `scripts/test_waf_bypass.py:25` — 同上 cookies 路径（人工排障脚本）
+
+  另有 **2 处硬编码标识符**（非凭证，但同类「写死」，值得记一笔）：`sync_raw_articles_to_ima.py:48` 的 `KB_ID`、`publish_daily_report.py:47` 的 `IMA_FOLDER_ID`。以及模型名 `deepseek-v4-flash-ga-260731` 在 `analyzer.py:1239`、`push_feishu.py:36` 与 `config/config.yaml` **三处手工同步**（注释自己承认「与 config.yaml 同步」）——这个是真正的漂移风险点。
+
+**新发现（2026-10-07 复核时新增，原表未记）**
+
+| ID | 债务描述 | 影响范围 | 优先级 | 创建日期 | 状态 |
+|----|---------|---------|--------|----------|------|
+| D-009 | 模型名 `deepseek-v4-flash-ga-260731` 三处手工同步（`analyzer.py:1239`、`push_feishu.py:36`、`config/config.yaml`），改一处漏一处的漂移风险 | 配置一致性 | P2 | 2026-10-07 | 待处理 |
+| D-010 | `scripts/test_waf_bypass.py`、`scripts/test_batch_crawl.py` 命名像测试但不在 pytest 收集路径（CI 只跑 `python -m pytest tests/ -q`），容易被误当成「有覆盖」 | 可维护性 | P2 | 2026-10-07 | 待处理 |
+| D-011 | `PROJECT_RECORD.md` 整篇按**已删除**的 `quality_check.py` / `publish_daily_report_v3.py` / `crawler.py`（标着「✅ 唯一」，实际已归档）描述流水线与模块清单，与现状严重脱节 | 文档可信度 | P1 | 2026-10-07 | 待处理 |
+| D-012 | `scripts/run_daily.sh` 步骤编号不自洽：`[1/4]`、`[2/4]`、`[3/4]` 之后接 `[4/6]`、`[5/6]`、`[6/6]` | 可维护性 | P3 | 2026-10-07 | 待处理 |
 
 ---
 
@@ -243,11 +272,14 @@
 
 | 指标 | 数值 | 更新时间 |
 |------|------|----------|
-| Git 提交数 | 52 | 2026-05-24 |
+| Git 提交数 | 160 | 2026-10-07 |
 | 已修复 Bug 数 | 9 | 2026-05-24 |
-| 已完成 Feature 数 | 21 | 2026-05-24 |
-| 活跃分支数 | 1 (main) | 2026-05-24 |
-| 测试覆盖率 | 0% | 2026-05-24 |
+| 已完成 Feature 数 | 21（未记入 crawl_gateway 系列，实际更多） | 2026-10-07 |
+| 活跃分支数 | 1 (main) | 2026-10-07 |
+| 自动化测试 | 17 个测试文件 / 116 个 test 函数 / 119 用例全绿（`python -m pytest tests/ -q`） | 2026-10-07 |
+| 代码规模 | scripts/ 7004 行 + crawl_gateway/ 2033 行 | 2026-10-07 |
+
+> 原「测试覆盖率 0%」是 2026-05-24 的快照，**现已不成立**（见 D-006）。当前没有接覆盖率工具，所以不写百分比，只记测试规模。
 
 ---
 
@@ -260,7 +292,7 @@
 | 2026-03 下旬 | v2.3 代码审查修复 | 4 阶段优化 + MiniMax M2.7 切换 | 已达成 |
 | 2026-05-? | v2.6 Playwright 切换 | 废弃 XCrawl，全面改用 Playwright | 已达成 |
 | 2026-05-24 | v2.12 反检测增强 | Chromium new headless + 反检测 + headless 登录 | 已达成 |
-| 待规划 | v2.13 工程化收尾 | 清理技术债务：旧版删除、写入保护、测试覆盖 | 计划中 |
+| 2026-10-07 | v2.13 工程化收尾 | 清理技术债务：旧版删除、写入保护、测试覆盖 | 🟡 大部分达成（旧版删除 ✅、测试覆盖 ✅、写入保护部分：已原子写仍无锁，见 D-003） |
 
 **状态说明**：计划中 / 进行中 / 已达成
 

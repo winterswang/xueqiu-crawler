@@ -37,7 +37,7 @@ xueqiu-crawler/
 │   ├── accounts.yaml      # 雪球账号列表
 │   └── config.yaml        # 爬虫配置（延迟、超时、调度）
 ├── scripts/
-│   ├── crawler.py         # Playwright 版本（备用）
+│   ├── crawler_nodriver.py # 主用爬虫（nodriver，绕 WAF）；旧 crawler.py 已归档到 archive/
 │   ├── analyzer.py         # AI 质量分析 + 评分
 │   ├── generate_report.py  # 日报 Markdown 生成
 │   ├── publish_daily_report.py  # 发布脚本（卡片+IMA+飞书）
@@ -92,15 +92,18 @@ schedule:
 ## 使用
 
 ```bash
-# 爬取所有用户
-python scripts/crawler.py --all
+# 爬取所有用户（nodriver，绕过阿里云 WAF）
+python scripts/crawler_nodriver.py --all --max 20
 
 # 生成今日日报
 python scripts/generate_report.py
 
 # 发布（生成卡片 + 推送IMA + 飞书）
-python scripts/publish_daily_report_v3.py
+python scripts/publish_daily_report.py
+python scripts/push_feishu.py
 ```
+
+> 完整流水线（爬取 → 分析 → 发布）直接跑 `bash scripts/run_daily.sh`；爬取引擎由 `CRAWL_ENGINE` 环境变量切换，见 `docs/crawl_gateway_migration_plan.md`。
 
 ## 定时任务
 
@@ -136,9 +139,9 @@ python3 -m crawl_gateway --config config/sites.yaml --db data/gateway.sqlite3 \
 |------|------|------|
 | **架构** | 8/10 | 模块化清晰，爬取→分析→发布分离 |
 | **代码质量** | 6/10 | 关键函数缺文档，部分命名不一致 |
-| **工程化** | 5/10 | 无测试，多版本并存，零测试覆盖 |
-| **可维护性** | 6/10 | 硬编码路径分散，配置不集中 |
-| **数据安全** | 7/10 | 凭证部分外置，index.json 无写入锁 |
+| **工程化** | 7/10 | 2026-10-07 更新：已有 17 个测试文件 / 119 用例 + CI（lint + pytest）；多版本并存已清理。残余缺口见 `PROJECT_LOG.md` D-006 |
+| **可维护性** | 7/10 | 2026-10-07 更新：路径多数改为 `Path(__file__)` 相对推导，剩 3 处硬编码；凭证已收口 |
+| **数据安全** | 7/10 | 凭证已外置（`.env` + `~/.config/ima/`）；index.json 已原子写，但仍无文件锁（见 D-003） |
 
 ### 主要问题
 
@@ -146,25 +149,25 @@ python3 -m crawl_gateway --config config/sites.yaml --db data/gateway.sqlite3 \
 
 1. ~~**三个发布版本并存**~~ ✅ 已删除旧版，v3 重命名为 `publish_daily_report.py`
 2. ~~**`check_article_quality` 重复定义**~~ ✅ 已统一到 `analyzer.py`，删除 `quality_check.py`
-3. ~~**`index.json` 无写入保护**~~ ✅ 原子写入 (tmp + os.replace)
+3. ~~**`index.json` 无写入保护**~~ ✅ 原子写入 (tmp + os.replace) — 但**仍无文件锁**，并发仍是后写覆盖（由 `.cron_running.lock` 在进程层挡住），见 `PROJECT_LOG.md` D-003
 
 #### P1 重要
 
-4. **硬编码路径** — `publish_daily_report.py` 中固定路径需迁移到 config
+4. **硬编码路径** — 2026-10-07 复核更正：现行 `publish_daily_report.py` 全文**无** `/root` 路径。生产代码里只剩 3 处，分别在 `scripts/slider_solver.py:42`、`scripts/run_daily.sh:68`、`scripts/test_waf_bypass.py:25`
 5. **凭证分散** — IMA 凭证在脚本中硬编码（已通过 ~/.config/ima/ 文件读取解决）
-6. **零测试** — 关键函数（`classify_stock_market`、`check_article_quality`）无单元测试
+6. ~~**零测试** — 关键函数（`classify_stock_market`、`check_article_quality`）无单元测试~~ **已不成立**（2026-10-07 复核）：两个函数都有单元测试（`tests/test_core.py`），全仓 119 个用例。残余缺口见 `PROJECT_LOG.md` D-006
 
 #### P2 可改进
 
-7. **`generate_report.py` 不可导入** — 只能 `python scripts/generate_report.py` 运行，不能被其他模块 import
+7. **`generate_report.py` 不要随手 import** — 它模块级就执行 `load_dotenv(..., override=True)` 和 `sys.path.insert`，导入会污染调用方的环境变量，因此约定只作 `python scripts/generate_report.py` 使用。（技术上**可以** import，`tests/test_generate_report_no_articles.py` 就在 import 它）
 
 
 ### 修复建议优先级
 
 1. ~~删除旧版 publish~~ ✅
 2. ~~合并 check_article_quality~~ ✅
-3. 所有路径和凭证移到 `config/config.yaml`
-4. 给 `classify_stock_market` / `check_article_quality` 写单元测试
+3. 所有路径和凭证移到 `config/config.yaml` — 部分完成：凭证已收口到 `.env` + `~/.config/ima/`（未走 config.yaml），路径改由 `Path(__file__)` 相对推导；剩 3 处硬编码，见 `PROJECT_LOG.md` D-008
+4. ~~给 `classify_stock_market` / `check_article_quality` 写单元测试~~ ✅（`tests/test_core.py`）
 5. ~~`index.json` 原子写入~~ ✅
 
 ### 整体评分
