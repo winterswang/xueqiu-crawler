@@ -95,7 +95,9 @@ python3 -m crawl_gateway --config config/sites.yaml \
 
 三处实现时才暴露、计划文档原先没覆盖的口径（勿回退）：
 
-1. **影子目录首次使用前必须与 data/ 对齐已知状态**。`data-gateway/` 为空时 gateway 会把窗口内所有文章都当成新文章，两侧 `new_articles` 在前几天必然不一致，对比结论全部无意义。run_daily.sh 的 shadow 分支在 `data-gateway/index.json` 不存在时，自动从 `data/` 拷 `index.json` + `history/`（累计索引已含全部文章 id，加近 7 天 history 足够复原已知集合）。不拷 `.last_crawl_stats.json`——gateway 影子跑完会写自己的。
+1. **影子目录首次使用前必须与 data/ 对齐已知状态**，且必须**整体镜像** `data/`（排除 `daily_reports/`；`.last_crawl_stats.json` 由 gateway 自己写）。`data-gateway/` 为空时 gateway 会把窗口内所有文章都当成新文章，两侧 `new_articles` 必然不一致，对比结论全部无意义。
+   - ⚠️ **只拷 `index.json` + `history/` 是不够的**（这是 2026-10-07 实测踩到的坑，当时的注释还写着「两者足够复原已知集合」，是错的）。gateway 的已知集合来自三处：`index.json` + `history/<user>/*.json` + **`<user>/*.md`**。而 `index.json` 是有损的——它曾因 OOM/SIGKILL 丢失（`scripts/rebuild_index.py` 就是为此而写），存在**文章只在 `.md` 里、不在 index 里**。漏拷账号目录会让 gateway 把这些旧文当新文章重抓：实测把 4 篇去年/年初的老文（`371624650` 修改于 01-18、`365069233` 2025-12-09、`357639848` 2025-10-22、`368325540` 2025-12-30）当成当天新文章，同时挤掉真正的新文，对比结果全是**假差异**。
+   - 注意这是**验证装置**的问题，不影响真切换：切到 `CRAWL_ENGINE=gateway` 后 gateway 直接用 `data/` 本身，`.md` 都在，已知集合与 legacy 一致。
 2. **对比「两侧各自新保存了什么」，不能直接比累计 index**。两侧 index.json 都是累计的，直接比全量集合会把历史差异算进来。因此当天新增一律取自 `history/<user>/<date>.json`（两侧都只在真存下新文章时才写）。另设基线校验：index 扣掉**两侧当天新增 id 的并集**后应一致；用并集而非各侧自己的集合，否则一侧只是漏记当天新文章时会被误报成「影子目录未对齐」。
 3. **逐字段对比排除 `crawl_time` / `filepath`**。这两个字段只反映「何时爬、文件落在哪」，两侧不可能相同，纳入对比全是噪音。实际比对 `title` / `author` / `publish_time`。
 

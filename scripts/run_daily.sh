@@ -147,12 +147,22 @@ if [ "$MODE" != "skip-crawl" ]; then
             # index.json 是累计索引，history/ 提供近 7 天历史，两者足够复原已知集合。
             if [ ! -f "$SHADOW_DIR/index.json" ]; then
                 mkdir -p "$SHADOW_DIR"
-                for item in index.json history; do
-                    if [ -e "$PROJECT_DIR/data/$item" ]; then
-                        cp -a "$PROJECT_DIR/data/$item" "$SHADOW_DIR/"
-                    fi
+                # 必须把 data/ 下爬虫相关的状态**整体**镜像过去，特别是各账号的
+                # <id>/ 目录。gateway 的已知集合来自三处：index.json + history/ +
+                # <id>/*.md；而 index.json 是有损的（曾因 OOM/SIGKILL 丢失，见
+                # scripts/rebuild_index.py），存在文章只在 .md 里、不在 index 里。
+                # 只拷 index+history 会让 gateway 把这些旧文当新文章重抓，
+                # 对比结果全是假差异（2026-10-07 实测踩到：4 篇去年/年初的老文
+                # 被当成当天新文章）。daily_reports 与 .last_crawl_stats.json
+                # 不是爬虫已知状态：前者与爬取无关，后者由 gateway 自己写。
+                for item in "$PROJECT_DIR"/data/*; do
+                    [ -e "$item" ] || continue
+                    case "$(basename "$item")" in
+                        daily_reports) continue ;;
+                    esac
+                    cp -a "$item" "$SHADOW_DIR/"
                 done
-                echo "[shadow] 已用 data/ 初始化影子目录已知状态" >> "$LOG_FILE"
+                echo "[shadow] 已镜像 data/ 初始化影子目录已知状态（含各账号 .md）" >> "$LOG_FILE"
             fi
 
             # 影子运行与对比都只告警、不阻断日报（legacy 才是生产链路）
