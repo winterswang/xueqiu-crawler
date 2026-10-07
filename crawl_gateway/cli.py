@@ -115,6 +115,14 @@ def main(argv: list[str] | None = None) -> int:
                 tasks=tasks,
                 dry_run=args.dry_run,
             )
+            if args.execute:
+                from crawl_gateway.compatibility import export_last_crawl_stats
+
+                export_last_crawl_stats(
+                    summary=result,
+                    total_tasks=len(tasks),
+                    data_dir=args.data_dir,
+                )
         finally:
             if client is not None:
                 client.close()

@@ -19,7 +19,7 @@
 
 | # | 缺口 | 阻塞 | 说明 |
 |---|---|---|---|
-| G1 | .last_crawl_stats.json 未导出 | 阻塞 | scripts/generate_report.py:216 读取它生成日报头部统计；gateway 目前不写 |
+| G1 | .last_crawl_stats.json 未导出 | ✅ 已解决 | compatibility.export_last_crawl_stats 在 run --execute 后导出，字段与旧版对齐 |
 | G2 | 无 shadow 对比机制 | 阻塞 | 无法证明「同输入下 gateway 与旧链路产物一致」，不敢直接切生产 |
 | G3 | run_daily.sh 无引擎开关 | 阻塞 | 爬取步骤硬编码 crawler_nodriver.py --all --max 20 |
 | G4 | 无 verify / retry-failed 命令 | 强烈建议 | Phase 3 遗留；切换前至少要 verify 做预检 |
@@ -36,7 +36,7 @@
 
 ## 3. 分步执行
 
-### Step 1：兼容导出 .last_crawl_stats.json（G1）
+### Step 1：兼容导出 .last_crawl_stats.json（G1）— ✅ 已完成
 
 改动：Orchestrator.run 结束后导出统计文件，字段与旧版逐一对齐：
 

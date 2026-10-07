@@ -515,3 +515,112 @@ def test_cli_experimental_execute_uses_adapter_and_closes_client(tmp_path, monke
     stats = store.stats("xueqiu")
     assert stats["totals"]["successful"] == 1
     store.close()
+
+
+def test_export_last_crawl_stats_matches_legacy_fields(tmp_path):
+    from datetime import datetime
+
+    from crawl_gateway.compatibility import export_last_crawl_stats
+
+    summary = {
+        "successful": 2,
+        "failed": 1,
+        "skipped": 1,
+        "new_articles": 5,
+        "saved_articles": 5,
+    }
+
+    path = export_last_crawl_stats(
+        summary=summary,
+        total_tasks=4,
+        data_dir=tmp_path / "site-data",
+        now=datetime(2026, 10, 7, 8, 0, 0),
+    )
+
+    assert path is not None
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "date": "2026-10-07",
+        "total_users": 4,
+        "successful": 2,
+        "failed": 1,
+        "new_articles": 5,
+    }
+
+
+def test_export_last_crawl_stats_write_failure_returns_none(tmp_path):
+    from crawl_gateway.compatibility import export_last_crawl_stats
+
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+
+    returned = export_last_crawl_stats(
+        summary={"successful": 1, "failed": 0, "new_articles": 2},
+        total_tasks=1,
+        data_dir=blocker / "site-data",
+    )
+
+    assert returned is None
+
+
+def test_cli_execute_exports_legacy_crawl_stats(tmp_path, monkeypatch):
+    from datetime import date
+
+    import crawl_gateway.adapters as adapters
+    import scripts.opencli_extractor
+
+    class FakeClient:
+        def close(self):
+            pass
+
+    class FakeAdapter:
+        def execute(self, task, backend):
+            if task.resource_id == "5739488179":
+                return AttemptResult(
+                    AttemptStatus.SUCCESS, backend, new_articles=3, saved_articles=3
+                )
+            return AttemptResult(AttemptStatus.NO_UPDATE, backend)
+
+    fake_adapter = FakeAdapter()
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "is_user_articles_available", lambda: True
+    )
+    monkeypatch.setattr(adapters, "OpencliArticleClient", lambda: FakeClient())
+    monkeypatch.setattr(
+        adapters, "XueqiuAdapter", lambda *, client, data_dir: fake_adapter
+    )
+    monkeypatch.setattr(
+        adapters, "XueqiuBackend", lambda *, opencli, nodriver: fake_adapter
+    )
+    database = tmp_path / "gateway.sqlite3"
+    data_dir = tmp_path / "site-data"
+
+    exit_code = cli_main(
+        [
+            "--config",
+            "config/sites.yaml",
+            "--db",
+            str(database),
+            "run",
+            "--site",
+            "xueqiu",
+            "--resource",
+            "user_timeline:5739488179",
+            "--resource",
+            "user_timeline:1111111111",
+            "--data-dir",
+            str(data_dir),
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    stats = json.loads(
+        (data_dir / ".last_crawl_stats.json").read_text(encoding="utf-8")
+    )
+    assert stats == {
+        "date": date.today().isoformat(),
+        "total_users": 2,
+        "successful": 2,
+        "failed": 0,
+        "new_articles": 3,
+    }
