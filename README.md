@@ -108,6 +108,28 @@ python scripts/publish_daily_report_v3.py
 0 2 * * * cd /root/code/xueqiu-crawler && bash scripts/run_daily.sh >> logs/cron_daily.log 2>&1
 ```
 
+## Crawl Gateway（建设中）
+
+统一爬取访问层的目标是集中管理多站点频控、重试、熔断和访问审计。当前生产日报仍使用 `scripts/run_daily.sh` 的旧链路；Gateway 已接入雪球 OpenCLI adapter 和 nodriver 薄封装，同一任务按配置先 OpenCLI、失败后降级 nodriver。真实执行仍是实验能力，未接入定时任务：
+
+```bash
+# 创建 dry-run 任务并写入 SQLite 审计
+python3 -m crawl_gateway --config config/sites.yaml --db data/gateway.sqlite3 \
+  run --site xueqiu --purpose manual --resource user_timeline:1425236713 --dry-run
+
+# 查看最近任务、尝试记录和汇总
+python3 -m crawl_gateway --config config/sites.yaml --db data/gateway.sqlite3 stats --site xueqiu
+
+# 查看熔断健康状态
+python3 -m crawl_gateway --config config/sites.yaml --db data/gateway.sqlite3 health --site xueqiu
+
+# 实验性真实执行（显式访问雪球，OpenCLI 优先、nodriver 兜底）
+python3 -m crawl_gateway --config config/sites.yaml --db data/gateway.sqlite3 \
+  run --site xueqiu --purpose manual --all-accounts --execute
+```
+
+架构与迁移计划见 `docs/crawl_gateway_design.md`。
+
 ## 代码质量评估（2026-05-22）
 
 | 维度 | 评分 | 说明 |

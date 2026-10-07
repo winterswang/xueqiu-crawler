@@ -90,7 +90,7 @@ def setup_logging(config: dict):
 class XueqiuCrawlerNodriver:
     """雪球爬虫 — nodriver 版本"""
 
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: str = None, force_nodriver: bool = False):
         self.project_root = Path(__file__).parent.parent
         self.config = self._load_config(config_path)
         self.logger = setup_logging(self.config)
@@ -107,7 +107,7 @@ class XueqiuCrawlerNodriver:
 
         # OpenCLI availability check
         # First: check binary and extension connection
-        opencli_available = _HAS_OPENCLI and _opencli_available()
+        opencli_available = not force_nodriver and _HAS_OPENCLI and _opencli_available()
         self._use_opencli = False
         self._opencli = None
         if opencli_available:

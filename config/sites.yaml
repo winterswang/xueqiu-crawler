@@ -1,0 +1,40 @@
+sites:
+  xueqiu:
+    enabled: true
+    backend_priority: [opencli, nodriver]
+    rate_limit:
+      concurrency: 1
+      min_interval_seconds: 4
+      max_interval_seconds: 9
+      hourly_requests: 80
+      daily_requests: 300
+    retry:
+      max_attempts: 2
+      backoff_base_seconds: 60
+      backoff_multiplier: 2
+      retry_statuses: [network_error, http_error, parse_error]
+    circuit_breaker:
+      failure_threshold: 3
+      window_minutes: 10
+      cooldown_minutes: 60
+      hard_failure_statuses: [blocked_waf, captcha_required, auth_expired]
+
+  xiaohongshu:
+    enabled: false
+    backend_priority: [opencli]
+    rate_limit:
+      concurrency: 1
+      min_interval_seconds: 12
+      max_interval_seconds: 30
+      hourly_requests: 25
+      daily_requests: 80
+    retry:
+      max_attempts: 2
+      backoff_base_seconds: 120
+      backoff_multiplier: 2
+      retry_statuses: [network_error, http_error]
+    circuit_breaker:
+      failure_threshold: 2
+      window_minutes: 10
+      cooldown_minutes: 120
+      hard_failure_statuses: [blocked_waf, captcha_required, auth_expired]
