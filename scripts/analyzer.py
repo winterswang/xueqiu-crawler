@@ -20,6 +20,7 @@ from typing import List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from logging_utils import get_logger, log_parse_failure, log_api_call
+from llm_config import load_config, resolve_model, resolve_provider
 
 # 自加载 .env（不依赖 shell 环境变量传递，兼容 cron/手动调用等场景）
 try:
@@ -326,13 +327,12 @@ class ArticleAnalyzer:
             "success_calls": 0,
         }
 
-        # 支持 minimax / aliyun 双 provider
-        self.provider = provider or os.environ.get('ANALYZER_PROVIDER', 'minimax')
-
-        # 从 config 读取模型名和截断阈值
-        analysis_cfg = (config or {}).get('analysis', {})
-        models_cfg = analysis_cfg.get('models', {})
-        self.model_name = models_cfg.get(self.provider, 'minimax-m3')
+        # 模型 id 走唯一解析入口（scripts/llm_config.py）。没传 config 时自己读
+        # config.yaml——不再用兜底模型名，那是隐藏的第二来源（见 PROJECT_LOG D-009）
+        active_config = config if config is not None else load_config()
+        analysis_cfg = active_config.get('analysis', {})
+        self.provider = resolve_provider(provider, config=active_config)
+        self.model_name = resolve_model(self.provider, config=active_config)
         self.max_content_chars = analysis_cfg.get('max_content_chars', 8000)
 
         # 重试配置
@@ -1233,10 +1233,10 @@ def generate_daily_report(
 
     Args:
         crawl_stats: 可选，爬取统计（含覆盖率信息）
-        model_name: 可选，LLM 模型名（写进报告署名，默认 DeepSeek V4 Flash）
+        model_name: 可选，LLM 模型名（写进报告署名）。不传则走唯一解析入口
     """
     if not model_name:
-        model_name = "deepseek-v4-1-flash-260910"  # 2026-10-07: 与 config.yaml 同步（曾为 flash-ga-260731 / flash-260425 / MiniMax M3）
+        model_name = resolve_model()  # 唯一来源见 scripts/llm_config.py
     today = datetime.now().strftime('%Y-%m-%d')
 
     # 统计
@@ -1552,10 +1552,12 @@ def _format_article(
     index: int,
     article: dict,
     result: dict | None,
-    model_name: str = "deepseek-v4-1-flash-260910",
+    model_name: str | None = None,
 ) -> List[str]:
     if result is None:
         return []
+    if not model_name:
+        model_name = resolve_model()  # 唯一来源见 scripts/llm_config.py
     """格式化文章详情"""
     lines = []
 
