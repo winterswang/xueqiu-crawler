@@ -233,7 +233,7 @@
 | D-005 | IMA 凭证曾在脚本中硬编码（已通过 ~/.config/ima/ 解决） | 安全 | P1 | 已解决 | 2026-05-22 | ✅ 已解决 |
 | D-006 | 零测试覆盖 — 关键函数无单元测试 | 全局 | P1 | v2.13 | 2026-05-22 | 🟡 部分解决（原判断已不成立，见下） |
 | D-007 | generate_report.py 不可导入（只能 CLI） | 报告层 | P2 | v2.14 | 2026-05-22 | ✅ 事实已不成立（可 import，但有导入副作用） |
-| D-008 | 路径和凭证分散在各脚本中 | 全局 | P1 | v2.13 | 2026-05-22 | 🟡 部分解决（凭证已收口，路径剩 3 处） |
+| D-008 | 路径和凭证分散在各脚本中 | 全局 | P1 | v2.13 | 2026-05-22 | ✅ 已解决（凭证 + 3 处硬编码路径均已收口） |
 
 **状态说明**：待处理 / 处理中 / ✅ 已解决 / 🟡 部分解决（核实于 2026-10-07）
 
@@ -248,10 +248,9 @@
   4. `scripts/slider_solver.py`（319 行，风控时被爬虫路径间接调用）— 完全无测试，逻辑复杂、失败代价高
   5. `scripts/analyzer.py` 主体（1686 行）— 仅核心纯函数被测，AI 调用链与 `generate_daily_report` 主流程未测
 - **D-007**：「不可导入」在事实上不成立（见 T-007）。**但**该文件模块级就执行 `load_dotenv(..., override=True)` 与 `sys.path.insert`，导入会污染调用方的环境变量，所以「不要随手 import」这条**约定仍然成立**，只是原因从「做不到」变成「有副作用」。README:159 与 PROJECT_RECORD.md:161 的表述已按此更正。
-- **D-008**：凭证侧已收口（无任何 key/token/password 字面量）。路径侧仍有 **3 处**生产硬编码绝对路径：
-  - `scripts/slider_solver.py:42` — `/root/.xueqiu_crawler/cookies.json`（有 `if mf.exists()` 守卫，本地静默跳过）
-  - `scripts/run_daily.sh:68` — `find /root/.cache/openclaw`（清理 nodriver 临时 profile，已用 `2>/dev/null || true` 吞错，**有意面向 Linux 生产**，属可移植性瑕疵而非缺陷；修的话应改成 `"$HOME/.cache/openclaw"` 或加环境变量开关）
-  - `scripts/test_waf_bypass.py:25` — 同上 cookies 路径（人工排障脚本）
+- **D-008**：凭证侧已收口（无任何 key/token/password 字面量）。路径侧的 3 处硬编码绝对路径**已于 2026-10-08 修掉**：
+  - `scripts/slider_solver.py:42`、`scripts/manual_waf_bypass.py:29` — `/root/.xueqiu_crawler/cookies.json` → `Path.home() / ".xueqiu_crawler" / "cookies.json"`（旧 Linux 主机上 `HOME=/root`，语义等价）
+  - `scripts/run_daily.sh:74` — `find /root/.cache/openclaw` → `find "${XDG_CACHE_HOME:-$HOME/.cache}/openclaw"`。**顺带查实：这一行在当前主机上是空操作** —— `uc_*` 临时目录是旧 OpenClaw 宿主造的，opencli 源码里根本不存在 `uc_` 前缀，本机也没有该目录。保留是因为无害且运行时若回退到 OpenClaw 仍有效，已在注释里写明。
 
   另有 **2 处硬编码标识符**（非凭证，但同类「写死」，值得记一笔）：`sync_raw_articles_to_ima.py:48` 的 `KB_ID`、`publish_daily_report.py:47` 的 `IMA_FOLDER_ID`。以及模型名曾在 `analyzer.py:1239`、`analyzer.py:1555`、`push_feishu.py:37` 与 `config/config.yaml` **4 处源码 + 1 处 `.env` 手工同步**（注释自己承认「与 config.yaml 同步」）——这个是真正的漂移风险点。**2026-10-07 已收口**：新增 `scripts/llm_config.py` 作为唯一解析入口，`analyzer` 与 `push_feishu` 都从 `config/config.yaml` 取，并移除了 `ANALYZE_LLM_MODEL` 环境覆盖（不入库的第二来源会让服务器上残留的旧值静默压过仓库配置）。同批把 `.env.example` 里漏掉的 `ARK_API_KEY` / `ARK_CODING_BASE_URL` / `FEISHU_WEBHOOK` / `XUEQIU_USERNAME` 等补上——照着原文件配环境根本跑不起来。见 D-009。
 
@@ -260,9 +259,9 @@
 | ID | 债务描述 | 影响范围 | 优先级 | 创建日期 | 状态 |
 |----|---------|---------|--------|----------|------|
 | D-009 | 模型 id 曾散在 **5 处**手工同步（`config.yaml`、`analyzer.py` 两处默认值、`push_feishu.py` 默认值、不入库的 `.env` 的 `ANALYZE_LLM_MODEL`） | 配置一致性 | P2 | 2026-10-07 | ✅ 已解决 |
-| D-010 | `scripts/test_waf_bypass.py`、`scripts/test_batch_crawl.py` 命名像测试但不在 pytest 收集路径（CI 只跑 `python -m pytest tests/ -q`），容易被误当成「有覆盖」 | 可维护性 | P2 | 2026-10-07 | 待处理 |
+| D-010 | `scripts/test_waf_bypass.py`、`test_batch_crawl.py` 命名像测试但不在 pytest 收集路径（CI 只跑 `python -m pytest tests/ -q`），容易被误当成「有覆盖」 | 可维护性 | P2 | 2026-10-07 | ✅ 已解决（2026-10-08 改名） |
 | D-011 | `PROJECT_RECORD.md` 整篇按**已删除**的 `quality_check.py` / `publish_daily_report_v3.py` / `crawler.py`（标着「✅ 唯一」，实际已归档）描述流水线与模块清单，与现状严重脱节 | 文档可信度 | P1 | 2026-10-07 | 待处理 |
-| D-012 | `scripts/run_daily.sh` 步骤编号不自洽：`[1/4]`、`[2/4]`、`[3/4]` 之后接 `[4/6]`、`[5/6]`、`[6/6]` | 可维护性 | P3 | 2026-10-07 | 待处理 |
+| D-012 | `scripts/run_daily.sh` 步骤编号不自洽：`[1/4]`、`[2/4]`、`[3/4]` 之后接 `[4/6]`、`[5/6]`、`[6/6]` | 可维护性 | P3 | 2026-10-07 | ✅ 已解决（2026-10-08 统一为 N/6） |
 
 ---
 

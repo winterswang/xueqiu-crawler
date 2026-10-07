@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""手动端到端测试：5人/组共享session，组间重启，统计WAF触发率"""
+"""手动端到端测试：5人/组共享session，组间重启，统计WAF触发率
+
+注意：这是**人工脚本**，不是 pytest 用例 —— 会真实抓取站点、耗时很长，
+所以刻意不叫 test_*.py，避免被 pytest 收集后误跑。
+"""
 
 import asyncio
 import sys

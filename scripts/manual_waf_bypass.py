@@ -3,7 +3,11 @@
 WAF Bypass 验证 — Phase 1: Playwright Stealth 增强
 测试多种 stealth 策略是否能绕过阿里云 WAF 滑块验证
 
-用法: python scripts/test_waf_bypass.py [--strategy all|stealth|profile|stealth+extras]
+用法: python scripts/manual_waf_bypass.py [--strategy all|stealth|profile|stealth+extras]
+
+注意：这是**人工排障脚本**，不是 pytest 用例，所以刻意不叫 test_*.py ——
+它依赖未纳入 requirements 的 playwright_stealth，一旦被 pytest 收集会让
+整个测试中断（实测 `Interrupted: 1 error during collection`）。
 """
 
 import argparse
@@ -22,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 COOKIES_FILE = PROJECT_DIR / "config" / "xueqiu_cookies.json"
-MON_COOKIES_FILE = Path("/root/.xueqiu_crawler/cookies.json")
+MON_COOKIES_FILE = Path.home() / ".xueqiu_crawler" / "cookies.json"
 
 TARGET_URLS = [
     ("用户主页", "https://xueqiu.com/u/5739488179"),
