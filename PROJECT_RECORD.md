@@ -4,6 +4,13 @@
 > 动态追踪（特性/Bug/TODO/版本发布/技术债务）请参阅 `PROJECT_LOG.md`。  
 > 最后更新：2026-05-24
 
+> ⚠️ **2026-10-07 复核：本文件多处已与代码脱节，请勿直接采信。** 已确证的错误包括但不限于：
+> `quality_check.py`、`publish_daily_report_v3.py`、`crawler.py` 均已被删除或归档（`crawler.py` → `archive/`），
+> 而本文档仍把它们描述为在用的流水线环节（「三、模块」表的「状态」列尤其失真）。
+> 现行入口是 `scripts/crawler_nodriver.py` + `scripts/generate_report.py` +
+> `scripts/publish_daily_report.py` + `scripts/push_feishu.py`，爬取访问层统一收口到 `crawl_gateway/`。
+> 全面重写登记在 `PROJECT_LOG.md` 的 **D-011**，尚未执行。
+
 ---
 
 ## 一、项目身份
@@ -158,7 +165,7 @@ run_daily.sh (凌晨 2:00 cron 触发)
 
 | 文件 | LOC | 状态 | 说明 |
 |------|-----|------|------|
-| `generate_report.py` | 126 | ✅ 主用 | 组装日报 Markdown，只能 CLI 运行，不可 import |
+| `generate_report.py` | 126 | ✅ 主用 | 组装日报 Markdown；约定只作 CLI 用（模块级有 `load_dotenv(override=True)` 副作用，技术上可 import） |
 | `publish_daily_report_v3.py` | 516 | ✅ 主用 | InfoCard(1200×1800) + IMA OpenAPI + 飞书推送 |
 
 ### 3.4 工具与集成
