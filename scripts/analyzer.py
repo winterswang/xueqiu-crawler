@@ -1236,7 +1236,7 @@ def generate_daily_report(
         model_name: 可选，LLM 模型名（写进报告署名，默认 DeepSeek V4 Flash）
     """
     if not model_name:
-        model_name = "deepseek-v4-flash-ga-260731"  # 2026-09-03: 与 config.yaml 同步（曾为 flash-260425 / MiniMax M3）
+        model_name = "deepseek-v4-1-flash-260910"  # 2026-10-07: 与 config.yaml 同步（曾为 flash-ga-260731 / flash-260425 / MiniMax M3）
     today = datetime.now().strftime('%Y-%m-%d')
 
     # 统计
@@ -1552,7 +1552,7 @@ def _format_article(
     index: int,
     article: dict,
     result: dict | None,
-    model_name: str = "deepseek-v4-flash-ga-260731",
+    model_name: str = "deepseek-v4-1-flash-260910",
 ) -> List[str]:
     if result is None:
         return []
