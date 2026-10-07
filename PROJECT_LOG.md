@@ -253,13 +253,13 @@
   - `scripts/run_daily.sh:68` — `find /root/.cache/openclaw`（清理 nodriver 临时 profile，已用 `2>/dev/null || true` 吞错，**有意面向 Linux 生产**，属可移植性瑕疵而非缺陷；修的话应改成 `"$HOME/.cache/openclaw"` 或加环境变量开关）
   - `scripts/test_waf_bypass.py:25` — 同上 cookies 路径（人工排障脚本）
 
-  另有 **2 处硬编码标识符**（非凭证，但同类「写死」，值得记一笔）：`sync_raw_articles_to_ima.py:48` 的 `KB_ID`、`publish_daily_report.py:47` 的 `IMA_FOLDER_ID`。以及模型名 `deepseek-v4-flash-ga-260731` 在 `analyzer.py:1239`、`push_feishu.py:36` 与 `config/config.yaml` **三处手工同步**（注释自己承认「与 config.yaml 同步」）——这个是真正的漂移风险点。
+  另有 **2 处硬编码标识符**（非凭证，但同类「写死」，值得记一笔）：`sync_raw_articles_to_ima.py:48` 的 `KB_ID`、`publish_daily_report.py:47` 的 `IMA_FOLDER_ID`。以及模型名在 `analyzer.py:1239`、`analyzer.py:1555`、`push_feishu.py:37` 与 `config/config.yaml` **4 处源码 + 1 处 `.env` 手工同步**（注释自己承认「与 config.yaml 同步」）——这个是真正的漂移风险点。2026-10-07 整体升级到 `deepseek-v4-1-flash-260910`（DeepSeek-V4.1-Flash），但同步结构未改，见 D-009。
 
 **新发现（2026-10-07 复核时新增，原表未记）**
 
 | ID | 债务描述 | 影响范围 | 优先级 | 创建日期 | 状态 |
 |----|---------|---------|--------|----------|------|
-| D-009 | 模型名 `deepseek-v4-flash-ga-260731` 三处手工同步（`analyzer.py:1239`、`push_feishu.py:36`、`config/config.yaml`），改一处漏一处的漂移风险 | 配置一致性 | P2 | 2026-10-07 | 待处理 |
+| D-009 | 模型 id 在 **5 处**手工同步（`config/config.yaml`、`analyzer.py:1239`、`analyzer.py:1555`、`push_feishu.py:37`，外加不入库的 `.env` 的 `ANALYZE_LLM_MODEL`），改一处漏一处的漂移风险。2026-10-07 已整体升级到 `deepseek-v4-1-flash-260910`（DeepSeek-V4.1-Flash），但**多处同步这个结构问题未解决**——下次换模型仍要改 5 处 + 服务器上的 `.env` | 配置一致性 | P2 | 2026-10-07 | 待处理（未dedup） |
 | D-010 | `scripts/test_waf_bypass.py`、`scripts/test_batch_crawl.py` 命名像测试但不在 pytest 收集路径（CI 只跑 `python -m pytest tests/ -q`），容易被误当成「有覆盖」 | 可维护性 | P2 | 2026-10-07 | 待处理 |
 | D-011 | `PROJECT_RECORD.md` 整篇按**已删除**的 `quality_check.py` / `publish_daily_report_v3.py` / `crawler.py`（标着「✅ 唯一」，实际已归档）描述流水线与模块清单，与现状严重脱节 | 文档可信度 | P1 | 2026-10-07 | 待处理 |
 | D-012 | `scripts/run_daily.sh` 步骤编号不自洽：`[1/4]`、`[2/4]`、`[3/4]` 之后接 `[4/6]`、`[5/6]`、`[6/6]` | 可维护性 | P3 | 2026-10-07 | 待处理 |

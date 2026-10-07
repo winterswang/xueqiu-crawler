@@ -34,8 +34,8 @@ client = OpenAI(
     ),
 )
 MODEL = os.environ.get(
-    "ANALYZE_LLM_MODEL", "deepseek-v4-flash-ga-260731"
-)  # 2026-09-03: 与 config.yaml 同步升级 flash-ga
+    "ANALYZE_LLM_MODEL", "deepseek-v4-1-flash-260910"
+)  # 2026-10-07: 与 config.yaml 同步升级 DeepSeek-V4.1-Flash
 
 
 def read_today_report(date: str = None) -> str:
