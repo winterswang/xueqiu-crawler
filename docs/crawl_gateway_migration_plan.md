@@ -22,7 +22,7 @@
 | G1 | .last_crawl_stats.json 未导出 | ✅ 已解决 | compatibility.export_last_crawl_stats 在 run --execute 后导出，字段与旧版对齐 |
 | G2 | 无 shadow 对比机制 | 阻塞 | 无法证明「同输入下 gateway 与旧链路产物一致」，不敢直接切生产 |
 | G3 | run_daily.sh 无引擎开关 | 阻塞 | 爬取步骤硬编码 crawler_nodriver.py --all --max 20 |
-| G4 | 无 verify / retry-failed 命令 | 强烈建议 | Phase 3 遗留；切换前至少要 verify 做预检 |
+| G4 | 无 verify / retry-failed 命令 | ✅ 已解决 | Step 2 已实现 verify（预检，exit 1 表示不过）与 retry-failed（按 task 状态重放，不越熔断） |
 | G5 | 登录态预检不在 gateway 流程 | 建议 | run_daily.sh 第 1 步 cookies.py --check 暂时保留在脚本层即可 |
 | G6 | nodriver backend 是旧爬虫薄封装 | 非阻塞 | 每任务起停浏览器，效率低但行为正确；Phase 6 再原生会话化 |
 
@@ -55,11 +55,19 @@
 
 验收：fake backend 下，gateway 导出与旧爬虫同输入同构。
 
-### Step 2：verify 与 retry-failed 命令（G4）
+### Step 2：verify 与 retry-failed 命令（G4）— ✅ 已完成
 
-- crawl-gateway verify --site xueqiu：不发真实请求。检查配置加载、SQLite 可写、数据目录存在、opencli doctor、熔断状态，输出 JSON。
+- crawl-gateway verify --site xueqiu：不发真实请求。检查配置加载、SQLite 可写、数据目录存在、opencli doctor、熔断状态，输出 JSON；任一检查不过 exit 1。
 - crawl-gateway retry-failed --job <id>：按 task 状态重放失败任务，尊重熔断与频控。
-- 单测覆盖：verify 各失败分支、retry-failed 不越熔断。
+- 单测覆盖：verify 各失败分支（全通过 / 熔断打开 / opencli 不可用）、retry-failed 只重放失败任务、retry-failed 不越熔断。
+
+两处口径决定（实现时核实代码后确定，勿回退）：
+
+1. **失败任务的判定口径**：orchestrator 把 task 终态写成 `succeeded` / `failed` / `skipped` 三值，具体失败原因（`blocked_waf` 等 12 种 AttemptStatus）记在 `attempts.status` 上。因此 `GatewayStore.failed_tasks` 必须按 `tasks.status = 'failed'` 过滤，**不能**按 attempt 状态名过滤——后者查不到任何行，重放会静默变成空跑。
+   - 已知边界：因熔断打开 / 频控拒绝而 `skipped` 的任务不在重放范围内。这类任务是被延后而非失败，若需要补跑要另立机制，别把它并进 `retry-failed`（否则会连带重放 dry-run 留下的 skipped 任务）。
+2. **retry-failed 不写 `.last_crawl_stats.json`**：该文件是「当日整轮抓取」的聚合口径，`generate_report.py` 用它渲染「X/Y 账号成功」。重放只补跑少数失败账号，覆写会把日报从「9/10」篡改成看似完美的「1/1」。重放结果查 SQLite 审计（`stats` 命令）即可。
+   - 代价：若某账号当日失败后被重放成功，日报仍显示原始成功率（偏保守偏低，不会虚高）。
+   - 如需让日报反映重放后的最终成功率，需改为「按日期从 DB 汇总全部 job」派生统计文件，属独立改动，不放在 Step 2。
 
 验收：verify 全绿是 shadow/生产运行的前置条件。
 

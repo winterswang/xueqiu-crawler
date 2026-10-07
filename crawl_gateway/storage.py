@@ -32,6 +32,11 @@ class GatewayStore:
     def close(self) -> None:
         self._connection.close()
 
+    def ping(self) -> None:
+        """验证数据库可写（拿一次写锁即释放）。"""
+        with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+
     def migrate(self) -> None:
         with self._connection:
             self._connection.executescript(
@@ -213,6 +218,30 @@ class GatewayStore:
                 "DELETE FROM site_locks WHERE job_id = ?",
                 (job_id,),
             )
+
+    def job(self, job_id: int) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            "SELECT * FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def failed_tasks(self, job_id: int) -> list[dict[str, Any]]:
+        """取一个 job 下终态为 failed 的任务，供 retry-failed 重放。
+
+        注意：orchestrator 把 task 终态写成 succeeded / failed / skipped 三值，
+        具体失败原因（blocked_waf 等）记在 attempts.status 上，不在 tasks.status 里。
+        """
+        rows = self._connection.execute(
+            """
+            SELECT id, resource_type, resource_id
+            FROM tasks
+            WHERE job_id = ? AND status = 'failed'
+            ORDER BY id
+            """,
+            (job_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def load_health(self, site: str) -> HealthSnapshot | None:
         row = self._connection.execute(

@@ -46,7 +46,43 @@ def build_parser() -> argparse.ArgumentParser:
 
     health_parser = subparsers.add_parser("health", help="show site health")
     health_parser.add_argument("--site", required=True)
+
+    verify_parser = subparsers.add_parser(
+        "verify", help="preflight checks without visiting the site"
+    )
+    verify_parser.add_argument("--site", required=True)
+    verify_parser.add_argument("--data-dir", default="data")
+
+    retry_parser = subparsers.add_parser(
+        "retry-failed", help="replay failed tasks of a job"
+    )
+    retry_parser.add_argument("--job", type=int, required=True)
+    retry_parser.add_argument("--data-dir", default="data")
+    retry_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="required; retries perform real site access",
+    )
     return parser
+
+
+def _build_execute_backend(site: str, data_dir: str):
+    if site != "xueqiu":
+        raise SystemExit("experimental --execute currently supports xueqiu")
+
+    from crawl_gateway.adapters import (
+        OpencliArticleClient,
+        XueqiuAdapter,
+        XueqiuBackend,
+        XueqiuNodriverAdapter,
+    )
+
+    client = OpencliArticleClient()
+    backend = XueqiuBackend(
+        opencli=XueqiuAdapter(client=client, data_dir=data_dir),
+        nodriver=XueqiuNodriverAdapter(),
+    )
+    return client, backend
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,21 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         client = None
         try:
             if args.execute:
-                if args.site != "xueqiu":
-                    raise SystemExit("experimental --execute currently supports xueqiu")
-
-                from crawl_gateway.adapters import (
-                    OpencliArticleClient,
-                    XueqiuAdapter,
-                    XueqiuBackend,
-                    XueqiuNodriverAdapter,
-                )
-
-                client = OpencliArticleClient()
-                backend = XueqiuBackend(
-                    opencli=XueqiuAdapter(client=client, data_dir=args.data_dir),
-                    nodriver=XueqiuNodriverAdapter(),
-                )
+                client, backend = _build_execute_backend(args.site, args.data_dir)
             else:
                 backend = None
             result = Orchestrator(
@@ -123,6 +145,61 @@ def main(argv: list[str] | None = None) -> int:
                     total_tasks=len(tasks),
                     data_dir=args.data_dir,
                 )
+        finally:
+            if client is not None:
+                client.close()
+            store.close()
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    if args.command == "verify":
+        if args.site not in sites:
+            raise SystemExit(f"unknown site: {args.site}")
+        from crawl_gateway.verify import run_verify
+
+        store = GatewayStore(args.db)
+        try:
+            result = run_verify(
+                site_config=sites[args.site],
+                store=store,
+                data_dir=args.data_dir,
+            )
+        finally:
+            store.close()
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0 if result["ok"] else 1
+
+    if args.command == "retry-failed":
+        if not args.execute:
+            raise SystemExit("retry-failed performs real access; pass --execute")
+        store = GatewayStore(args.db)
+        client = None
+        try:
+            job = store.job(args.job)
+            if job is None:
+                raise SystemExit(f"job not found: {args.job}")
+            site = str(job["site"])
+            if site not in sites:
+                raise SystemExit(f"job site not in config: {site}")
+            if not sites[site].enabled:
+                raise SystemExit(f"site is disabled: {site}")
+            failed = store.failed_tasks(args.job)
+            tasks = [
+                TaskSpec(str(task["resource_type"]), str(task["resource_id"]))
+                for task in failed
+            ]
+            client, backend = _build_execute_backend(site, args.data_dir)
+            # 刻意不导出 .last_crawl_stats.json：该文件是「当日整轮抓取」的聚合口径，
+            # generate_report.py 用它渲染「X/Y 账号成功」。重放只是补跑少数失败账号，
+            # 覆写会把日报从「9/10」篡改成看似完美的「1/1」。重放结果看 SQLite 审计即可。
+            result = Orchestrator(
+                store=store,
+                site_config=sites[site],
+                backend=backend,
+            ).run(
+                purpose=f"retry:{job['purpose']}",
+                tasks=tasks,
+            )
         finally:
             if client is not None:
                 client.close()

@@ -624,3 +624,268 @@ def test_cli_execute_exports_legacy_crawl_stats(tmp_path, monkeypatch):
         "failed": 0,
         "new_articles": 3,
     }
+
+
+def test_cli_verify_green_when_all_checks_pass(tmp_path, monkeypatch, site_config):
+    import crawl_gateway.verify as verify_mod
+
+    monkeypatch.setattr(
+        verify_mod, "opencli_doctor", lambda: (True, "extension connected")
+    )
+    database = tmp_path / "gateway.sqlite3"
+
+    exit_code = cli_main(
+        [
+            "--config",
+            "config/sites.yaml",
+            "--db",
+            str(database),
+            "verify",
+            "--site",
+            "xueqiu",
+            "--data-dir",
+            str(tmp_path / "site-data"),
+        ]
+    )
+
+    assert exit_code == 0
+
+
+def test_cli_verify_fails_when_circuit_open(tmp_path, monkeypatch, site_config):
+    import crawl_gateway.verify as verify_mod
+
+    monkeypatch.setattr(
+        verify_mod, "opencli_doctor", lambda: (True, "extension connected")
+    )
+    database = tmp_path / "gateway.sqlite3"
+    store = GatewayStore(database)
+    store.save_health(
+        "xueqiu",
+        score=20,
+        state="open",
+        opened_at=1000.0,
+        hard_failure_times=(1000.0,),
+        now=1001.0,
+    )
+    store.close()
+
+    exit_code = cli_main(
+        [
+            "--config",
+            "config/sites.yaml",
+            "--db",
+            str(database),
+            "verify",
+            "--site",
+            "xueqiu",
+            "--data-dir",
+            str(tmp_path / "site-data"),
+        ]
+    )
+
+    assert exit_code == 1
+
+
+def test_cli_verify_fails_when_opencli_unavailable(tmp_path, monkeypatch, site_config):
+    import crawl_gateway.verify as verify_mod
+
+    monkeypatch.setattr(
+        verify_mod,
+        "opencli_doctor",
+        lambda: (False, "opencli not found in PATH"),
+    )
+    database = tmp_path / "gateway.sqlite3"
+
+    exit_code = cli_main(
+        [
+            "--config",
+            "config/sites.yaml",
+            "--db",
+            str(database),
+            "verify",
+            "--site",
+            "xueqiu",
+            "--data-dir",
+            str(tmp_path / "site-data"),
+        ]
+    )
+
+    assert exit_code == 1
+
+
+def test_cli_retry_failed_replays_only_failed_tasks(tmp_path, monkeypatch, site_config):
+    import crawl_gateway.adapters as adapters
+    import scripts.opencli_extractor
+
+    clock = FakeClock(1000.0)
+    database = tmp_path / "gateway.sqlite3"
+    store = GatewayStore(database)
+    first_backend = scripted_backend(
+        [
+            result(AttemptStatus.SUCCESS, new_articles=2, saved_articles=2),
+            result(AttemptStatus.BLOCKED_WAF),
+            result(AttemptStatus.BLOCKED_WAF),
+        ]
+    )
+    first = Orchestrator(
+        store=store,
+        site_config=site_config,
+        backend=first_backend,
+        clock=clock,
+        sleep=clock.sleep,
+    ).run(
+        purpose="daily",
+        tasks=[TaskSpec("user_timeline", "a"), TaskSpec("user_timeline", "b")],
+    )
+    job_id = first["job_id"]
+    store.close()
+    assert first["successful"] == 1
+    assert first["failed"] == 1
+
+    class FakeClient:
+        def close(self):
+            pass
+
+    class FakeAdapter:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def execute(self, task, backend):
+            self.calls.append(task.resource_id)
+            return AttemptResult(
+                AttemptStatus.SUCCESS, backend, new_articles=1, saved_articles=1
+            )
+
+    fake_adapter = FakeAdapter()
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "is_user_articles_available", lambda: True
+    )
+    monkeypatch.setattr(adapters, "OpencliArticleClient", lambda: FakeClient())
+    monkeypatch.setattr(
+        adapters, "XueqiuAdapter", lambda *, client, data_dir: fake_adapter
+    )
+    monkeypatch.setattr(
+        adapters, "XueqiuBackend", lambda *, opencli, nodriver: fake_adapter
+    )
+    data_dir = tmp_path / "site-data"
+    data_dir.mkdir()
+    daily_stats = data_dir / ".last_crawl_stats.json"
+    daily_payload = {
+        "date": "2026-10-07",
+        "total_users": 10,
+        "successful": 9,
+        "failed": 1,
+        "new_articles": 42,
+    }
+    daily_stats.write_text(json.dumps(daily_payload), encoding="utf-8")
+
+    exit_code = cli_main(
+        [
+            "--config",
+            "config/sites.yaml",
+            "--db",
+            str(database),
+            "retry-failed",
+            "--job",
+            str(job_id),
+            "--data-dir",
+            str(data_dir),
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    # 只重放失败的 b，已成功的 a 不再访问
+    assert fake_adapter.calls == ["b"]
+    store = GatewayStore(database)
+    retry_job = next(
+        job for job in store.stats("xueqiu")["jobs"] if job["purpose"] == "retry:daily"
+    )
+    store.close()
+    assert retry_job["status"] == "succeeded"
+    # 重放不得覆写当日整轮统计，否则日报会从 9/10 变成 1/1
+    assert json.loads(daily_stats.read_text(encoding="utf-8")) == daily_payload
+
+
+def test_cli_retry_failed_respects_open_circuit(tmp_path, monkeypatch, site_config):
+    """熔断打开时 retry-failed 只标记跳过，不得真实访问站点。"""
+    import time
+
+    import crawl_gateway.adapters as adapters
+    import scripts.opencli_extractor
+
+    clock = FakeClock(1000.0)
+    database = tmp_path / "gateway.sqlite3"
+    store = GatewayStore(database)
+    first = Orchestrator(
+        store=store,
+        site_config=site_config,
+        backend=scripted_backend(
+            [result(AttemptStatus.BLOCKED_WAF), result(AttemptStatus.BLOCKED_WAF)]
+        ),
+        clock=clock,
+        sleep=clock.sleep,
+    ).run(purpose="daily", tasks=[TaskSpec("user_timeline", "b")])
+    job_id = first["job_id"]
+    assert first["failed"] == 1
+    health = store.load_health("xueqiu")
+    assert health is not None
+    assert health.state != "open"  # 2 次硬失败未达阈值 3
+    opened_at = time.time()
+    store.save_health(
+        "xueqiu",
+        score=20,
+        state="open",
+        opened_at=opened_at,
+        hard_failure_times=(opened_at,),
+        now=opened_at,
+    )
+    store.close()
+
+    calls: list[str] = []
+
+    class FakeClient:
+        def close(self):
+            pass
+
+    class FakeAdapter:
+        def execute(self, task, backend):
+            calls.append(task.resource_id)
+            return AttemptResult(AttemptStatus.SUCCESS, backend)
+
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "is_user_articles_available", lambda: True
+    )
+    monkeypatch.setattr(adapters, "OpencliArticleClient", lambda: FakeClient())
+    monkeypatch.setattr(
+        adapters, "XueqiuAdapter", lambda *, client, data_dir: FakeAdapter()
+    )
+    monkeypatch.setattr(
+        adapters, "XueqiuBackend", lambda *, opencli, nodriver: FakeAdapter()
+    )
+    data_dir = tmp_path / "site-data"
+
+    exit_code = cli_main(
+        [
+            "--config",
+            "config/sites.yaml",
+            "--db",
+            str(database),
+            "retry-failed",
+            "--job",
+            str(job_id),
+            "--data-dir",
+            str(data_dir),
+            "--execute",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == []
+    store = GatewayStore(database)
+    retry_job = next(
+        job for job in store.stats("xueqiu")["jobs"] if job["purpose"] == "retry:daily"
+    )
+    store.close()
+    assert retry_job["status"] == "blocked"
+    assert not (data_dir / ".last_crawl_stats.json").exists()
