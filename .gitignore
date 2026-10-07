@@ -36,6 +36,13 @@ data/*/
 data/daily_reports/
 data/history/
 
+# Shadow 对照产物（CRAWL_ENGINE=shadow 时 gateway 写在 data-gateway/）
+# 与 data/ 同为爬取产物：约 3MB 的抓取文章 + SQLite 库。仓库是公开的，
+# 漏忽略会让一次 `git add -A` 把爬来的文章内容提交上去。
+# data-gateway.*/ 覆盖搬走存档的副本（如坏种子排查时保留的目录）。
+data-gateway/
+data-gateway.*/
+
 # Runtime artifacts
 output/
 config/xueqiu_cookies.json
