@@ -20,7 +20,7 @@
 | # | 缺口 | 阻塞 | 说明 |
 |---|---|---|---|
 | G1 | .last_crawl_stats.json 未导出 | ✅ 已解决 | compatibility.export_last_crawl_stats 在 run --execute 后导出，字段与旧版对齐 |
-| G2 | 无 shadow 对比机制 | 阻塞 | 无法证明「同输入下 gateway 与旧链路产物一致」，不敢直接切生产 |
+| G2 | 无 shadow 对比机制 | ✅ 已解决 | Step 3 已实现 `CRAWL_ENGINE=shadow` 开关 + scripts/compare_crawl_outputs.py（当天文章集合 / 统计数值 / 基线与失败分类，退出码 0/1/2） |
 | G3 | run_daily.sh 无引擎开关 | 阻塞 | 爬取步骤硬编码 crawler_nodriver.py --all --max 20 |
 | G4 | 无 verify / retry-failed 命令 | ✅ 已解决 | Step 2 已实现 verify（预检，exit 1 表示不过）与 retry-failed（按 task 状态重放，不越熔断） |
 | G5 | 登录态预检不在 gateway 流程 | 建议 | run_daily.sh 第 1 步 cookies.py --check 暂时保留在脚本层即可 |
@@ -71,7 +71,7 @@
 
 验收：verify 全绿是 shadow/生产运行的前置条件。
 
-### Step 3：shadow 模式（G2）
+### Step 3：shadow 模式（G2）— ✅ 已完成
 
 改动：run_daily.sh 增加引擎开关（默认 legacy）：
 
@@ -89,9 +89,22 @@ python3 -m crawl_gateway --config config/sites.yaml \
   --all-accounts --execute --data-dir data-gateway
 ```
 
-新增 scripts/compare_crawl_outputs.py：对比两侧 index.json 文章集合、.last_crawl_stats.json 数值、失败分类，输出 diff 报告到 logs/shadow_compare_YYYY-MM-DD.json。
+新增 scripts/compare_crawl_outputs.py：对比两侧当天文章集合、.last_crawl_stats.json 数值、失败分类，输出 diff 报告到 logs/shadow_compare_YYYY-MM-DD.json（退出码 0 无差异 / 1 有差异 / 2 读取错误）。
 
 验收：连续 3 个交易日 shadow 对比无差异告警（文章集合一致或差异可解释），gateway 健康分不下降。
+
+三处实现时才暴露、计划文档原先没覆盖的口径（勿回退）：
+
+1. **影子目录首次使用前必须与 data/ 对齐已知状态**。`data-gateway/` 为空时 gateway 会把窗口内所有文章都当成新文章，两侧 `new_articles` 在前几天必然不一致，对比结论全部无意义。run_daily.sh 的 shadow 分支在 `data-gateway/index.json` 不存在时，自动从 `data/` 拷 `index.json` + `history/`（累计索引已含全部文章 id，加近 7 天 history 足够复原已知集合）。不拷 `.last_crawl_stats.json`——gateway 影子跑完会写自己的。
+2. **对比「两侧各自新保存了什么」，不能直接比累计 index**。两侧 index.json 都是累计的，直接比全量集合会把历史差异算进来。因此当天新增一律取自 `history/<user>/<date>.json`（两侧都只在真存下新文章时才写）。另设基线校验：index 扣掉**两侧当天新增 id 的并集**后应一致；用并集而非各侧自己的集合，否则一侧只是漏记当天新文章时会被误报成「影子目录未对齐」。
+3. **逐字段对比排除 `crawl_time` / `filepath`**。这两个字段只反映「何时爬、文件落在哪」，两侧不可能相同，纳入对比全是噪音。实际比对 `title` / `author` / `publish_time`。
+
+已知代价：shadow 模式当天**站点访问量翻倍**（legacy + gateway 各跑一遍全量账号）。对 WAF 保护的站点这是额外风控暴露，也是本步骤要连续跑 3 天的成本。gateway 侧自带频控与熔断兜底。
+
+run_daily.sh 的引擎分支行为：
+- `legacy`（默认）：与现状完全一致。
+- `gateway`：先 `verify` 再 `run`，失败即中止整个流水线——与旧链路爬取失败时的现状行为保持一致（断供窗口最多一个 cron 周期，见风险表）。
+- `shadow`：legacy 照常写 `data/`（生产链路，失败即中止）；gateway 影子运行与对比**只告警不阻断**，保证日报不受影响。未知 `CRAWL_ENGINE` 值在取 cron 锁之前就报错退出，不留锁、不写生产日志。
 
 ### Step 4：切换生产（G3）
 
