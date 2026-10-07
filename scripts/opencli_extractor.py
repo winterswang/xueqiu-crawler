@@ -148,6 +148,7 @@ def get_article_content(
     If the page is a WAF/error page, retries up to max_retries times.
     """
     result = {"url": url, "title": "", "content": ""}
+    waf_detected = False
 
     for attempt in range(max_retries + 1):
         if attempt > 0:
@@ -188,14 +189,16 @@ def get_article_content(
             logger.warning(
                 f"Error page detected for {url[-30:]} (attempt {attempt + 1})"
             )
+            waf_detected = True
             result["content"] = ""
             result["title"] = ""
             continue
 
         # Success — content looks good
+        waf_detected = False
         break
 
-    return result
+    return {**result, "waf_detected": waf_detected}
 
 
 def _is_error_page(content: str) -> bool:
