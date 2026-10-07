@@ -18,6 +18,7 @@ from openai import OpenAI
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from logging_utils import get_logger
+from llm_config import resolve_model
 
 _logger = get_logger()
 
@@ -33,9 +34,9 @@ client = OpenAI(
         "ARK_CODING_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"
     ),
 )
-MODEL = os.environ.get(
-    "ANALYZE_LLM_MODEL", "deepseek-v4-1-flash-260910"
-)  # 2026-10-07: 与 config.yaml 同步升级 DeepSeek-V4.1-Flash
+# 模型 id 走唯一解析入口（config/config.yaml），与 analyzer 同源，
+# 避免两边各自维护一个模型名（PROJECT_LOG D-009）
+MODEL = resolve_model()
 
 
 def read_today_report(date: str = None) -> str:

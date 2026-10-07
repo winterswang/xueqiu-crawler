@@ -36,7 +36,9 @@ if [ -f "$PROJECT_DIR/.env" ]; then
     source "$PROJECT_DIR/.env"
     set +a
     # 显式导出关键变量（防御性）
-    export MINIMAX_API_KEY MINIMAX_BASE_URL BAILIAN_API_KEY ARK_API_KEY ARK_CODING_BASE_URL ANALYZE_LLM_MODEL 2>/dev/null || true
+    # 注意：模型 id 不再走环境变量——唯一来源是 config/config.yaml
+    # （见 scripts/llm_config.py 与 PROJECT_LOG D-009），故不在此 export。
+    export MINIMAX_API_KEY MINIMAX_BASE_URL BAILIAN_API_KEY ARK_API_KEY ARK_CODING_BASE_URL 2>/dev/null || true
 fi
 
 # 爬取引擎（见 docs/crawl_gateway_migration_plan.md Step 3/4）
