@@ -248,6 +248,8 @@ crawl_gateway/
 
 ### 7.3 迁移顺序
 
+具体分步执行方案（缺口盘点、shadow 对比、切换与回滚）见 `docs/crawl_gateway_migration_plan.md`。
+
 先抽离纯逻辑，再接浏览器，最后切定时任务。每一步都能独立回滚。
 
 ## 8. 开发计划

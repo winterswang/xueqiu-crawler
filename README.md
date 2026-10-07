@@ -128,7 +128,7 @@ python3 -m crawl_gateway --config config/sites.yaml --db data/gateway.sqlite3 \
   run --site xueqiu --purpose manual --all-accounts --execute
 ```
 
-架构与迁移计划见 `docs/crawl_gateway_design.md`。
+架构设计见 `docs/crawl_gateway_design.md`，生产迁移分步方案见 `docs/crawl_gateway_migration_plan.md`。
 
 ## 代码质量评估（2026-05-22）
 
