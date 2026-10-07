@@ -614,7 +614,9 @@ def test_cli_execute_exports_legacy_crawl_stats(tmp_path, monkeypatch):
     )
 
     assert exit_code == 0
-    stats = json.loads((data_dir / ".last_crawl_stats.json").read_text(encoding="utf-8"))
+    stats = json.loads(
+        (data_dir / ".last_crawl_stats.json").read_text(encoding="utf-8")
+    )
     assert stats == {
         "date": date.today().isoformat(),
         "total_users": 2,
