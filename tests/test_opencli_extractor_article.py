@@ -56,21 +56,54 @@ def test_adapter_success_strips_title_suffix_and_returns_content(monkeypatch):
     assert calls[0] == ("web", "article", "https://xueqiu.com/1/1", "-f", "json")
 
 
-def test_adapter_waf_then_success_is_not_marked_as_waf(monkeypatch):
+def test_adapter_waf_is_not_retried(monkeypatch):
+    """适配器的 BLOCKED_WAF 是**确定性**信号 —— 不能重试.
+
+    回归（2026-10-09 通盘审查）：原来它和「正文看着像错误页」共用一个 continue，
+    于是一次被拦变成 3 次导航（每次还带 3 秒 sleep + 6–12 秒限速间隔）——
+    对着刚被拦的那个 URL 反复打，正是 2026-10-08 那类风控放大的来源。
+    """
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append(args)
+        return _completed(
+            1, stderr="error:\n  code: BLOCKED_WAF\n  message: 风控验证页"
+        )
+
+    monkeypatch.setattr(scripts.opencli_extractor, "is_article_available", lambda: True)
+    monkeypatch.setattr(scripts.opencli_extractor, "_run", fake_run)
+    _no_sleep(monkeypatch)
+
+    detail = scripts.opencli_extractor.get_article_content(
+        "https://xueqiu.com/1/1", max_retries=2
+    )
+
+    assert detail["waf_detected"] is True
+    assert detail["content"] == ""
+    assert len(calls) == 1, "确定性信号不该重试"
+
+
+def test_browser_fallback_waf_still_retries_then_succeeds(monkeypatch):
+    """直连回退路径没有确定信号，只能看正文 —— 保留原有的重试行为."""
     outputs = iter(
         [
-            _completed(1, stderr="error:\n  code: BLOCKED_WAF\n  message: 风控验证页"),
-            _completed(
-                0,
-                stdout=json.dumps(
-                    [{"title": "T", "content": "Good body", "selector": "article"}]
-                ),
-            ),
+            _completed(0, stdout=json.dumps({"page": "p"})),
+            _completed(0, stdout="T - 雪球"),
+            _completed(0, stdout=json.dumps({"content": "风控页"})),
+            _completed(0, stdout=json.dumps({"page": "p"})),
+            _completed(0, stdout="T - 雪球"),
+            _completed(0, stdout=json.dumps({"content": "Good body"})),
         ]
     )
-    monkeypatch.setattr(scripts.opencli_extractor, "is_article_available", lambda: True)
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "is_article_available", lambda: False
+    )
     monkeypatch.setattr(
         scripts.opencli_extractor, "_run", lambda *a, **kw: next(outputs)
+    )
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "_is_error_page", lambda content: content == "风控页"
     )
     _no_sleep(monkeypatch)
 

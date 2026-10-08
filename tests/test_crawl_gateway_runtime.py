@@ -545,7 +545,31 @@ def test_export_last_crawl_stats_matches_legacy_fields(tmp_path):
         "successful": 2,
         "failed": 1,
         "new_articles": 5,
+        # 与 legacy 爬虫写出的同名字段对齐：切到 gateway 引擎后，
+        # 「安静日 vs 被拦日」这个区分不能丢。
+        "blocked_articles": 0,
     }
+
+
+def test_export_last_crawl_stats_carries_blocked_articles(tmp_path):
+    from crawl_gateway.compatibility import export_last_crawl_stats
+
+    path = export_last_crawl_stats(
+        summary={
+            "successful": 1,
+            "failed": 2,
+            "new_articles": 0,
+            "blocked_articles": 2,
+        },
+        total_tasks=3,
+        data_dir=tmp_path / "site-data",
+    )
+
+    assert path is not None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    # 这一组正是要防的误读：看起来「1/3 成功、新增 0」，其实有 2 个账号被拦
+    assert payload["blocked_articles"] == 2
+    assert payload["new_articles"] == 0
 
 
 def test_export_last_crawl_stats_write_failure_returns_none(tmp_path):
@@ -624,6 +648,7 @@ def test_cli_execute_exports_legacy_crawl_stats(tmp_path, monkeypatch):
         "successful": 2,
         "failed": 0,
         "new_articles": 3,
+        "blocked_articles": 0,
     }
 
 

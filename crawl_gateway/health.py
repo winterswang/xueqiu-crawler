@@ -76,6 +76,16 @@ class CircuitBreaker:
         """
         return cooldown_seconds_for(self._config, self.open_count)
 
+    def abandon_probe(self) -> None:
+        """放弃本次半开探测（例如限速器把这次尝试拒绝了），让下一个任务还能探.
+
+        只清 `_probe_pending`，不动 `state` —— 熔断仍处于半开，只是这一次没能
+        真正探到。没有这个出口的话，`_probe_pending=True` 会一直挂着：之后每个
+        任务拿到的都是 `HALF_OPEN` 的 not-allowed，整个 job 被卡死，而唯一的
+        清除点 `record()` 永远不会被调用到。
+        """
+        self._probe_pending = False
+
     def seed_hard_failures(self, timestamps: list[float]) -> None:
         self._hard_failures.clear()
         self._hard_failures.extend(sorted(timestamps))

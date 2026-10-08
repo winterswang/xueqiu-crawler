@@ -229,9 +229,23 @@ def get_article_content(
         result["title"] = attempt_result["title"]
         result["content"] = attempt_result["content"]
 
-        # 适配器撞风控会直接给出 waf_detected；直连路径没有这个信号，只能看正文。
-        # 两条路都再过一次 _is_error_page（短于 100 字不判 —— 那是"没取到"不是风控）。
-        if attempt_result["waf_detected"] or _is_error_page(result["content"]):
+        # 适配器给的 BLOCKED_WAF 是**确定性**信号（适配器自己的 guard 认出了风控页），
+        # 不能重试：重试只会对着刚被拦的那个 URL 再打两次，每次还带 3 秒 sleep 与
+        # 6–12 秒限速间隔 —— 一次被拦变成三次导航，正是 2026-10-08 那类风控放大的来源。
+        # `_attempt_via_adapter` 的 docstring 也是这么写的，但这里原来把它和
+        # 「正文看着像错误页」一起 continue 了。
+        if attempt_result["waf_detected"]:
+            logger.warning(
+                f"WAF blocked (adapter) for {url[-30:]} —— 确定性信号，不重试"
+            )
+            waf_detected = True
+            result["content"] = ""
+            result["title"] = ""
+            break
+
+        # 直连路径没有确定信号，只能看正文，保持原有的重试行为不变
+        # （短于 100 字不判 —— 那是"没取到"不是风控）。
+        if _is_error_page(result["content"]):
             logger.warning(
                 f"Error page detected for {url[-30:]} (attempt {attempt + 1})"
             )

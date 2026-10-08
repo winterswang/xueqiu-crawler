@@ -25,7 +25,9 @@ class XueqiuNodriverAdapter:
         # 不传就退回仓库 data/（历史行为）。shadow 跑 `--data-dir data-gateway`
         # 时必须传进来 —— 否则一旦回退到 nodriver 就会写进**生产目录** data/，
         # 污染那份用来做对比的基准。
-        self._data_dir = Path(data_dir) if data_dir is not None else None
+        # resolve() 与 XueqiuAdapter→ArticleStore 的做法对齐，免得两个适配器
+        # 收到同一个 `--data-dir` 后 `data_dir` 一个是相对一个是绝对。
+        self._data_dir = Path(data_dir).resolve() if data_dir is not None else None
 
     @property
     def data_dir(self) -> Path:

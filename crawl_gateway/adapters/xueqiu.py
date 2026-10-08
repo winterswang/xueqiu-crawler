@@ -256,6 +256,10 @@ class XueqiuAdapter:
                     error=f"waf_content:{article.get('article_id')}",
                     saved_articles=len(saved_articles),
                     scope=AttemptScope.DETAIL,
+                    # 撞到第一篇被拦就中止该账号，所以这里恒为 1 —— 是「遇到被拦的
+                    # 账号数」而非篇数。要让 gateway 引擎写出的 .last_crawl_stats.json
+                    # 也有这个字段（否则切到 CRAWL_ENGINE=gateway 后 #87 的盲区回归）。
+                    blocked_articles=1,
                 )
 
             crawl_time = self._now()
