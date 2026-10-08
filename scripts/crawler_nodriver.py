@@ -746,6 +746,10 @@ class XueqiuCrawlerNodriver:
             'new_articles': 0,
             'saved_articles': 0,
             'waf_triggered': False,
+            # 撞的是哪一层：'detail'=只是某篇正文被拦（列表页正常），
+            # 'account'=用户页/时间线都拿不到。gateway 的 nodriver 适配器按它
+            # 决定 AttemptScope —— 详情级不该触发站点级熔断。
+            'waf_scope': '',
         }
 
         try:
@@ -833,6 +837,7 @@ class XueqiuCrawlerNodriver:
                         f"详情页 WAF 触发，中止当前用户剩余 {min(len(ordered_articles), max_articles) - i} 篇文章"
                     )
                     result['waf_triggered'] = True
+                    result['waf_scope'] = 'detail'
                     break
 
                 if not detail:
@@ -884,6 +889,7 @@ class XueqiuCrawlerNodriver:
         except WafDetectedError:
             self.logger.warning(f"WAF 触发，中止用户: {user_name}")
             result['waf_triggered'] = True
+            result['waf_scope'] = 'account'
         except Exception as e:
             self.logger.error(f"爬取用户 {user_id} 失败: {e}")
             import traceback

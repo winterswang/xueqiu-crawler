@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -9,7 +10,7 @@ import pytest
 
 from crawl_gateway.cli import main as cli_main
 from crawl_gateway.config import load_sites_config
-from crawl_gateway.models import AttemptResult, AttemptStatus
+from crawl_gateway.models import AttemptResult, AttemptScope, AttemptStatus
 from crawl_gateway.orchestrator import Orchestrator, TaskSpec
 from crawl_gateway.storage import ActiveJobError, GatewayStore
 
@@ -659,11 +660,55 @@ def test_cli_verify_fails_when_circuit_open(tmp_path, monkeypatch, site_config):
     )
     database = tmp_path / "gateway.sqlite3"
     store = GatewayStore(database)
+    # opened_at 用「刚刚」—— 冷却（xueqiu 首跳 15 分钟）还没过，这才该判不健康。
+    # 用 1970 那种老时间戳会被判成「冷却已过期」，见下一个用例。
+    now = time.time()
     store.save_health(
         "xueqiu",
         score=20,
         state="open",
-        opened_at=1000.0,
+        opened_at=now,
+        hard_failure_times=(now,),
+        now=now,
+    )
+    store.close()
+
+    exit_code = cli_main(
+        [
+            "--config",
+            "config/sites.yaml",
+            "--db",
+            str(database),
+            "verify",
+            "--site",
+            "xueqiu",
+            "--data-dir",
+            str(tmp_path / "site-data"),
+        ]
+    )
+
+    assert exit_code == 1
+
+
+def test_cli_verify_passes_when_cooldown_expired(tmp_path, monkeypatch, site_config):
+    """冷却已过期的 open 不算不健康 —— 下次运行就会半开探测.
+
+    回归：verify 原来只认 `state == "open"`。而 `run_daily.sh` 是 `set -e`，
+    gateway 分支先 verify 再 run —— 一份冷却早就过期的 open 记录会让流水线在
+    爬取前中止，而唯一能把状态写回去的就是那次爬取，于是永远卡死。
+    """
+    import crawl_gateway.verify as verify_mod
+
+    monkeypatch.setattr(
+        verify_mod, "opencli_doctor", lambda: (True, "extension connected")
+    )
+    database = tmp_path / "gateway.sqlite3"
+    store = GatewayStore(database)
+    store.save_health(
+        "xueqiu",
+        score=20,
+        state="open",
+        opened_at=1000.0,  # 1970 —— 冷却早就过了
         hard_failure_times=(1000.0,),
         now=1001.0,
     )
@@ -683,7 +728,83 @@ def test_cli_verify_fails_when_circuit_open(tmp_path, monkeypatch, site_config):
         ]
     )
 
-    assert exit_code == 1
+    assert exit_code == 0
+
+
+def test_detail_scope_failures_never_open_the_circuit(tmp_path, site_config):
+    """端到端钉住 scope 传播：适配器的 DETAIL 级失败不能触发站点级熔断.
+
+    回归防线：`breaker.record(..., scope=executed.scope)` 这条接线原来**零覆盖** ——
+    评审做变异测试时把它改回 `record(executed.status, ...)`，全量 139 个测试仍全绿。
+    这里走真实 Orchestrator + scripted backend：5 个任务各返回一次
+    BLOCKED_WAF(DETAIL)，断言熔断器始终 closed、且 5 个任务全都真的被执行过
+    （没有被熔断跳过）。
+    """
+    store = GatewayStore(tmp_path / "gateway.sqlite3")
+    config = replace(
+        site_config,
+        backend_priority=(
+            "opencli",
+        ),  # 单后端 → 不会回退，一个任务只消耗一条 scripted 结果
+        rate_limit=replace(
+            site_config.rate_limit,
+            min_interval_seconds=0.001,
+            max_interval_seconds=0.001,
+        ),
+        retry=replace(site_config.retry, retry_statuses=frozenset()),
+    )
+    clock = FakeClock(2000)
+    backend = scripted_backend(
+        [
+            result(
+                AttemptStatus.BLOCKED_WAF,
+                error=f"waf_content:{i}",
+                scope=AttemptScope.DETAIL,
+            )
+            for i in range(5)
+        ]
+    )
+
+    summary = Orchestrator(
+        store=store,
+        site_config=config,
+        backend=backend,
+        clock=clock,
+        sleep=clock.sleep,
+    ).run(
+        purpose="daily",
+        tasks=[TaskSpec("user_timeline", str(i)) for i in range(5)],
+    )
+
+    health = store.load_health("xueqiu")
+    assert health is not None
+    assert health.state == "closed", "详情级 WAF 不该把站点判成不可达"
+    assert health.hard_failure_times == ()
+    assert len(backend.calls) == 5, "5 个任务都该真的被执行，没被熔断跳过"
+    assert summary["skipped"] == 0
+
+
+def test_config_snapshot_carries_the_cooldown_ladder(tmp_path, site_config):
+    """配置快照要能还原当时的冷却策略 —— 少了阶梯两个参数就还原不出实际时长."""
+    store = GatewayStore(tmp_path / "gateway.sqlite3")
+    orchestrator = Orchestrator(
+        store=store,
+        site_config=site_config,
+        backend=scripted_backend([]),
+        clock=FakeClock(3000),
+    )
+
+    snapshot = orchestrator._config_snapshot()["circuit_breaker"]
+
+    assert snapshot["cooldown_minutes"] == site_config.circuit_breaker.cooldown_minutes
+    assert (
+        snapshot["cooldown_multiplier"]
+        == site_config.circuit_breaker.cooldown_multiplier
+    )
+    assert (
+        snapshot["max_cooldown_minutes"]
+        == site_config.circuit_breaker.max_cooldown_minutes
+    )
 
 
 def test_cli_verify_fails_when_opencli_unavailable(tmp_path, monkeypatch, site_config):

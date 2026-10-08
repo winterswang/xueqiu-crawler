@@ -166,7 +166,7 @@ class Orchestrator:
             )
             completed_attempts += 1
             self._record(task_id, executed, attempt_started_at)
-            breaker.record(executed.status, self._clock())
+            breaker.record(executed.status, self._clock(), scope=executed.scope)
             self._save_health(breaker)
 
             if executed.successful:
@@ -217,6 +217,7 @@ class Orchestrator:
             breaker.score = snapshot.score
             breaker.state = CircuitState(snapshot.state)
             breaker.opened_at = snapshot.opened_at
+            breaker.open_count = snapshot.open_count
             breaker.seed_hard_failures(list(snapshot.hard_failure_times))
         return breaker
 
@@ -239,6 +240,7 @@ class Orchestrator:
             breaker.opened_at,
             breaker.hard_failure_times,
             self._clock(),
+            open_count=breaker.open_count,
         )
 
     def _record(self, task_id: int, result: AttemptResult, started_at: float) -> None:
@@ -279,6 +281,10 @@ class Orchestrator:
                 "failure_threshold": circuit_breaker.failure_threshold,
                 "window_minutes": circuit_breaker.window_minutes,
                 "cooldown_minutes": circuit_breaker.cooldown_minutes,
+                # 快照是用来事后追溯「当时用的什么策略」的 —— 冷却阶梯的两个
+                # 参数漏了的话，光看阈值和首跳值还原不出实际冷却时长。
+                "cooldown_multiplier": circuit_breaker.cooldown_multiplier,
+                "max_cooldown_minutes": circuit_breaker.max_cooldown_minutes,
                 "hard_failure_statuses": sorted(
                     status.value for status in circuit_breaker.hard_failure_statuses
                 ),

@@ -16,7 +16,7 @@ from crawl_gateway.adapters.xueqiu import (
 from crawl_gateway.adapters.opencli_client import OpencliArticleClient
 from crawl_gateway.adapters.xueqiu_backend import XueqiuBackend
 from crawl_gateway.adapters.xueqiu_nodriver import XueqiuNodriverAdapter
-from crawl_gateway.models import AttemptStatus
+from crawl_gateway.models import SUCCESS_STATUSES, AttemptScope, AttemptStatus
 from crawl_gateway.orchestrator import TaskSpec
 
 
@@ -198,6 +198,8 @@ def test_adapter_maps_waf_content_and_does_not_write_article(tmp_path):
 
     assert result.status == AttemptStatus.BLOCKED_WAF
     assert result.error == "waf_content:1"
+    # 列表页已经拿到了、只是这篇正文被拦 → 详情级，不该触发站点熔断
+    assert result.scope is AttemptScope.DETAIL
     assert not (tmp_path / "data" / USER_ID / "1.md").exists()
     assert not (tmp_path / "data" / "index.json").exists()
 
@@ -353,6 +355,40 @@ def test_xueqiu_nodriver_adapter_maps_legacy_results():
     )
     assert missing_adapter.execute(TASK, "nodriver").status == AttemptStatus.SKIPPED
     assert success_adapter.execute(TASK, "opencli").status == AttemptStatus.SKIPPED
+
+
+def test_nodriver_waf_triggered_is_a_failure_not_a_success():
+    """传统爬虫撞 WAF 时只置 `waf_triggered`、不设 `error`，适配器必须认它.
+
+    回归（2026-10-09 评审发现）：原来这里只看 `result.get("error")`，于是被拦的
+    一轮落进 SUCCESS/NO_UPDATE 分支 ——
+      ① 把 WAF 轮报成「N/N 成功、新增 0 篇」（`.last_crawl_stats.json` 的静默盲区）；
+      ② 走 SUCCESS_STATUSES 把熔断器的硬失败计数与复犯阶梯一起清零，
+         于是账号级失败永远攒不满阈值、冷却递进也生效不了。
+    """
+
+    def runner(**extra):
+        def _run(user_id, max_articles, data_dir):
+            base = {"new_articles": 0, "saved_articles": 0, "waf_triggered": True}
+            base.update(extra)
+            return base
+
+        return XueqiuNodriverAdapter(runner=_run)
+
+    detail = runner(waf_scope="detail", saved_articles=1).execute(TASK, "nodriver")
+    account = runner(waf_scope="account").execute(TASK, "nodriver")
+    unlabelled = runner().execute(TASK, "nodriver")  # 老返回，没标注范围
+
+    assert detail.status == AttemptStatus.BLOCKED_WAF
+    assert detail.scope is AttemptScope.DETAIL
+    assert detail.saved_articles == 1
+    assert detail.status not in SUCCESS_STATUSES
+
+    assert account.status == AttemptStatus.BLOCKED_WAF
+    assert account.scope is AttemptScope.ACCOUNT
+    # 没标注的老返回按账号级处理（保守：宁可多停一次）
+    assert unlabelled.status == AttemptStatus.BLOCKED_WAF
+    assert unlabelled.scope is AttemptScope.ACCOUNT
 
 
 def test_xueqiu_backend_dispatches_by_configured_backend(tmp_path):

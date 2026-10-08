@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from crawl_gateway.models import AttemptResult, AttemptStatus
+from crawl_gateway.models import AttemptResult, AttemptScope, AttemptStatus
 from crawl_gateway.orchestrator import TaskSpec
 
 
@@ -49,6 +49,28 @@ class XueqiuNodriverAdapter:
         error = str(result.get("error", ""))
         saved_articles = int(result.get("saved_articles", 0))
         new_articles = int(result.get("new_articles", saved_articles))
+
+        # 传统爬虫撞 WAF 时只置 `waf_triggered`、**不设 `error`**（见
+        # crawler_nodriver 的两处 `except WafDetectedError`）。这里原来只看
+        # `error`，于是被拦的一轮直接落进下面的 SUCCESS/NO_UPDATE 分支：
+        #   ① 把 WAF 轮报成「N/N 成功、新增 0 篇」——正是要消掉的那个盲区；
+        #   ② 看走 SUCCESS_STATUSES，把熔断器的硬失败计数与复犯阶梯一起清零，
+        #      于是账号级失败永远攒不满阈值、递进也生效不了。
+        # waf_scope 由爬虫标注：detail=只是某篇正文被拦，account=时间线都拿不到。
+        if result.get("waf_triggered"):
+            scope = str(result.get("waf_scope") or "")
+            return AttemptResult(
+                AttemptStatus.BLOCKED_WAF,
+                backend,
+                error=f"waf_triggered:{scope or 'unspecified'}",
+                new_articles=new_articles,
+                saved_articles=saved_articles,
+                # 没标注的老返回按账号级处理（保守：宁可多停一次）
+                scope=(
+                    AttemptScope.DETAIL if scope == "detail" else AttemptScope.ACCOUNT
+                ),
+            )
+
         if not error:
             return AttemptResult(
                 AttemptStatus.SUCCESS if saved_articles else AttemptStatus.NO_UPDATE,
