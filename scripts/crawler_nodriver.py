@@ -43,10 +43,12 @@ try:
     from scripts.opencli_extractor import is_available as _opencli_available
     from scripts.opencli_extractor import OpencliExtractor
     from scripts.opencli_extractor import get_user_articles as _opencli_get_list
+    from scripts.opencli_extractor import WafBlockedError as _WafBlockedError
 
     _HAS_OPENCLI = True
 except ImportError:
     _HAS_OPENCLI = False
+    _WafBlockedError = None
 
     def _opencli_available() -> bool:
         return False
@@ -89,6 +91,11 @@ def setup_logging(config: dict):
 
 class XueqiuCrawlerNodriver:
     """雪球爬虫 — nodriver 版本"""
+
+    # 被 WAF 拦掉正文的篇数。类属性（不是 __init__ 里赋的）—— 测试会用
+    # object.__new__ 绕过 __init__，放类上才不会 AttributeError。
+    # 只在单个用户的爬取循环前后取差值；爬取是逐用户串行的，不会有并发写。
+    _waf_blocked_articles = 0
 
     def __init__(self, config_path: str = None, force_nodriver: bool = False):
         self.project_root = Path(__file__).parent.parent
@@ -610,6 +617,16 @@ class XueqiuCrawlerNodriver:
             'is_column': True,
         }
 
+        # 适配器通道的风控标记要先看：它返回的 content 是空串，落到下面「无内容」
+        # 分支就会被当成普通空文章，WAF 也就统计不出来了
+        if detail.get('waf_detected'):
+            self._waf_blocked_articles += 1
+            self.logger.warning(
+                f"WAF 拦截(适配器): {str(detail.get('title') or '')[:30]} "
+                f"({merged['article_id']})"
+            )
+            return False
+
         # 跳过无内容文章
         if not merged['content']:
             self.logger.info(f"跳过无内容: {merged['title'][:30]}")
@@ -617,6 +634,7 @@ class XueqiuCrawlerNodriver:
 
         # 跳过 WAF/错误页面（405、访问阻断等）
         if _is_content_error(merged['title'], merged['content']):
+            self._waf_blocked_articles += 1
             self.logger.warning(
                 f"WAF 拦截: {merged['title'][:30]} ({merged['article_id']})"
             )
@@ -659,7 +677,9 @@ class XueqiuCrawlerNodriver:
             'new_articles': 0,
             'saved_articles': 0,
             'new_articles_available': 0,  # API 返回的新文章数（含 WAF 拦截的）
+            'blocked_articles': 0,  # 其中被 WAF 拦掉正文的篇数
         }
+        blocked_before = self._waf_blocked_articles
 
         try:
             # 1. 获取文章列表（API 级别，不走浏览器导航）
@@ -731,7 +751,13 @@ class XueqiuCrawlerNodriver:
         except Exception as e:
             self.logger.error(f"OpenCLI 爬取失败: {e}", exc_info=True)
             result['error'] = str(e)
+            # 列表页就被风控拦住 = 账号级不可达。标出来让 gateway 的 nodriver
+            # 适配器与外层都能按 BLOCKED_WAF 处理，而不是塌成普通异常。
+            if _WafBlockedError is not None and isinstance(e, _WafBlockedError):
+                result['waf_triggered'] = True
+                result['waf_scope'] = 'account'
 
+        result['blocked_articles'] = self._waf_blocked_articles - blocked_before
         return result
 
     async def _crawl_one_user(self, account: dict, max_articles: int) -> dict:
@@ -922,6 +948,7 @@ class XueqiuCrawlerNodriver:
             'total_users': len(self.accounts),
             'total_new': 0,
             'total_saved': 0,
+            'total_blocked': 0,
             'users': [],
             'mode': 'opencli' if self._use_opencli else 'nodriver',
         }
@@ -944,6 +971,7 @@ class XueqiuCrawlerNodriver:
                 result = await self._crawl_one_user_opencli(account, max_articles)
                 stats['total_new'] += result.get('new_articles', 0)
                 stats['total_saved'] += result.get('saved_articles', 0)
+                stats['total_blocked'] += result.get('blocked_articles', 0)
                 stats['users'].append(result)
 
             self._opencli.close()
@@ -973,6 +1001,7 @@ class XueqiuCrawlerNodriver:
                 result = await self._crawl_one_user(account, max_articles)
                 stats['total_new'] += result.get('new_articles', 0)
                 stats['total_saved'] += result.get('saved_articles', 0)
+                stats['total_blocked'] += result.get('blocked_articles', 0)
                 stats['users'].append(result)
 
                 # 每 N 个用户重启浏览器（防 WAF 累积）
@@ -1000,8 +1029,17 @@ class XueqiuCrawlerNodriver:
         self.logger.info("爬取完成!")
         self.logger.info(f"总用户: {stats['total_users']}")
         self.logger.info(f"新文章: {stats['total_new']}")
+        if stats.get('total_blocked'):
+            self.logger.warning(
+                f"其中被 WAF 拦掉正文: {stats['total_blocked']} 篇"
+                "（不计入 failed，别把这类轮次读成「安静日」）"
+            )
 
-        # 保存统计
+        self._write_crawl_stats(stats)
+        return stats
+
+    def _write_crawl_stats(self, stats: dict) -> None:
+        """把整轮统计落到 `.last_crawl_stats.json`（抽出来便于直接测字段）。"""
         successful = sum(
             1 for u in stats['users'] if 'saved_articles' in u and 'error' not in u
         )
@@ -1012,6 +1050,11 @@ class XueqiuCrawlerNodriver:
             'successful': successful,
             'failed': failed,
             'new_articles': stats['total_new'],
+            # 被 WAF 拦掉正文的篇数。**故意不写进 compare_crawl_outputs 的
+            # STATS_FIELDS** —— 它只用于让人/巡检区分「安静日」与「被拦日」，
+            # 不参与 legacy↔gateway 的对比判定。
+            # 读取方请用 .get('blocked_articles', 0)，老文件没有这个键。
+            'blocked_articles': stats['total_blocked'],
         }
         stats_file = self.data_dir / '.last_crawl_stats.json'
         try:
@@ -1019,8 +1062,6 @@ class XueqiuCrawlerNodriver:
                 json.dump(crawl_stats, f, ensure_ascii=False)
         except OSError as e:
             self.logger.warning(f"保存统计失败: {e}")
-
-        return stats
 
     async def crawl_user(self, user_id: str, max_articles: int = None) -> dict:
         """爬取单个用户"""

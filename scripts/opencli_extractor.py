@@ -38,6 +38,22 @@ logger = logging.getLogger(__name__)
 BROWSER_SESSION_PREFIX = "xq-crawler"
 
 
+class WafBlockedError(RuntimeError):
+    """opencli 适配器撞上了风控页 —— 这不是「没有数据」.
+
+    适配器的 BLOCK_GUARD 命中时会抛 CommandExecutionError（消息含「风控验证页」），
+    opencli 以非 0 退出、消息进 stderr。列表命令这里原本把它和普通失败一起吞成
+    None/[]，调用方只能映射成 http_error —— 而 http_error 不在
+    `circuit_breaker.hard_failure_statuses` 里，于是「账号级」这个口径在 opencli
+    路径上根本没有可达信号，熔断器攒不满。单独抛出来让调用方能正确分级。
+    """
+
+
+# 适配器 BLOCK_GUARD 命中时的消息（见 opencli-adapters/*.js 与
+# scripts/sync_waf_patterns.py 的同源校验）。
+_WAF_BLOCKED_MARKER = "风控验证页"
+
+
 def is_available() -> bool:
     """Check if opencli is installed and the Chrome extension is connected."""
     if not shutil.which("opencli"):
@@ -163,6 +179,11 @@ def get_user_articles(user_id: str, count: int = 20) -> list[dict]:
             check=True,
         )
     except RuntimeError as e:
+        # 撞风控要能被调用方认出来（列表都拿不到 = 账号级失败），不能和普通失败
+        # 一起塌成 None —— None 在 gateway 侧被映射成 http_error，不在硬失败名单里。
+        if _WAF_BLOCKED_MARKER in str(e):
+            logger.warning(f"opencli user-articles 撞风控页: {user_id}")
+            raise WafBlockedError(str(e)) from e
         logger.error(f"opencli user-articles command failed: {e}")
         return None
     cleaned = _clean_output(result.stdout)
