@@ -358,6 +358,10 @@ class OpencliExtractor:
             "likes": 0,
             "comments": 0,
             "is_column": bool(result["content"]),
+            # 必须透传：撞风控时 content 是空串，调用方（crawler 的被拦计数）
+            # 只能靠这个字段区分「被拦」与「文章本来就空」。漏掉它会让
+            # blocked_articles 恒为 0 —— 而且空 content 会静默落进「无内容」分支。
+            "waf_detected": bool(result.get("waf_detected", False)),
         }
 
     def close(self):

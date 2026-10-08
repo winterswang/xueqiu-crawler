@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -116,18 +115,26 @@ def test_opencli_client_waf_listing_is_a_hard_failure_status():
 # ── 3. 被拦篇数要落进统计文件 ─────────────────────────────────────────
 
 
-def _crawler_with_detail(detail: dict) -> XueqiuCrawlerNodriver:
+def _crawler_with_detail(monkeypatch, detail: dict) -> XueqiuCrawlerNodriver:
+    """走**真实的 `OpencliExtractor`**，只把最底层的模块函数换掉.
+
+    这里刻意不用手写的假 `_opencli`：那个假对象会直接吐出 `waf_detected`，
+    于是「`OpencliExtractor.get_article_content` 重建 dict 时把这个字段丢了」
+    这种真问题会被 mock 掩盖掉 —— 2026-10-09 就是这么漏过去的。
+    """
     crawler = object.__new__(XueqiuCrawlerNodriver)
     crawler.logger = MagicMock()
     crawler.index = {"articles": {}}
-    crawler._opencli = SimpleNamespace(get_article_content=lambda _url: detail)
     crawler._waf_blocked_articles = 0
+    crawler._opencli = oe.OpencliExtractor()
+    monkeypatch.setattr(oe, "get_article_content", lambda _url, _session: dict(detail))
     return crawler
 
 
-def test_adapter_waf_hit_is_counted_and_not_saved():
+def test_adapter_waf_hit_is_counted_and_not_saved(monkeypatch):
     crawler = _crawler_with_detail(
-        {"url": "u", "title": "被拦", "content": "", "waf_detected": True}
+        monkeypatch,
+        {"url": "u", "title": "被拦", "content": "", "waf_detected": True},
     )
 
     saved = crawler._extract_and_save_opencli(
@@ -138,10 +145,11 @@ def test_adapter_waf_hit_is_counted_and_not_saved():
     assert crawler._waf_blocked_articles == 1
 
 
-def test_empty_content_without_waf_is_not_counted_as_blocked():
+def test_empty_content_without_waf_is_not_counted_as_blocked(monkeypatch):
     """空正文 ≠ 被拦 —— 别把两者混成一个数。"""
     crawler = _crawler_with_detail(
-        {"url": "u", "title": "空的", "content": "", "waf_detected": False}
+        monkeypatch,
+        {"url": "u", "title": "空的", "content": "", "waf_detected": False},
     )
 
     crawler._extract_and_save_opencli(
