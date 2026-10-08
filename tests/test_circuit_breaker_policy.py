@@ -168,6 +168,27 @@ def test_after_half_open_close_one_failure_is_not_enough_to_trip_again():
     assert len(breaker.hard_failure_times) == 1
 
 
+def test_half_open_probe_can_be_abandoned_so_the_job_does_not_wedge():
+    """限速器挡下半开探测时必须能放掉探测标记，否则整个 job 卡死.
+
+    回归（2026-10-09 通盘审查）：`_execute_with_policy` 在限速器拒绝时直接返回
+    SKIPPED、**不调 `record()`**，而 `_probe_pending` 只有 `record()` 会清 ——
+    于是之后每个任务拿到的都是 HALF_OPEN 的 not-allowed，一次 job 全被跳过。
+    """
+    breaker = make_breaker()
+    now = 7_000.0
+    _trip(breaker, now)
+
+    probe_at = now + 2 + breaker.cooldown_seconds + 1
+    assert breaker.allow(probe_at).probe is True  # 进入 HALF_OPEN，探测待发
+    assert breaker.allow(probe_at + 1).allowed is False  # 探测未完成前不放行
+
+    breaker.abandon_probe()  # 限速器把这次尝试挡下了
+
+    assert breaker.state is CircuitState.HALF_OPEN
+    assert breaker.allow(probe_at + 2).allowed is True, "下一个任务还得能探"
+
+
 def test_half_open_account_failure_reopens():
     breaker = make_breaker()
     now = 5_000.0

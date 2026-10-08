@@ -79,6 +79,7 @@ class Orchestrator:
         skipped = 0
         new_articles = 0
         saved_articles = 0
+        blocked_articles = 0
 
         for task_spec in tasks:
             task_id = self._store.create_task(
@@ -100,6 +101,9 @@ class Orchestrator:
                 skipped += 1
             else:
                 failed += 1
+            # 与上面的状态归类无关：被拦篇数是独立的观测量（BLOCKED_WAF 走 else
+            # 分支计入 failed，同时这里也把它记进 blocked_articles）。
+            blocked_articles += result.blocked_articles
 
         return {
             "successful": successful,
@@ -107,6 +111,7 @@ class Orchestrator:
             "skipped": skipped,
             "new_articles": new_articles,
             "saved_articles": saved_articles,
+            "blocked_articles": blocked_articles,
         }
 
     @staticmethod
@@ -146,6 +151,11 @@ class Orchestrator:
 
             reservation = limiter.reserve(now)
             if not reservation.allowed:
+                if circuit_decision.state is CircuitState.HALF_OPEN:
+                    # 这一次半开探测被限速器挡下了 —— 必须把探测标记放掉，
+                    # 否则它会一直挂着，之后每个任务都拿到 not-allowed，
+                    # 整个 job 卡死（能清它的 record() 永远不会被调到）。
+                    breaker.abandon_probe()
                 result = AttemptResult(
                     AttemptStatus.SKIPPED,
                     "rate-limiter",

@@ -68,6 +68,10 @@ class AttemptResult:
     duration_ms: int = 0
     new_articles: int = 0
     saved_articles: int = 0
+    # 被风控拦掉正文的篇数。适配器撞上第一篇被拦的文章就中止该账号，所以这里
+    # 实际是「遇到被拦的账号数」（0/1）—— 够用来区分「安静日」与「被拦日」，
+    # 与 legacy 爬虫同名字段对不上精度是已知取舍。
+    blocked_articles: int = 0
     # 默认账号级 = 引入本字段之前的行为，调用方不显式标注时语义不变。
     scope: AttemptScope = AttemptScope.ACCOUNT
 

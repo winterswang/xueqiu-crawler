@@ -39,6 +39,10 @@ def export_last_crawl_stats(
         "successful": int(summary.get("successful", 0)),
         "failed": int(summary.get("failed", 0)),
         "new_articles": int(summary.get("new_articles", 0)),
+        # 与 legacy 爬虫写出的同名字段对齐。**故意不进 compare_crawl_outputs 的
+        # STATS_FIELDS** —— 两侧统计精度不同（legacy 记篇数，gateway 记遇到被拦的
+        # 账号数），拿来对比只会产生噪音；它只用于让人/巡检区分安静日与被拦日。
+        "blocked_articles": int(summary.get("blocked_articles", 0)),
     }
     path = Path(data_dir) / ".last_crawl_stats.json"
     try:
