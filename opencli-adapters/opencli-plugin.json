@@ -1,6 +1,6 @@
 {
   "name": "xueqiu-adapters",
   "version": "1.0.0",
-  "description": "雪球 / 小红书 opencli 本地适配器：news、replies、stock-notices、user-articles、comments、xiaohongshu search",
+  "description": "雪球 / 小红书 opencli 本地适配器：news、replies、stock-notices、user-articles、comments、xiaohongshu search，以及通用网页正文命令 web article",
   "opencli": ">=1.8.8"
 }

@@ -9,9 +9,10 @@ Falls back gracefully when opencli is not available.
 Requirements:
     - opencli installed: npm i -g @jackwener/opencli
     - Chrome extension connected (opencli doctor)
-    - xueqiu adapter ejected and user-articles command present
+    - xueqiu-adapters plugin installed (`opencli-adapters/install.sh`)
 """
 
+import functools
 import json
 import logging
 import os
@@ -67,6 +68,26 @@ def is_user_articles_available() -> bool:
     return result.returncode == 0 and "user-articles" in result.stdout
 
 
+@functools.lru_cache(maxsize=1)
+def is_article_available() -> bool:
+    """`opencli web article` 是否注册（本地探测，不发站点请求）。
+
+    这是正文抓取的**主通道**（opencli-adapters/article.js）。进程内缓存 ——
+    crawler 每篇文章都会问一次，不能每篇起一个子进程。
+    测试里改过返回值后要 `is_article_available.cache_clear()`。
+    """
+    try:
+        result = subprocess.run(
+            ["opencli", "web", "article", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and "article" in result.stdout
+
+
 def _run(
     *args: str, timeout: int = 30, check: bool = False
 ) -> subprocess.CompletedProcess:
@@ -91,21 +112,35 @@ def _run(
     return result
 
 
+# opencli 的升级提示在命令输出**之后**由退出钩子打印（update-check.js），
+# 两种形态各占两行：
+#     "  Update available: v1.8.8 → v1.8.9" / "  Run: npm install -g @jackwener/opencli"
+#     "  Extension update available: ..."     / "  Download: https://..."
+_UPDATE_NOTICE_HEADS = ("Update available", "Extension update available")
+_UPDATE_NOTICE_COMMANDS = ("Run:", "Download:")
+
+
 def _clean_output(stdout: str) -> str:
-    """Strip opencli update-notice noise from stdout."""
-    lines = stdout.splitlines()
-    cleaned = []
-    skip = False
-    for line in lines:
-        if "Update available" in line:
-            skip = True
+    """去掉 opencli 的升级提示.
+
+    必须**按行首锚定**，不能按子串匹配 —— JSON 里正文是单独一行，正文中出现
+    "Update available" 字样时，旧的子串实现会把那一行连同其后所有行一起丢掉，
+    JSON 就此截断：`_attempt_via_adapter` 解析失败 → 三轮重试 → 最后返回
+    waf_detected=False、content=""，**整篇文章静默丢失**。
+    """
+    kept: list[str] = []
+    drop_command_line = False
+    for line in stdout.splitlines():
+        head = line.lstrip()
+        if head.startswith(_UPDATE_NOTICE_HEADS):
+            drop_command_line = True
             continue
-        if skip and line.startswith("  Run:"):
-            skip = False
+        if drop_command_line and head.startswith(_UPDATE_NOTICE_COMMANDS):
+            drop_command_line = False
             continue
-        if not skip:
-            cleaned.append(line)
-    return "\n".join(cleaned)
+        drop_command_line = False
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def get_user_articles(user_id: str, count: int = 20) -> list[dict]:
@@ -142,50 +177,40 @@ def get_user_articles(user_id: str, count: int = 20) -> list[dict]:
 def get_article_content(
     url: str, session_name: str = "xq-crawler", max_retries: int = 2
 ) -> dict:
-    """Extract full article content from a xueqiu article URL.
+    """Extract full article content from an article URL.
 
-    Returns dict with keys: url, title, content (markdown).
+    Returns dict with keys: url, title, content (markdown), waf_detected.
+    主通道是 `opencli web article`（见 opencli-adapters/article.js）；该命令未注册
+    （插件丢失）时回退到旧的 `opencli browser open/get/extract` 直连序列。
     If the page is a WAF/error page, retries up to max_retries times.
+
+    两条通道的正文长度不完全相同：`browser extract` 按 20000 字分块且只返回第一块，
+    旧直连路径对超过约 2 万字的文章是**截断**的（信封里的 next_start_char 从没被续读）；
+    适配器一次返回全文。短文两路逐字相同。
     """
     result = {"url": url, "title": "", "content": ""}
     waf_detected = False
+    use_adapter = is_article_available()
 
     for attempt in range(max_retries + 1):
         if attempt > 0:
             logger.warning(f"Retry {attempt}/{max_retries} for {url[-30:]}")
             time.sleep(3)
 
-        # Open article page in browser session
-        open_result = _run("browser", session_name, "open", url, timeout=30)
-        if open_result.returncode != 0:
-            logger.error(f"Browser open failed: {open_result.stderr.strip()[:200]}")
+        attempt_result = (
+            _attempt_via_adapter(url)
+            if use_adapter
+            else _attempt_via_browser(url, session_name)
+        )
+        if attempt_result is None:  # 本轮失败，值得再试
             continue
 
-        # Wait for page to render
-        time.sleep(4)
+        result["title"] = attempt_result["title"]
+        result["content"] = attempt_result["content"]
 
-        # Get title
-        title_result = _run("browser", session_name, "get", "title", timeout=10)
-        if title_result.returncode == 0:
-            raw_title = title_result.stdout.strip()
-            result["title"] = re.sub(r"\s*[-–—]\s*雪球\s*$", "", raw_title).strip()
-
-        # Extract markdown content
-        extract_result = _run("browser", session_name, "extract", timeout=15)
-        if extract_result.returncode == 0:
-            cleaned = _clean_output(extract_result.stdout)
-            try:
-                data = json.loads(cleaned)
-                result["content"] = data.get("content", "")
-                result["title"] = result["title"] or data.get("title", "").replace(
-                    " - 雪球", ""
-                )
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse extract JSON for {url}")
-                continue
-
-        # Check if content is an error page
-        if _is_error_page(result["content"]):
+        # 适配器撞风控会直接给出 waf_detected；直连路径没有这个信号，只能看正文。
+        # 两条路都再过一次 _is_error_page（短于 100 字不判 —— 那是"没取到"不是风控）。
+        if attempt_result["waf_detected"] or _is_error_page(result["content"]):
             logger.warning(
                 f"Error page detected for {url[-30:]} (attempt {attempt + 1})"
             )
@@ -199,6 +224,80 @@ def get_article_content(
         break
 
     return {**result, "waf_detected": waf_detected}
+
+
+def _clean_title(raw: str) -> str:
+    """去掉雪球标题尾缀（原文与适配器通道共用同一条规则）。"""
+    return re.sub(r"\s*[-–—]\s*雪球\s*$", "", raw).strip()
+
+
+def _attempt_via_adapter(url: str) -> dict | None:
+    """一次 `opencli web article` 调用。返回 None = 本轮失败、值得重试。
+
+    风控用专属错误码 BLOCKED_WAF 报出来（见 article.js 的注释），只出现在 stderr；
+    不能把它和普通抓取失败混为一谈，否则调用方会去重试一个需要人工过滑块的状态。
+    """
+    try:
+        call = _run("web", "article", url, "-f", "json", timeout=60)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # 这条命令把「导航 + 渲染等待 + 最多 8 个选择器的抽取 + markdown 转换」
+        # 压在一次调用里，旧路径是三步各有各的预算（30/10/15 秒）。超时必须
+        # 在**这里**吃掉：_run 会原样重抛，而上游 crawl_gateway 只把
+        # SiteAccessError 认作站点异常 —— 裸异常会打断整个账号的文章循环。
+        logger.warning(f"web article 超时/失败: {url[-40:]} {exc}")
+        return None
+    if call.returncode != 0:
+        stderr = call.stderr or ""
+        if "BLOCKED_WAF" in stderr:
+            return {"url": url, "title": "", "content": "", "waf_detected": True}
+        logger.error(f"web article failed: {stderr.strip()[:200]}")
+        return None
+
+    try:
+        rows = json.loads(_clean_output(call.stdout))
+    except json.JSONDecodeError:
+        logger.error(f"Failed to parse web article JSON for {url}")
+        return None
+    row = rows[0] if isinstance(rows, list) and rows else {}
+    return {
+        "url": url,
+        "title": _clean_title(str(row.get("title") or "")),
+        "content": row.get("content") or "",
+        "waf_detected": False,
+    }
+
+
+def _attempt_via_browser(url: str, session_name: str) -> dict | None:
+    """回退路径：旧的 opencli browser open/get/extract 直连。None = open 失败。
+
+    只在 `opencli web article` 未注册时才走到这里。序列、超时、等待时长都与引入
+    适配器之前逐字一致 —— 留着它是为了插件丢失时还能抓，不是为了日常使用。
+    """
+    open_result = _run("browser", session_name, "open", url, timeout=30)
+    if open_result.returncode != 0:
+        logger.error(f"Browser open failed: {open_result.stderr.strip()[:200]}")
+        return None
+
+    # Wait for page to render
+    time.sleep(4)
+
+    title = ""
+    title_result = _run("browser", session_name, "get", "title", timeout=10)
+    if title_result.returncode == 0:
+        title = _clean_title(title_result.stdout.strip())
+
+    content = ""
+    extract_result = _run("browser", session_name, "extract", timeout=15)
+    if extract_result.returncode == 0:
+        try:
+            data = json.loads(_clean_output(extract_result.stdout))
+        except json.JSONDecodeError:
+            logger.error(f"Failed to parse extract JSON for {url}")
+            return None
+        content = data.get("content", "")
+        title = title or _clean_title(data.get("title", ""))
+
+    return {"url": url, "title": title, "content": content, "waf_detected": False}
 
 
 def _is_error_page(content: str) -> bool:

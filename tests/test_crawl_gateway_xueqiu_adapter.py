@@ -289,6 +289,11 @@ def test_opencli_client_maps_command_failure_and_waf_detail(monkeypatch):
 
 
 def test_opencli_waf_retry_success_is_not_marked_as_waf(monkeypatch):
+    # 本用例钉的是**回退路径**（browser 直连 open/get/extract 三步）：必须把适配器
+    # 探测钉成不可用，否则会走 opencli web article 分支，_run 的参数序列完全不同。
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "is_article_available", lambda: False
+    )
     outputs = iter(
         [
             subprocess.CompletedProcess([], 0, stdout="", stderr=""),

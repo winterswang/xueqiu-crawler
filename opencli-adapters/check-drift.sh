@@ -45,6 +45,12 @@ for f in news.js replies.js stock-notices.js user-articles.js; do
     echo "  OK   $f — 上游仍无此命令，必须保留"
   fi
 done
+# article.js 的 site 是自建的 web，不在 $BASE/xueqiu/ 下 —— 单独判，别按雪球路径拼。
+if [ -f "$BASE/web/article.js" ]; then
+  echo "  WARN web/article.js — 上游已内置通用 web 站，建议改用基线版本"
+else
+  echo "  OK   article.js — 上游 web 站下无 article 命令，必须保留"
+fi
 echo
 
 # ── 3. 携带副本：上游改动过就要手动同步 ──────────────────────────────────

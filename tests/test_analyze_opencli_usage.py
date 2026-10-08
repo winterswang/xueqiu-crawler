@@ -66,15 +66,17 @@ def test_site_failed_counts_only_site_operations():
     assert summary["site_failed"] == 1
 
 
-def test_every_throttled_operation_is_classified_as_site():
-    """限速器拦的就是站点请求，两份名单必须一致 —— 别一边加一边忘。
+def test_site_operations_set_is_pinned():
+    """钉住 SITE_OPERATIONS 的确切内容（增删都要显式改这里）.
 
-    `_should_throttle` 放行的形态是 `browser open` 与 `xueqiu <子命令>`；
-    SITE_OPERATIONS 是它们在台账 `operation` 字段里的名字。
+    注意：这**只**钉字面量。真正的跨模块不变量是
+    `test_every_throttled_invocation_lands_in_site_operations`，那条会真去调
+    限速器和 logger。
     """
     assert SITE_OPERATIONS == frozenset(
         {
             "browser:open",
+            "article",
             "news",
             "comments",
             "replies",
@@ -86,6 +88,43 @@ def test_every_throttled_operation_is_classified_as_site():
     )
     for local in ("browser:get", "browser:extract", "browser:close"):
         assert local not in SITE_OPERATIONS
+
+
+def test_every_throttled_invocation_lands_in_site_operations():
+    """被限速器拦住的每一条调用，台账口径都必须把它算成站点操作.
+
+    三个名字是跨模块拼起来的：`_should_throttle` 决定拦不拦、
+    `_operation` 决定台账里叫什么、SITE_OPERATIONS 决定算不算站点请求。
+    2026-10-08 差点真踩到：新增的 `web article` 一度在台账里只记成 "web"，
+    而口径是按 operation 分类的 —— 这条主通道的站点请求会全部漏出峰值监控。
+    （本用例把三段串起来真调一遍；上面那条只钉字面量，拦不住这种漏。）
+    """
+    from xueqiu_analyzer.opencli_call_logger import _operation
+    from xueqiu_analyzer.opencli_rate_limiter import _should_throttle
+
+    invocations = {
+        "browser:open": ["opencli", "browser", "s0", "open", "https://xueqiu.com/1/2"],
+        "article": [
+            "opencli",
+            "web",
+            "article",
+            "https://xueqiu.com/1/2",
+            "-f",
+            "json",
+        ],
+        "news": ["opencli", "xueqiu", "news", "SH600519"],
+        "comments": ["opencli", "xueqiu", "comments", "SH600519"],
+        "replies": ["opencli", "xueqiu", "replies", "https://xueqiu.com/1/2"],
+        "stock-notices": ["opencli", "xueqiu", "stock-notices", "SH600519"],
+        "user-articles": ["opencli", "xueqiu", "user-articles", "--user_id", "1"],
+        "stock": ["opencli", "xueqiu", "stock", "SH600519"],
+    }
+    for expected, argv in invocations.items():
+        assert _should_throttle(argv), f"{argv} 应当被限速"
+        assert _operation(argv) == expected, f"{argv} 的台账名变了"
+        assert expected in SITE_OPERATIONS, (
+            f"{expected} 被限速却没算成站点操作 —— 站点峰值会漏算"
+        )
 
 
 def test_peak_returns_earliest_minute_on_tie():
