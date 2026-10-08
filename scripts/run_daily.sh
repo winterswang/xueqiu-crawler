@@ -143,21 +143,21 @@ if [ "$MODE" != "skip-crawl" ]; then
                 --all-accounts --execute --data-dir data >> "$LOG_FILE" 2>&1
             ;;
         shadow)
-            # 生产链路照常跑
-            $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
-
-            # 影子目录首次使用前必须与 data/ 对齐已知状态：否则 gateway 会把窗口内
-            # 所有文章都当成新文章，两侧「新文章」口径不可比，对比结论全部无意义。
+            # ── 影子目录必须在 legacy 开跑**之前**对齐 ──
+            # 顺序反了的后果（2026-10-08 实测踩到）：legacy 先跑并写下今天的新文章，
+            # 之后才做镜像，于是那些新文章被一并拷给 gateway，gateway 认为今天无事
+            # 可做（duplicate/no_update、new_articles=0），对比退化成「拿标准答案改卷」
+            # —— 文章层会显示完美一致，但那份 history 是 cp -a 拷来的（两侧 mtime
+            # 完全相同即铁证），根本没有验证「两侧抓到的东西是否一致」。
+            # 两侧必须从同一个「今天之前」的起点各自去抓，产出的集合才可比。
             if [ ! -f "$SHADOW_DIR/index.json" ]; then
                 mkdir -p "$SHADOW_DIR"
-                # 必须把 data/ 下爬虫相关的状态**整体**镜像过去，特别是各账号的
-                # <id>/ 目录。gateway 的已知集合来自三处：index.json + history/ +
-                # <id>/*.md；而 index.json 是有损的（曾因 OOM/SIGKILL 丢失，见
-                # scripts/rebuild_index.py），存在文章只在 .md 里、不在 index 里。
-                # 只拷 index+history 会让 gateway 把这些旧文当新文章重抓，
-                # 对比结果全是假差异（2026-10-07 实测踩到：4 篇去年/年初的老文
-                # 被当成当天新文章）。daily_reports 与 .last_crawl_stats.json
-                # 不是爬虫已知状态：前者与爬取无关，后者由 gateway 自己写。
+                # 整体镜像 data/（排除 daily_reports/；.last_crawl_stats.json 由
+                # gateway 自己写）。必须带各账号的 <id>/ 目录：gateway 的已知集合
+                # 来自三处 —— index.json + history/ + <id>/*.md，而 index.json 是
+                # **有损**的（曾因 OOM/SIGKILL 丢失，见 scripts/rebuild_index.py），
+                # 存在文章只在 .md 里、不在 index 里。漏拷会让 gateway 把这些旧文
+                # 当新文章重抓（2026-10-07 实测：4 篇去年/年初的老文被当成当天新文）。
                 for item in "$PROJECT_DIR"/data/*; do
                     [ -e "$item" ] || continue
                     case "$(basename "$item")" in
@@ -167,6 +167,9 @@ if [ "$MODE" != "skip-crawl" ]; then
                 done
                 echo "[shadow] 已镜像 data/ 初始化影子目录已知状态（含各账号 .md）" >> "$LOG_FILE"
             fi
+
+            # 生产链路照常跑（必须在镜像之后）
+            $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
 
             # 影子运行与对比都只告警、不阻断日报（legacy 才是生产链路）
             if $PYTHON_BIN -m crawl_gateway --config config/sites.yaml \
