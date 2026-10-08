@@ -166,7 +166,7 @@ class Orchestrator:
             )
             completed_attempts += 1
             self._record(task_id, executed, attempt_started_at)
-            breaker.record(executed.status, self._clock())
+            breaker.record(executed.status, self._clock(), scope=executed.scope)
             self._save_health(breaker)
 
             if executed.successful:
@@ -217,6 +217,7 @@ class Orchestrator:
             breaker.score = snapshot.score
             breaker.state = CircuitState(snapshot.state)
             breaker.opened_at = snapshot.opened_at
+            breaker.open_count = snapshot.open_count
             breaker.seed_hard_failures(list(snapshot.hard_failure_times))
         return breaker
 
@@ -239,6 +240,7 @@ class Orchestrator:
             breaker.opened_at,
             breaker.hard_failure_times,
             self._clock(),
+            breaker.open_count,
         )
 
     def _record(self, task_id: int, result: AttemptResult, started_at: float) -> None:

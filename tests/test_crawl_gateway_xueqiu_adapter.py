@@ -16,7 +16,7 @@ from crawl_gateway.adapters.xueqiu import (
 from crawl_gateway.adapters.opencli_client import OpencliArticleClient
 from crawl_gateway.adapters.xueqiu_backend import XueqiuBackend
 from crawl_gateway.adapters.xueqiu_nodriver import XueqiuNodriverAdapter
-from crawl_gateway.models import AttemptStatus
+from crawl_gateway.models import AttemptScope, AttemptStatus
 from crawl_gateway.orchestrator import TaskSpec
 
 
@@ -198,6 +198,8 @@ def test_adapter_maps_waf_content_and_does_not_write_article(tmp_path):
 
     assert result.status == AttemptStatus.BLOCKED_WAF
     assert result.error == "waf_content:1"
+    # 列表页已经拿到了、只是这篇正文被拦 → 详情级，不该触发站点熔断
+    assert result.scope is AttemptScope.DETAIL
     assert not (tmp_path / "data" / USER_ID / "1.md").exists()
     assert not (tmp_path / "data" / "index.json").exists()
 

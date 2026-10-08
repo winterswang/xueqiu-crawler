@@ -59,12 +59,20 @@ def run_verify(
         checks.append(_check("circuit_state", True, "no health record; closed"))
     elif snapshot.state == "open":
         checks.append(
-            _check("circuit_state", False, f"circuit open since {snapshot.opened_at}")
+            _check(
+                "circuit_state",
+                False,
+                f"circuit open since {snapshot.opened_at} "
+                f"(第 {snapshot.open_count} 次跳闸，冷却按递进加长)",
+            )
         )
     else:
         checks.append(
             _check(
-                "circuit_state", True, f"state={snapshot.state} score={snapshot.score}"
+                "circuit_state",
+                True,
+                f"state={snapshot.state} score={snapshot.score} "
+                f"opens={snapshot.open_count}",
             )
         )
 

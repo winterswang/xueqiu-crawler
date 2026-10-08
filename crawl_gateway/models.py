@@ -19,6 +19,20 @@ class AttemptStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class AttemptScope(StrEnum):
+    """一次尝试失败到了哪一层 —— 决定它算不算熔断信号。
+
+    ACCOUNT: 账号级。整条任务起不来（时间线都拿不到），站点对这个账号就是不通的。
+    DETAIL:  详情级。列表页正常，只是某篇文章的正文被拦 —— 站点对该账号可达，
+             不该按「站点挂了」处理（2026-10-08 实测：阿里云 WAF 只拦
+             `/uid/statusid` 这类文章 URL，而 whoami / watchlist / 首页全正常，
+             3 次详情级 WAF 却让熔断器把剩下 8 个账号全跳过了）。
+    """
+
+    ACCOUNT = "account"
+    DETAIL = "detail"
+
+
 SUCCESS_STATUSES = frozenset(
     {
         AttemptStatus.SUCCESS,
@@ -54,6 +68,8 @@ class AttemptResult:
     duration_ms: int = 0
     new_articles: int = 0
     saved_articles: int = 0
+    # 默认账号级 = 引入本字段之前的行为，调用方不显式标注时语义不变。
+    scope: AttemptScope = AttemptScope.ACCOUNT
 
     @property
     def successful(self) -> bool:

@@ -25,8 +25,11 @@ class RetryConfig:
 class CircuitBreakerConfig:
     failure_threshold: int
     window_minutes: int
+    # 首次跳闸的冷却时长；复犯按 cooldown_multiplier 翻倍，封顶 max_cooldown_minutes。
     cooldown_minutes: int
     hard_failure_statuses: frozenset[AttemptStatus]
+    cooldown_multiplier: int = 2
+    max_cooldown_minutes: int = 60
 
 
 @dataclass(frozen=True)
@@ -139,6 +142,19 @@ def _parse_retry(raw: Any, code: str) -> RetryConfig:
 def _parse_circuit_breaker(raw: Any, code: str) -> CircuitBreakerConfig:
     if not isinstance(raw, dict):
         raise ConfigError(f"{code}.circuit_breaker must be a mapping")
+    config = _build_circuit_breaker(raw, code)
+    # 封顶值小于首跳值会让首跳就被截短（例如 cooldown 120 + 默认封顶 60 → 实际 60），
+    # 是静默改行为，不如直接报错。
+    if config.max_cooldown_minutes < config.cooldown_minutes:
+        raise ConfigError(
+            f"{code}.circuit_breaker.max_cooldown_minutes "
+            f"({config.max_cooldown_minutes}) 不能小于 cooldown_minutes "
+            f"({config.cooldown_minutes})"
+        )
+    return config
+
+
+def _build_circuit_breaker(raw: dict[str, Any], code: str) -> CircuitBreakerConfig:
     return CircuitBreakerConfig(
         failure_threshold=_positive_int(
             raw.get("failure_threshold"),
@@ -154,6 +170,16 @@ def _parse_circuit_breaker(raw: Any, code: str) -> CircuitBreakerConfig:
         hard_failure_statuses=_statuses(
             raw.get("hard_failure_statuses"),
             f"{code}.circuit_breaker.hard_failure_statuses",
+        ),
+        cooldown_multiplier=_optional_positive_int(
+            raw.get("cooldown_multiplier"),
+            f"{code}.circuit_breaker.cooldown_multiplier",
+            default=2,
+        ),
+        max_cooldown_minutes=_optional_positive_int(
+            raw.get("max_cooldown_minutes"),
+            f"{code}.circuit_breaker.max_cooldown_minutes",
+            default=60,
         ),
     )
 
@@ -191,6 +217,13 @@ def _positive_int(raw: Any, field: str) -> int:
     if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
         raise ConfigError(f"{field} must be a positive integer")
     return raw
+
+
+def _optional_positive_int(raw: Any, field: str, *, default: int) -> int:
+    """可省略的正整数：老配置文件没写这两项时用默认值，写了就必须合法。"""
+    if raw is None:
+        return default
+    return _positive_int(raw, field)
 
 
 def _positive_float(raw: Any, field: str) -> float:

@@ -17,6 +17,7 @@ class HealthSnapshot:
     state: str
     opened_at: float
     hard_failure_times: tuple[float, ...]
+    open_count: int = 0
 
 
 class GatewayStore:
@@ -79,6 +80,7 @@ class GatewayStore:
                     state TEXT NOT NULL,
                     opened_at REAL NOT NULL,
                     hard_failure_times TEXT NOT NULL DEFAULT '[]',
+                    open_count INTEGER NOT NULL DEFAULT 0,
                     updated_at REAL NOT NULL
                 );
 
@@ -101,6 +103,11 @@ class GatewayStore:
                 "site_health",
                 "hard_failure_times",
                 "TEXT NOT NULL DEFAULT '[]'",
+            )
+            self._ensure_column(
+                "site_health",
+                "open_count",
+                "INTEGER NOT NULL DEFAULT 0",
             )
 
     def claim_job(
@@ -246,7 +253,7 @@ class GatewayStore:
     def load_health(self, site: str) -> HealthSnapshot | None:
         row = self._connection.execute(
             """
-            SELECT score, state, opened_at, hard_failure_times
+            SELECT score, state, opened_at, hard_failure_times, open_count
             FROM site_health
             WHERE site = ?
             """,
@@ -261,6 +268,7 @@ class GatewayStore:
             hard_failure_times=tuple(
                 float(value) for value in json.loads(row["hard_failure_times"])
             ),
+            open_count=int(row["open_count"]),
         )
 
     def attempt_times(
@@ -301,6 +309,7 @@ class GatewayStore:
         opened_at: float,
         hard_failure_times: tuple[float, ...],
         now: float,
+        open_count: int = 0,
     ) -> None:
         hard_failures_json = json.dumps(hard_failure_times, separators=(",", ":"))
         with self._connection:
@@ -308,17 +317,18 @@ class GatewayStore:
                 """
                 INSERT INTO site_health(
                     site, score, state, opened_at,
-                    hard_failure_times, updated_at
+                    hard_failure_times, open_count, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(site) DO UPDATE SET
                     score = excluded.score,
                     state = excluded.state,
                     opened_at = excluded.opened_at,
                     hard_failure_times = excluded.hard_failure_times,
+                    open_count = excluded.open_count,
                     updated_at = excluded.updated_at
                 """,
-                (site, score, state, opened_at, hard_failures_json, now),
+                (site, score, state, opened_at, hard_failures_json, open_count, now),
             )
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:

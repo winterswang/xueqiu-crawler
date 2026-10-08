@@ -16,7 +16,12 @@ sites:
     circuit_breaker:
       failure_threshold: 3
       window_minutes: 10
-      cooldown_minutes: 60
+      # 首跳 15 分钟，复犯 ×2 递进，封顶 60。单轮 job 预算约 40 分钟 ——
+      # 原来固定 60 分钟等于「一跳闸当轮必废」（2026-10-08 shadow 对比整轮作废）。
+      # 只有账号级失败计数；详情级 WAF 不触发熔断。
+      cooldown_minutes: 15
+      cooldown_multiplier: 2
+      max_cooldown_minutes: 60
       hard_failure_statuses: [blocked_waf, captcha_required, auth_expired]
 
   xiaohongshu:
@@ -37,4 +42,6 @@ sites:
       failure_threshold: 2
       window_minutes: 10
       cooldown_minutes: 120
+      cooldown_multiplier: 2
+      max_cooldown_minutes: 240
       hard_failure_statuses: [blocked_waf, captcha_required, auth_expired]

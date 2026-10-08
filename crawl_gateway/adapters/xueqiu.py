@@ -10,7 +10,7 @@ from typing import Protocol
 
 import yaml
 
-from crawl_gateway.models import AttemptResult, AttemptStatus
+from crawl_gateway.models import AttemptResult, AttemptScope, AttemptStatus
 from crawl_gateway.orchestrator import TaskSpec
 
 
@@ -232,6 +232,14 @@ class XueqiuAdapter:
                     backend,
                     error=str(exc),
                     saved_articles=len(saved_articles),
+                    # 取正文这一步失败 = 列表已经拿到了，属详情级；只有 BLOCKED_WAF
+                    # 是真正的「被拦」。网络/HTTP 这类传输失败仍按账号级，免得半开
+                    # 探测时把「发不出去」误判成「站点可达」。
+                    scope=(
+                        AttemptScope.DETAIL
+                        if exc.status is AttemptStatus.BLOCKED_WAF
+                        else AttemptScope.ACCOUNT
+                    ),
                 )
 
             title = str(detail.get("title") or article.get("title", ""))
@@ -247,6 +255,7 @@ class XueqiuAdapter:
                     backend,
                     error=f"waf_content:{article.get('article_id')}",
                     saved_articles=len(saved_articles),
+                    scope=AttemptScope.DETAIL,
                 )
 
             crawl_time = self._now()
