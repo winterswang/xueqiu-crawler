@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from waf_bridge import CONTENT_PATTERNS  # noqa: E402
 
 ADAPTERS_DIR = Path(__file__).resolve().parent.parent / 'opencli-adapters'
-ADAPTER_FILES = ('news.js', 'replies.js', 'user-articles.js')
+ADAPTER_FILES = ('news.js', 'replies.js', 'user-articles.js', 'article.js')
 
 # // 定界符在模式里被 block_guard_js() 拒绝，所以 [^/]* 安全
 _GUARD_RE = re.compile(r'(return /)([^/]*)(/\.test\(t\))')

@@ -39,6 +39,7 @@ DEFAULT_LOG = Path.home() / ".opencli" / "xueqiu-calls.jsonl"
 SITE_OPERATIONS = frozenset(
     {
         "browser:open",  # 导航到目标页面
+        "article",  # 通用网页正文命令: 内部 page.goto 导航真实页面
         "news",
         "comments",
         "replies",
