@@ -203,6 +203,36 @@ def test_missing_today_history_does_not_report_baseline_misalignment(tmp_path):
     assert not any("基线不一致" in line for line in report["differences"])
 
 
+def test_vacuous_comparison_is_warned(tmp_path):
+    """两侧当天都没新增时，无差异是空话，必须显式警告。
+
+    2026-10-08 实测教训：影子目录的种子顺序反了（legacy 先跑、种子后做），
+    gateway 因此拿到被拷进去的「标准答案」，文章层显示完美一致 —— 而那
+    根本没验证任何东西。这条警告就是为了让这种空转不至于伪装成一次有效验证。
+    """
+    legacy = tmp_path / "data"
+    gateway = tmp_path / "data-gateway"
+    for data_dir in (legacy, gateway):
+        write_stats(data_dir, total_users=3, successful=3, new_articles=0)
+        write_index(data_dir, dict([record("u1", "old1")]))
+        write_history(data_dir, "u1", [])  # 当天无新增
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["ok"] is True  # 空转不是「差异」，不判失败
+    assert len(report["warnings"]) == 1
+    assert "未覆盖" in report["warnings"][0]
+
+
+def test_no_warning_when_articles_were_actually_compared(tmp_path):
+    legacy, gateway = aligned_pair(tmp_path)
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["articles"]["legacy_new_total"] == 1
+    assert report["warnings"] == []
+
+
 def test_main_exit_codes_and_report_file(tmp_path, capsys):
     legacy, gateway = aligned_pair(tmp_path)
     out = tmp_path / "logs" / f"shadow_compare_{DAY}.json"

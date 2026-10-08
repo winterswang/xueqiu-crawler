@@ -198,6 +198,17 @@ def build_report(
     articles, article_differences = compare_articles(legacy_dir, gateway_dir, day)
     differences = stats_differences + article_differences
 
+    # 两侧当天都没新增时，「无差异」是空话：没有任何一篇文章被真正比对过。
+    # 这不该判为失败（安静的日子本来就该是 0），但必须显式说出来 ——
+    # 否则 ok=true 会被误当成「这一天验证过了」。
+    # 2026-10-08 正是因为没这层提示，一次「完美一致」掩盖了「gateway 拿到的
+    # 是被拷进去的标准答案、根本没验证抓取」这一事实。
+    warnings: list[str] = []
+    if not articles["legacy_new_total"] and not articles["gateway_new_total"]:
+        warnings.append(
+            "两侧当天均无新增文章，本次对比未覆盖「新文章」路径，不能算一次有效验证"
+        )
+
     failures = {
         "legacy_failed": stats["legacy"]["failed"],
         "gateway_failed": stats["gateway"]["failed"],
@@ -212,6 +223,7 @@ def build_report(
         "gateway_dir": str(gateway_dir),
         "ok": not differences,
         "differences": differences,
+        "warnings": warnings,
         "stats": stats,
         "articles": articles,
         "failures": failures,
@@ -261,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         print(f"写报告失败: {out_path} ({exc})", file=sys.stderr)
         return 2
+
+    # 警告走 stderr：stdout 保持是可解析的 JSON（调用方可能直接吃它），
+    # 而 run_daily.sh 把两者都重定向进日志，所以警告不会被丢掉。
+    for warning in report["warnings"]:
+        print(f"WARN: {warning}", file=sys.stderr)
 
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
     return 0 if report["ok"] else 1
