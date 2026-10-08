@@ -128,16 +128,17 @@ def test_success_resets_the_escalation_ladder():
     assert breaker.cooldown_seconds == 15 * 60, "真恢复过 → 冷却回到首跳值"
 
 
-def test_half_open_detail_failure_closes_without_masking_account_failures():
+def test_half_open_detail_failure_closes_and_consumes_the_trip_count():
     """半开探测时列表通了、只是详情被拦 → 站点可达，闭合.
 
-    但不能冒充成功：账号级硬失败计数与复犯递进都要留着，否则下次账号级
-    故障会被从零计数、掩盖掉「连续出问题」这个事实。
+    闭合时要把跳闸残留的满阈值计数清掉：不清的话状态虽已闭合、计数仍是 3，
+    下**一次**账号级失败就会立即再跳闸（阈值退化成 1），并把冷却阶梯无端推高一档。
+    复犯阶梯（open_count）**不**重置 —— 那不是「恢复」。
     """
     breaker = make_breaker()
     now = 5_000.0
     _trip(breaker, now)
-    hard_before = len(breaker.hard_failure_times)
+    assert len(breaker.hard_failure_times) == 3
     opens_before = breaker.open_count
 
     probe_at = now + 2 + breaker.cooldown_seconds + 1
@@ -146,8 +147,25 @@ def test_half_open_detail_failure_closes_without_masking_account_failures():
 
     assert breaker.state is CircuitState.CLOSED
     assert breaker.allow(probe_at + 1).allowed is True
-    assert len(breaker.hard_failure_times) == hard_before
-    assert breaker.open_count == opens_before
+    assert breaker.hard_failure_times == (), "跳闸计数在闭合时消费掉"
+    assert breaker.open_count == opens_before, "复犯阶梯不重置"
+
+
+def test_after_half_open_close_one_failure_is_not_enough_to_trip_again():
+    """闭合后再撞一次账号级失败，不该立刻又跳闸（阈值仍是 3，不是 1）."""
+    breaker = make_breaker()
+    now = 5_000.0
+    _trip(breaker, now)
+
+    probe_at = now + 2 + breaker.cooldown_seconds + 1
+    assert breaker.allow(probe_at).probe is True
+    breaker.record(AttemptStatus.BLOCKED_WAF, probe_at, scope=AttemptScope.DETAIL)
+    assert breaker.state is CircuitState.CLOSED
+
+    breaker.record(AttemptStatus.BLOCKED_WAF, probe_at + 1)
+
+    assert breaker.state is CircuitState.CLOSED
+    assert len(breaker.hard_failure_times) == 1
 
 
 def test_half_open_account_failure_reopens():

@@ -14,6 +14,22 @@ class CircuitState(StrEnum):
     HALF_OPEN = "half_open"
 
 
+def cooldown_seconds_for(config: CircuitBreakerConfig, open_count: int) -> float:
+    """第 `open_count` 次跳闸应冷却多久.
+
+    首跳 `cooldown_minutes`，此后每复犯一次乘 `cooldown_multiplier`，封顶
+    `max_cooldown_minutes`。抽成模块函数是为了让 `verify` 能用同一条公式判
+    「冷却是否已过期」，不必复制一份会漂移的实现。
+    """
+    if open_count <= 1:
+        minutes = config.cooldown_minutes
+    else:
+        minutes = config.cooldown_minutes * (
+            config.cooldown_multiplier ** (open_count - 1)
+        )
+    return min(minutes, config.max_cooldown_minutes) * 60
+
+
 @dataclass(frozen=True)
 class CircuitDecision:
     allowed: bool
@@ -53,18 +69,12 @@ class CircuitBreaker:
 
     @property
     def cooldown_seconds(self) -> float:
-        """本次跳闸应冷却多久：首跳 cooldown_minutes，每复犯一次乘 multiplier，封顶.
+        """本次跳闸应冷却多久（见 `cooldown_seconds_for`）.
 
         只在 `_open()` 里自增 open_count，所以熔断开启期间本值是稳定的 ——
         `allow()` 每次重算不会漂移。
         """
-        if self.open_count <= 1:
-            minutes = self._config.cooldown_minutes
-        else:
-            minutes = self._config.cooldown_minutes * (
-                self._config.cooldown_multiplier ** (self.open_count - 1)
-            )
-        return min(minutes, self._config.max_cooldown_minutes) * 60
+        return cooldown_seconds_for(self._config, self.open_count)
 
     def seed_hard_failures(self, timestamps: list[float]) -> None:
         self._hard_failures.clear()
@@ -136,6 +146,11 @@ class CircuitBreaker:
             if detail_scoped:
                 self.state = CircuitState.CLOSED
                 self._probe_pending = False
+                # 跳闸时残留的满阈值计数也要清掉：否则状态虽已闭合、计数仍是 3，
+                # 下**一次**账号级失败就会立即再跳闸（阈值退化成 1），并把冷却阶梯
+                # 无端推高一档 —— 而刚才这次探测恰恰判定过「站点可达」。
+                # 复犯阶梯（open_count）**不**重置：那不是「恢复」。
+                self._hard_failures.clear()
             else:
                 self._open(now)
 

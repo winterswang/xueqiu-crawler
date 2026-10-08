@@ -309,6 +309,7 @@ class GatewayStore:
         opened_at: float,
         hard_failure_times: tuple[float, ...],
         now: float,
+        *,
         open_count: int = 0,
     ) -> None:
         hard_failures_json = json.dumps(hard_failure_times, separators=(",", ":"))
