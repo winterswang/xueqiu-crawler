@@ -80,7 +80,7 @@ def _build_execute_backend(site: str, data_dir: str):
     client = OpencliArticleClient()
     backend = XueqiuBackend(
         opencli=XueqiuAdapter(client=client, data_dir=data_dir),
-        nodriver=XueqiuNodriverAdapter(),
+        nodriver=XueqiuNodriverAdapter(data_dir=data_dir),
     )
     return client, backend
 

@@ -18,9 +18,19 @@ class XueqiuNodriverAdapter:
         *,
         runner: LegacyNodriverRunner | None = None,
         max_articles: int = 20,
+        data_dir: str | Path | None = None,
     ) -> None:
         self._runner = runner or _run_legacy_crawler
         self._max_articles = max_articles
+        # 不传就退回仓库 data/（历史行为）。shadow 跑 `--data-dir data-gateway`
+        # 时必须传进来 —— 否则一旦回退到 nodriver 就会写进**生产目录** data/，
+        # 污染那份用来做对比的基准。
+        self._data_dir = Path(data_dir) if data_dir is not None else None
+
+    @property
+    def data_dir(self) -> Path:
+        """本适配器会写入的数据目录。"""
+        return self._data_dir if self._data_dir is not None else _default_data_dir()
 
     def execute(self, task: TaskSpec, backend: str) -> AttemptResult:
         if backend != "nodriver":
@@ -36,9 +46,7 @@ class XueqiuNodriverAdapter:
                 error=f"unsupported_resource_type:{task.resource_type}",
             )
         try:
-            result = self._runner(
-                task.resource_id, self._max_articles, _default_data_dir()
-            )
+            result = self._runner(task.resource_id, self._max_articles, self.data_dir)
         except Exception as exc:
             return AttemptResult(
                 AttemptStatus.NETWORK_ERROR,

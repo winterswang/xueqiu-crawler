@@ -12,10 +12,17 @@ class OpencliArticleClient:
         self.session_name = f"xq-crawler-gateway-{os.getpid()}"
 
     def list_user_articles(self, user_id: str, count: int) -> list[dict]:
-        from scripts.opencli_extractor import get_user_articles
+        from scripts.opencli_extractor import WafBlockedError, get_user_articles
 
         try:
             articles = get_user_articles(user_id, count)
+        except WafBlockedError as exc:
+            # 列表页都被风控拦住 = 站点对这个账号不可达 → 账号级硬失败，
+            # 要能计入熔断（http_error 不在 hard_failure_statuses 里）。
+            raise SiteAccessError(
+                AttemptStatus.BLOCKED_WAF,
+                f"opencli user articles blocked by waf for {user_id}: {exc}",
+            ) from exc
         except Exception as exc:
             raise SiteAccessError(
                 AttemptStatus.NETWORK_ERROR,
