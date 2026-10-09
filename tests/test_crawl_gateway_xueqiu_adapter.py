@@ -405,3 +405,54 @@ def test_xueqiu_backend_dispatches_by_configured_backend(tmp_path):
     assert opencli_result.status == AttemptStatus.NO_UPDATE
     assert nodriver_result.status == AttemptStatus.BLOCKED_WAF
     assert unknown_result.status == AttemptStatus.SKIPPED
+
+
+# ── 标题可用性（站点栏目 / 列表占位符） ────────────────────────────────────
+# 详情页没渲染出标题时 `document.title` 会退回站点栏目，它是**非空**的，
+# 于是 `detail.get("title") or article.get("title","")` 不会回退 —— 与 crawler
+# 侧是同一个洞（见 scripts/title_guard.py）。
+
+
+def test_chrome_detail_title_falls_back_to_the_list_title(tmp_path):
+    client = FakeClient(
+        [article("1")],
+        [{"title": "雪球-聪明的投资者都在这里", "content": "正文" * 50}],
+    )
+    adapter = make_adapter(tmp_path, client)
+
+    result = adapter.execute(TASK, "opencli")
+
+    assert result.status == AttemptStatus.SUCCESS
+    markdown = (tmp_path / "data" / USER_ID / "1.md").read_text(encoding="utf-8")
+    assert markdown.startswith("# List title 1"), "必须退回列表标题"
+    assert "雪球-聪明的投资者都在这里" not in markdown
+
+
+def test_article_with_no_usable_title_is_not_stored(tmp_path):
+    """列表标题也是占位符 → 不入库，而且**不能**判成 PARSE_ERROR.
+
+    `saw_empty_content` 的意思是「详情抓空了，账号可能有问题」；一篇图片帖
+    不该把整个账号拖成 PARSE_ERROR。
+    """
+    client = FakeClient(
+        [article("1")],
+        [{"title": "雪球-聪明的投资者都在这里", "content": "来源：雪球App"}],
+    )
+    client.articles[0]["title"] = "展开\ue63c"
+    adapter = make_adapter(tmp_path, client)
+
+    result = adapter.execute(TASK, "opencli")
+
+    assert result.status == AttemptStatus.NO_UPDATE
+    assert result.saved_articles == 0
+    assert not (tmp_path / "data" / USER_ID / "1.md").exists()
+
+
+def test_normal_title_is_unaffected(tmp_path):
+    """对照：标题正常时照旧落盘 —— 证明上面拦的是标题本身，不是顺手拦了所有文章."""
+    client = FakeClient([article("1")], [{"title": "真标题", "content": "正文" * 50}])
+    adapter = make_adapter(tmp_path, client)
+
+    assert adapter.execute(TASK, "opencli").status == AttemptStatus.SUCCESS
+    markdown = (tmp_path / "data" / USER_ID / "1.md").read_text(encoding="utf-8")
+    assert markdown.startswith("# 真标题")

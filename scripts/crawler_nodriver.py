@@ -36,6 +36,9 @@ from scripts.waf_bridge import (  # noqa: E402
     is_error_page,
 )
 
+# 标题可用性（站点栏目 / 列表占位符不算标题）。与风控判定分开，见 title_guard.py。
+from scripts.title_guard import resolve_title  # noqa: E402
+
 import nodriver as uc
 
 # OpenCLI fallback (zero-WAF via Chrome extension)
@@ -596,16 +599,43 @@ class XueqiuCrawlerNodriver:
         # 提取正文（浏览器级别导航）
         detail = self._opencli.get_article_content(url)
 
+        # 适配器通道的风控标记必须排在最前面看。
+        # 被拦时 `get_article_content` 会把 title/content **一起清空**，于是
+        # resolve_title 也拿不到可用标题 —— 要是让下面的「无标题」分支先跑，一次
+        # 真实的拦截就会被记成「跳过无标题」，`blocked_articles` 少计一篇，而那正是
+        # 2026-10-09 那套可观测性要防的「安静日 vs 被拦日」盲区。
+        if detail.get('waf_detected'):
+            self._waf_blocked_articles += 1
+            self.logger.warning(
+                f"WAF 拦截(适配器): {str(detail.get('title') or '')[:30]} "
+                f"({article.get('article_id', '')})"
+            )
+            return False
+
         # 跳过非专栏/回复类文章
-        title = detail.get('title', article.get('title', ''))
+        # 详情标题优先，但它可能是站点栏目（`雪球-聪明的投资者都在这里`）或
+        # 列表占位符（`展开`）—— 那种情况下退回列表标题，而不是把站点栏目标题
+        # 当成文章标题存下来（2026-10-09：index.json 里 7 条这样的标题）。
+        title = resolve_title(detail.get('title'), article.get('title'))
         if title.startswith('回复@'):
             self.logger.info(f"跳过回复: {title[:30]}...")
+            return False
+
+        # 两边都没有可用标题 → 不落盘。内容通常只剩「来源：雪球App…」这种样板，
+        # 日报侧（is_error_page 对空标题返回 True）本来也会把它扔掉，那就不必先
+        # 写进 corpus 再被上游 sync_raw_articles_to_ima 拖进 IMA 知识库。
+        if not title:
+            self.logger.info(
+                f"跳过无标题: {article.get('article_id', '')} "
+                f"(详情={str(detail.get('title'))[:20]!r} "
+                f"列表={str(article.get('title'))[:20]!r})"
+            )
             return False
 
         # 合并文章信息
         merged = {
             'article_id': article.get('article_id', ''),
-            'title': detail.get('title') or article.get('title', ''),
+            'title': title,
             'author': article.get('author', user_name),
             'publish_time': article.get('time', ''),
             'content': detail.get('content', article.get('text', '')),
@@ -616,16 +646,6 @@ class XueqiuCrawlerNodriver:
             'crawl_time': datetime.now().isoformat(),
             'is_column': True,
         }
-
-        # 适配器通道的风控标记要先看：它返回的 content 是空串，落到下面「无内容」
-        # 分支就会被当成普通空文章，WAF 也就统计不出来了
-        if detail.get('waf_detected'):
-            self._waf_blocked_articles += 1
-            self.logger.warning(
-                f"WAF 拦截(适配器): {str(detail.get('title') or '')[:30]} "
-                f"({merged['article_id']})"
-            )
-            return False
 
         # 跳过无内容文章
         if not merged['content']:
