@@ -11,7 +11,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from publish_daily_report import _content_digest, _should_reuse_note
+import fcntl
+
+from publish_daily_report import (
+    _acquire_publish_lock,
+    _content_digest,
+    _should_reuse_note,
+)
 
 
 def test_same_day_same_content_reuses_note():
@@ -60,3 +66,26 @@ def test_missing_note_id_never_reuses():
 def test_digest_is_stable_and_content_sensitive():
     assert _content_digest("a") == _content_digest("a")
     assert _content_digest("a") != _content_digest("b")
+
+
+def test_digest_ignores_generation_timestamp_line():
+    """核心回归:尾注时间戳每次运行必变,digest 不能被它牵着走。
+
+    2026-10-08 事故根因:digest 含时间戳 → 任何重跑必然变化 → 必然重发新笔记。
+    """
+    morning = "正文\n\n---\n\n*报告生成时间：2026-10-08 08:00:00*\n"
+    evening = "正文\n\n---\n\n*报告生成时间：2026-10-08 19:45:12*\n"
+    assert _content_digest(morning) == _content_digest(evening)
+
+
+def test_publish_lock_is_exclusive(tmp_path):
+    fd1 = _acquire_publish_lock(tmp_path)
+    assert fd1 is not None
+    try:
+        assert _acquire_publish_lock(tmp_path) is None
+    finally:
+        fcntl.flock(fd1, fcntl.LOCK_UN)
+        fd1.close()
+    fd2 = _acquire_publish_lock(tmp_path)
+    assert fd2 is not None
+    fd2.close()

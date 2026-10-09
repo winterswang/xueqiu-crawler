@@ -15,6 +15,8 @@ import os
 import sys
 import json
 import hashlib
+import re
+import fcntl
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -158,7 +160,10 @@ def create_ima_note(title: str, content: str) -> Optional[str]:
 
 
 def _content_digest(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    # 剔除生成时间行: 它每次运行必变,会让「当天+内容一致」的幂等判断永远失效,
+    # 造成同日双发布(2026-10-08 事故根因,审计 P0-6)。
+    content = re.sub(r"^\*报告生成时间：.*?\*\s*$", "", content, flags=re.M)
+    return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()
 
 
 def _should_reuse_note(state: dict, date: str, digest: str) -> bool:
@@ -178,11 +183,43 @@ def _should_reuse_note(state: dict, date: str, digest: str) -> bool:
     )
 
 
+def _acquire_publish_lock(lock_dir: Path):
+    """跨进程互斥锁,非阻塞:拿不到说明已有发布在跑,本次直接退出。
+
+    幂等检查(读 state)与发布(写 state)之间没有原子性,两个进程可以
+    同时通过检查、各建一篇笔记(2026-10-08 双发布事故的并发触发面;
+    digest 修复消除了「每次重跑必然重发」,本锁消除并发窗口)。
+    """
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(lock_dir / ".publish.lock", "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_fd.close()
+        return None
+    return lock_fd
+
+
 def main(force: bool = False):
     date = datetime.now().strftime("%Y-%m-%d")
     _logger.info("=" * 50)
     _logger.info(f"开始发布价值投资日报 - {date}")
 
+    state_file = (
+        Path(__file__).resolve().parent.parent / "data" / ".last_published_note.json"
+    )
+    lock_fd = _acquire_publish_lock(state_file.parent)
+    if lock_fd is None:
+        _logger.error("另一个发布进程正在进行(持有 .publish.lock),本次退出")
+        return 1
+    try:
+        return _publish_locked(force, date, state_file)
+    finally:
+        lock_fd.close()
+
+
+def _publish_locked(force: bool, date: str, state_file: Path) -> int:
+    """持锁状态下执行发布主流程(由 main 在 flock 内调用)."""
     # 1. 先读日报 —— 幂等判断必须基于**内容**，见下
     try:
         content = get_daily_report(date)
@@ -196,9 +233,7 @@ def main(force: bool = False):
     # 幂等检查：只有「当天 + 内容一致」才复用已有笔记（见 _should_reuse_note）。
     # 2026-10-05 实测踩到过只比日期的坑：08:07 发布了 0 篇笔记 7512664842445628，
     # 10:10 过了验证页重跑 —— 旧逻辑会打印那篇空笔记的 URL 并 return 0。
-    state_file = (
-        Path(__file__).resolve().parent.parent / "data" / ".last_published_note.json"
-    )
+    state_knows_today = False
     if not force and state_file.exists():
         try:
             state = json.loads(state_file.read_text(encoding="utf-8"))
@@ -208,12 +243,26 @@ def main(force: bool = False):
                 print(note_url)
                 return 0
             if state.get("date") == date and state.get("note_id"):
+                state_knows_today = True
                 _logger.warning(
                     "当天已发布过，但日报内容已变化 —— 重新发布新笔记"
                     f"（旧 note_id={state['note_id']}）"
                 )
         except Exception:
             pass  # 状态文件损坏就忽略，正常发布
+
+    # 搜索兜底:本地状态对今天一无所知(丢失/损坏/从未写过)但 IMA 今天已有
+    # 笔记 → 跳过,避免状态丢失场景下的重复发布;确需重发用 --force。
+    # 注意不能在「state 记录了今天但 digest 不同」时跳过 —— 那是文档化的
+    # 「同日重写后重发」主路径(见 _should_reuse_note docstring)。
+    if not force and not state_knows_today:
+        existing_note_id = check_existing_note(date)
+        if existing_note_id:
+            _logger.warning(
+                f"本地发布状态缺失,但 IMA 已存在今天的笔记(docid={existing_note_id}),"
+                "跳过发布以避免重复;确需重发请用 --force"
+            )
+            return 0
 
     # 2. 推送到 IMA
     note_id = create_ima_note(f"价值投资日报 - {date}", content)
