@@ -84,8 +84,42 @@ def _fake_client(monkeypatch, reply: str | None, *, raises: bool = False):
         def __init__(self):
             self.chat = type("C", (), {"completions": _Completions()})()
 
-    monkeypatch.setattr(pf, "client", _Client())
+    monkeypatch.setattr(pf, "_client", _Client())
     return calls
+
+
+def test_module_imports_without_credentials():
+    """回归（2026-10-09 CI）：导入这个模块不该要求 API 凭证.
+
+    原来客户端在模块级构造，没有凭证的环境里 `OpenAI(...)` 直接抛
+    `OpenAIError: Missing credentials` —— 测试文件在**收集阶段**就报错，
+    而本地因为有 .env 一直没暴露。
+    """
+    import os
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k
+        not in ("ARK_API_KEY", "MINIMAX_API_KEY", "OPENAI_API_KEY", "OPENAI_ADMIN_KEY")
+    }
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.path.insert(0,'scripts'); import push_feishu",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=root,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stderr[-400:]
 
 
 # ── 标题提取 ────────────────────────────────────────────────────────────

@@ -27,16 +27,34 @@ REPORT_DIR = PROJECT_DIR / "data" / "daily_reports"
 
 # 飞书 webhook 从环境变量读取，或使用配置文件
 FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
-# OpenAI 兼容客户端（字节 coding plan，模型与 config.yaml 保持同步）
-client = OpenAI(
-    api_key=os.environ.get("ARK_API_KEY", os.environ.get("MINIMAX_API_KEY", "")),
-    base_url=os.environ.get(
-        "ARK_CODING_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"
-    ),
-)
+
 # 模型 id 走唯一解析入口（config/config.yaml），与 analyzer 同源，
 # 避免两边各自维护一个模型名（PROJECT_LOG D-009）
 MODEL = resolve_model()
+
+_client = None  # 惰性构造，见 _get_client
+
+
+def _get_client() -> OpenAI:
+    """按需构造 OpenAI 兼容客户端.
+
+    **不在模块导入时构造** —— 没有凭证的环境里 `OpenAI(...)` 会直接抛
+    `OpenAIError: Missing credentials`，于是连 `import push_feishu` 都失败
+    （2026-10-09 CI 实测：测试文件在收集阶段就报错，而本地因为有 .env 一直没发现）。
+    导入一个纯文本处理模块不该要求凭证。
+    """
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            api_key=os.environ.get(
+                "ARK_API_KEY", os.environ.get("MINIMAX_API_KEY", "")
+            ),
+            base_url=os.environ.get(
+                "ARK_CODING_BASE_URL",
+                "https://ark.cn-beijing.volces.com/api/coding/v3",
+            ),
+        )
+    return _client
 
 
 def read_today_report(date: str = None) -> str:
@@ -184,7 +202,7 @@ def generate_hot_topics_summary(report_md: str) -> str:
 请用3句话总结今天大V们讨论的核心热点话题，每句不超过50字，口语化，直接说重点。不要开场白，直接输出3句话。"""
 
     try:
-        resp = client.chat.completions.create(
+        resp = _get_client().chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
