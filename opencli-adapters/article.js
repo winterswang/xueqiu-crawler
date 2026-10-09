@@ -16,6 +16,9 @@ const ARTICLE_SELECTORS = [
 
 const HTTP_URL_PATTERN = /^https?:\/\//i;
 
+// 列表里最后那项、也是唯一"整页"的容器。它只做兜底，不参与"最长优先"比较。
+const LAST_RESORT_SELECTOR = 'body';
+
 // 去噪 JS：与 opencli 自带 `browser extract` 的实现
 // (@jackwener/opencli/dist/src/browser/extract.js buildExtractHtmlJs) 保持一致，
 // 因为 markdown 转换用的是同一个 htmlToMarkdown，只有 HTML 清洗等价，输出才等价。
@@ -104,16 +107,32 @@ cli({
 
         let best = '';
         let bestSel = '';
+        let bodyContent = '';
         for (const sel of selectors) {
             const html = await page.evaluate(buildCloneHtmlJs(sel));
             if (!html) continue;
             const content = htmlToMarkdown(html).trim();
+            if (sel === LAST_RESORT_SELECTOR) {
+                // body 是"放弃"档：整页含导航栏、侧边栏、页脚，比正确的窄容器长得多。
+                // 让它参与「最长优先」会把短文章顶掉 —— 2026-10-09 实测：一篇只有
+                // 128 字的图片帖被 body（11254 字的整页 chrome）盖过，日报里多出一篇
+                // 「雪球-聪明的投资者都在这里」。
+                // opencli 自己的默认选择是 main || article || body，body 也只在
+                // 前面都没有时兜底 —— 这里对齐那个语义。
+                if (!bodyContent) bodyContent = content;
+                continue;
+            }
             if (content.length > best.length) {
                 best = content;
                 bestSel = sel;
             }
             // 先命中先赢：精确容器优先，不再试后面更宽的选择器。
             if (best.length >= minChars) break;
+        }
+        // 所有精确容器都没命中，才退回 body
+        if (!best && bodyContent) {
+            best = bodyContent;
+            bestSel = LAST_RESORT_SELECTOR;
         }
 
         return [{
