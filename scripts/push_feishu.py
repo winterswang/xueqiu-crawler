@@ -27,16 +27,34 @@ REPORT_DIR = PROJECT_DIR / "data" / "daily_reports"
 
 # 飞书 webhook 从环境变量读取，或使用配置文件
 FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
-# OpenAI 兼容客户端（字节 coding plan，模型与 config.yaml 保持同步）
-client = OpenAI(
-    api_key=os.environ.get("ARK_API_KEY", os.environ.get("MINIMAX_API_KEY", "")),
-    base_url=os.environ.get(
-        "ARK_CODING_BASE_URL", "https://ark.cn-beijing.volces.com/api/coding/v3"
-    ),
-)
+
 # 模型 id 走唯一解析入口（config/config.yaml），与 analyzer 同源，
 # 避免两边各自维护一个模型名（PROJECT_LOG D-009）
 MODEL = resolve_model()
+
+_client = None  # 惰性构造，见 _get_client
+
+
+def _get_client() -> OpenAI:
+    """按需构造 OpenAI 兼容客户端.
+
+    **不在模块导入时构造** —— 没有凭证的环境里 `OpenAI(...)` 会直接抛
+    `OpenAIError: Missing credentials`，于是连 `import push_feishu` 都失败
+    （2026-10-09 CI 实测：测试文件在收集阶段就报错，而本地因为有 .env 一直没发现）。
+    导入一个纯文本处理模块不该要求凭证。
+    """
+    global _client
+    if _client is None:
+        _client = OpenAI(
+            api_key=os.environ.get(
+                "ARK_API_KEY", os.environ.get("MINIMAX_API_KEY", "")
+            ),
+            base_url=os.environ.get(
+                "ARK_CODING_BASE_URL",
+                "https://ark.cn-beijing.volces.com/api/coding/v3",
+            ),
+        )
+    return _client
 
 
 def read_today_report(date: str = None) -> str:
@@ -72,26 +90,111 @@ def extract_must_read(report_md: str) -> list:
     return must_read
 
 
-def generate_hot_topics_summary(report_md: str) -> str:
-    """用 LLM 生成今日热点话题 3 句话摘要"""
-    # 提取文章标题和简要内容，避免 token 太长
-    lines = []
+def _section_body(report_md: str, keyword: str) -> str:
+    """取 `### <含 keyword 的标题>` 到下一个 `### ` 之间的正文（不含标题行）。"""
+    body: list[str] = []
     capture = False
-    count = 0
     for line in report_md.split("\n"):
-        if line.startswith("### ") and ("必读" in line or "值得关注" in line):
-            capture = True
+        if line.startswith("### "):
+            capture = keyword in line
             continue
-        if capture and line.startswith("### "):
-            break
-        if capture and line.startswith("#### "):
-            lines.append(line.replace("#### ", "- "))
-            count += 1
-            if count > 15:
-                break
+        if capture:
+            body.append(line)
+    return "\n".join(body).strip()
 
-    articles_text = "\n".join(lines)
 
+def _clean_item(text: str) -> str:
+    """把条目清成「标题」本身.
+
+    「参考」段是编号列表，条目形如
+    `[标题](https://xueqiu.com/...)（作者）` —— 整条喂给模型既占 token 又是噪音
+    （2026-10-09 实测：模型面对这种输入直接回了空串）。
+    """
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)  # markdown 链接 → 文字
+    text = re.sub(r"（[^）]*）\s*$", "", text)  # 去掉尾部（作者）
+    return text.strip()
+
+
+def _section_items(report_md: str, keyword: str) -> list[str]:
+    """取某一段里的条目行（`#### xxx` 或 `1. xxx`），去掉编号/井号前缀。"""
+    items = []
+    for line in _section_body(report_md, keyword).split("\n"):
+        m = re.match(r"^####\s+(.*)$", line) or re.match(r"^\d+\.\s+(.*)$", line)
+        if m:
+            cleaned = _clean_item(m.group(1))
+            if cleaned:
+                items.append(cleaned)
+    return items
+
+
+def _extract_article_titles(report_md: str) -> list[str]:
+    """报告里可用的文章标题.
+
+    优先「必读 / 值得关注」；两者都空时退到「参考」——
+    2026-10-09 实测踩到：当天 3 篇全是参考级，前两段不存在，于是标题列表为空，
+    prompt 里放了个空列表，模型回「未收到文章标题。请重新提供内容。」
+    （2026-10-05 就是这么把模型错误串当热点发出去的）。
+    """
+    titles = _section_items(report_md, "必读") + _section_items(report_md, "值得关注")
+    if titles:
+        return titles[:15]
+    return _section_items(report_md, "参考")[:15]
+
+
+# 模型「没拿到料」时常见的推脱/报错措辞 —— 这些**不能**当成热点推给用户
+_LLM_REFUSAL_MARKERS = (
+    "未收到",
+    "请重新提供",
+    "请提供",
+    "无法",
+    "抱歉",
+    "作为AI",
+    "作为 AI",
+    "不能帮",
+    "没有任何",
+)
+# 「暂无…」这类占位符不算有效内容（报告里本来就有）
+_PLACEHOLDER_MARKERS = ("暂无", "今日无", "无集中", "无核心")
+
+
+def _looks_usable(text: str) -> bool:
+    if len(text) < 10:
+        return False
+    return not any(marker in text for marker in _LLM_REFUSAL_MARKERS)
+
+
+def _fallback_topics(report_md: str) -> str:
+    """LLM 拿不到可用输出时的兜底：用报告里已有的核心观点 / 风险段.
+
+    宁可少说，也不能把模型的推脱串或空白当成「今日热点」发出去。
+    """
+    for keyword in ("核心观点", "风险与机会"):
+        body = _section_body(report_md, keyword)
+        cleaned = "\n".join(
+            line
+            for line in body.split("\n")
+            if line.strip()
+            and not line.lstrip().startswith("#")
+            and not any(p in line for p in _PLACEHOLDER_MARKERS)
+        ).strip()
+        cleaned = re.sub(r"^[-*]\s*", "", cleaned, flags=re.MULTILINE).strip()
+        if len(cleaned) >= 10:
+            return cleaned.split("\n\n")[0][:200]
+    return "今日无值得提炼的热点（当日文章以短帖/图片帖为主）"
+
+
+def generate_hot_topics_summary(report_md: str) -> str:
+    """用 LLM 生成今日热点话题 3 句话摘要.
+
+    拿不到可用结果时**一定**回退到 `_fallback_topics`，绝不把空白或模型的推脱
+    串原样发出去（2026-10-05 就发过「未收到文章标题。请重新提供内容。」）。
+    """
+    titles = _extract_article_titles(report_md)
+    if not titles:
+        _logger.warning("热点摘要：报告里没有可用标题，直接走兜底")
+        return _fallback_topics(report_md)
+
+    articles_text = "\n".join(f"- {t}" for t in titles)
     prompt = f"""以下是今天雪球价值投资日报的主要文章标题：
 
 {articles_text}
@@ -99,17 +202,22 @@ def generate_hot_topics_summary(report_md: str) -> str:
 请用3句话总结今天大V们讨论的核心热点话题，每句不超过50字，口语化，直接说重点。不要开场白，直接输出3句话。"""
 
     try:
-        resp = client.chat.completions.create(
+        resp = _get_client().chat.completions.create(
             model=MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
             temperature=0.3,
             timeout=30,
         )
-        return resp.choices[0].message.content.strip()
+        content = (resp.choices[0].message.content or "").strip()
     except Exception as e:
         _logger.warning(f"生成热点摘要失败: {e}")
-        return "今日热点摘要生成失败，请查看完整日报。"
+        return _fallback_topics(report_md)
+
+    if not _looks_usable(content):
+        _logger.warning(f"热点摘要不可用（{content[:50]!r}），走兜底")
+        return _fallback_topics(report_md)
+    return content
 
 
 def send_feishu_card(
