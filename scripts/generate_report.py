@@ -26,6 +26,9 @@ from analyzer import ArticleAnalyzer, generate_daily_report
 # 风控页判定统一走 xueqiu_analyzer.waf（唯一实现，见 scripts/waf_bridge.py）
 from waf_bridge import is_error_page
 
+# 标题可用性：站点栏目标题 / 列表占位符不算标题（见 scripts/title_guard.py）
+from title_guard import is_usable_title
+
 
 def _extract_article_body(md_text: str) -> str:
     """从落盘的 .md 里剥出正文段（第一条与最后一条 `---` 之间）.
@@ -137,13 +140,19 @@ def get_today_articles(data_dir: str = 'data') -> list:
         print(f"文件系统兜底: {fs_articles} 篇（索引中缺失）")
 
     # 过滤 WAF/错误页面（405、验证页面等）—— 判定见 xueqiu_analyzer.waf
+    # 另外滤掉「标题根本没有」的：详情页没渲染出标题时会回落成站点栏目
+    # `雪球-聪明的投资者都在这里`，这种非空标题躲过了 is_error_page 的空标题判定，
+    # 却会在「参考」段里显示成一篇正常文章（2026-10-09 实测）。
     def _is_error(a: dict) -> bool:
-        return is_error_page(a.get('title', ''), a.get('content', ''))
+        title = a.get('title', '')
+        if not is_usable_title(title):
+            return True
+        return is_error_page(title, a.get('content', ''))
 
     filtered = [a for a in articles if not _is_error(a)]
     skipped = len(articles) - len(filtered)
     if skipped:
-        print(f"跳过错误页面: {skipped} 篇")
+        print(f"跳过错误页/无标题文章: {skipped} 篇")
     return filtered
 
 

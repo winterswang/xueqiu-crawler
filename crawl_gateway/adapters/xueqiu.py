@@ -159,6 +159,7 @@ class XueqiuAdapter:
         max_articles: int = 20,
         other_probe_limit: int = 3,
         is_error_content: Callable[[str, str], bool] | None = None,
+        resolve_title: Callable[[str | None, str | None], str] | None = None,
     ) -> None:
         self._client = client
         self._store = ArticleStore(data_dir)
@@ -167,6 +168,7 @@ class XueqiuAdapter:
         self._max_articles = max_articles
         self._other_probe_limit = other_probe_limit
         self._is_error_content = is_error_content or _default_is_error_content
+        self._resolve_title = resolve_title or _default_resolve_title
 
     def execute(self, task: TaskSpec, backend: str) -> AttemptResult:
         if backend != "opencli":
@@ -242,9 +244,18 @@ class XueqiuAdapter:
                     ),
                 )
 
-            title = str(detail.get("title") or article.get("title", ""))
+            # 详情标题可能是站点栏目（`雪球-聪明的投资者都在这里`）或列表占位符
+            # （`展开`）—— 与 crawler 走同一条兜底链（见 scripts/title_guard.py）。
+            # 不能写成 `detail.get("title") or article.get("title","")`：空串才会走
+            # `or` 的右边，站点栏目那种**非空但没用**的值会直接落盘。
+            title = self._resolve_title(detail.get("title"), article.get("title"))
             content = str(detail.get("content") or article.get("text", ""))
             if title.startswith("回复@"):
+                continue
+            # 两边都没有可用标题 → 不入库（图片帖 / 页面没渲染全）。刻意**不**置
+            # `saw_empty_content`：那是「详情抓空了」的信号，会把整账号判成
+            # PARSE_ERROR；一篇图片帖不该背这个锅。
+            if not title:
                 continue
             if not content:
                 saw_empty_content = True
@@ -323,3 +334,9 @@ def _default_is_error_content(title: str, content: str) -> bool:
     from scripts.waf_bridge import is_error_page
 
     return is_error_page(title, content)
+
+
+def _default_resolve_title(detail_title: str | None, list_title: str | None) -> str:
+    from scripts.title_guard import resolve_title
+
+    return resolve_title(detail_title or "", list_title or "")

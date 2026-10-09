@@ -145,6 +145,34 @@ def test_adapter_waf_hit_is_counted_and_not_saved(monkeypatch):
     assert crawler._waf_blocked_articles == 1
 
 
+def test_waf_hit_with_no_usable_list_title_is_still_counted(monkeypatch):
+    """回归（2026-10-09 标题可用性改动引入）：撞风控的图片帖不能被记成「无标题」.
+
+    `get_article_content` 在风控命中时把 title/content **一起清空**，于是
+    `resolve_title` 也拿不到可用标题。此时若「没有可用标题 → 不落盘」这条分支
+    排在风控判定之前，一篇「详情页是图片帖 + 列表标题也是占位符」的文章撞上风控，
+    就会被记成「跳过无标题」，`blocked_articles` 少计一篇 —— 正是这套可观测性
+    要防的「安静日 vs 被拦日」盲区。
+    """
+    crawler = _crawler_with_detail(
+        monkeypatch,
+        {"url": "u", "title": "", "content": "", "waf_detected": True},
+    )
+
+    saved = crawler._extract_and_save_opencli(
+        {
+            "article_id": "411546152",
+            "url": "https://xueqiu.com/1/1",
+            "title": "展开\ue63c",
+        },
+        "1",
+        "u",
+    )
+
+    assert saved is False
+    assert crawler._waf_blocked_articles == 1
+
+
 def test_empty_content_without_waf_is_not_counted_as_blocked(monkeypatch):
     """空正文 ≠ 被拦 —— 别把两者混成一个数。"""
     crawler = _crawler_with_detail(
