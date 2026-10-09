@@ -293,16 +293,41 @@ def test_missing_index_on_both_sides_exits_2(tmp_path, capsys):
     assert "影子目录没有接上" in capsys.readouterr().err
 
 
-def test_gateway_attempt_statuses_are_included_when_db_given(tmp_path):
+def test_gateway_attempt_statuses_are_scoped_to_the_day(tmp_path):
+    """只统计当天的 job —— 历史运行不能累加进来.
+
+    回归（2026-10-09 线上）：原来不过滤日期，把影子库里**所有**历史尝试加在一起。
+    今早那轮 21 次被报成 57 次，还混进前一天的 8 条 `circuit_open`，直接读出了
+    「今早熔断跳了 8 个账号」这种不存在的因果关系。
+    """
+    import datetime
     import sqlite3
 
     legacy, gateway = aligned_pair(tmp_path)
     db_path = tmp_path / "gateway.sqlite3"
+
+    def at(day: str) -> float:
+        return datetime.datetime.fromisoformat(f"{day}T08:00:00").timestamp()
+
     with sqlite3.connect(db_path) as connection:
-        connection.execute("CREATE TABLE attempts (status TEXT)")
+        connection.executescript(
+            """
+            CREATE TABLE jobs (id INTEGER PRIMARY KEY, started_at REAL);
+            CREATE TABLE tasks (id INTEGER PRIMARY KEY, job_id INTEGER);
+            CREATE TABLE attempts (task_id INTEGER, status TEXT);
+            """
+        )
+        connection.execute("INSERT INTO jobs VALUES (1, ?)", (at("2026-10-06"),))
+        connection.execute("INSERT INTO jobs VALUES (2, ?)", (at(DAY),))
+        connection.execute("INSERT INTO tasks VALUES (10, 1), (20, 2)")
         connection.executemany(
-            "INSERT INTO attempts (status) VALUES (?)",
-            [("success",), ("success",), ("blocked_waf",)],
+            "INSERT INTO attempts VALUES (?, ?)",
+            [
+                (10, "circuit_open"),  # 昨天的 job —— 不该计入
+                (20, "success"),
+                (20, "success"),
+                (20, "blocked_waf"),
+            ],
         )
 
     report = build_report(

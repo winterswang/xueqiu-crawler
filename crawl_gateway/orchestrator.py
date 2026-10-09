@@ -7,7 +7,12 @@ from typing import Protocol
 
 from crawl_gateway.config import SiteConfig
 from crawl_gateway.health import CircuitBreaker, CircuitState
-from crawl_gateway.models import FAILURE_STATUSES, AttemptResult, AttemptStatus
+from crawl_gateway.models import (
+    FAILURE_STATUSES,
+    AttemptResult,
+    AttemptScope,
+    AttemptStatus,
+)
 from crawl_gateway.rate_limiter import SiteRateLimiter
 from crawl_gateway.retry import RetryPolicy
 from crawl_gateway.storage import GatewayStore
@@ -189,7 +194,15 @@ class Orchestrator:
             has_next_backend = completed_attempts < len(
                 self._site_config.backend_priority
             )
-            can_fallback = executed.status in FAILURE_STATUSES and has_next_backend
+            # 详情级失败**不**换后端：后端不是问题所在，只是这一篇被拦了。
+            # 换了只会白跑一次完整浏览器启动，而且 nodriver 会去拉时间线 ——
+            # 2026-10-09 实测：4 个账号因详情被拦回退 nodriver，全部撞上时间线 WAF，
+            # 把「详情级」升级成「账号级」硬失败，绕过了 #86 的分级熔断。
+            can_fallback = (
+                executed.status in FAILURE_STATUSES
+                and has_next_backend
+                and executed.scope is AttemptScope.ACCOUNT
+            )
             if not retry_decision.retry and not can_fallback:
                 self._store.finish_task(task_id, "failed", self._clock())
                 return executed
