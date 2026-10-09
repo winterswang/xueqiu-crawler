@@ -27,6 +27,22 @@ from analyzer import ArticleAnalyzer, generate_daily_report
 from waf_bridge import is_error_page
 
 
+def _extract_article_body(md_text: str) -> str:
+    """从落盘的 .md 里剥出正文段（第一条与最后一条 `---` 之间）.
+
+    **不能把整份 .md 当 content** —— 里面有标题、作者行、原文链接、爬取时间那一圈
+    固定头部（实测约 250-300 字），会让 analyzer 的「内容 > 200 字符才走 GLM-5」
+    门槛变成恒真。2026-10-09 实测：一篇正文只有 128 字的纯图片帖，整文件 272 字，
+    照样过闸、白调了一次 LLM（当天 3 篇全过闸）。
+    正文自身可能含 `---`（markdown 分隔线），所以取第一条和最后一条之间。
+    """
+    first = md_text.find('\n---\n')
+    last = md_text.rfind('\n---\n')
+    if first == -1 or last <= first:
+        return md_text.strip()
+    return md_text[first + 5 : last].strip()
+
+
 def get_today_articles(data_dir: str = 'data') -> list:
     """获取今日新增文章（索引优先 + 文件系统兜底）"""
     data_path = Path(data_dir)
@@ -65,7 +81,7 @@ def get_today_articles(data_dir: str = 'data') -> list:
                             'title': info.get('title', ''),
                             'author': info.get('author', ''),
                             'publish_time': info.get('publish_time', ''),
-                            'content': content,
+                            'content': _extract_article_body(content),
                             'filepath': filepath,
                         }
                     )
@@ -111,7 +127,7 @@ def get_today_articles(data_dir: str = 'data') -> list:
                     'title': title,
                     'author': author,
                     'publish_time': '',
-                    'content': content,
+                    'content': _extract_article_body(content),
                     'filepath': str(md_file),
                 }
             )
