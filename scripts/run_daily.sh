@@ -58,7 +58,10 @@ GATEWAY_DB="$SHADOW_DIR/gateway.sqlite3"
 # 资源清理函数：防止 OOM（僵尸 Chromium 进程）+ 删除锁文件
 cleanup() {
     # 清理锁文件（无论成功失败都删除，避免下次被锁跳过）
-    rm -f "$PROJECT_DIR/.cron_running.lock"
+    # 只删自己的锁: 锁过期被下一实例接管后,无条件删除会拆掉它的锁
+    if grep -q "^$$ " "$PROJECT_DIR/.cron_running.lock" 2>/dev/null; then
+        rm -f "$PROJECT_DIR/.cron_running.lock"
+    fi
     
     # nodriver 使用 google-chrome，Playwright 使用 chromium_headless_shell
     pkill -f "google-chrome.*headless" 2>/dev/null || true
@@ -94,7 +97,10 @@ LOCK_WINDOW_MINUTES=60
 
 if [ -f "$LOCKFILE" ]; then
     # 检查锁文件修改时间是否在保护窗口内
-    LOCK_AGE_MIN=$(($(date +%s) - $(stat -c %Y "$LOCKFILE" 2>/dev/null || echo 0)))
+    # 跨平台 mtime: Linux stat -c %Y / macOS stat -f %m
+    # (20261009 修复: BSD stat -c 报 illegal option → 兜底 echo 0 → 锁龄恒为巨值,锁完全失效)
+    LOCK_MTIME=$(stat -c %Y "$LOCKFILE" 2>/dev/null || stat -f %m "$LOCKFILE" 2>/dev/null || echo 0)
+    LOCK_AGE_MIN=$(($(date +%s) - LOCK_MTIME))
     LOCK_AGE_MIN=$((LOCK_AGE_MIN / 60))
     
     if [ "$LOCK_AGE_MIN" -lt "$LOCK_WINDOW_MINUTES" ]; then
@@ -109,7 +115,7 @@ fi
 trap 'cleanup' EXIT
 
 # 写入当前 PID 和时间戳
-echo "$$ $(date +%s)" > "$LOCKFILE"
+printf '%s %s\n' "$$" "$(date +%s)" > "$LOCKFILE.tmp" && mv -f "$LOCKFILE.tmp" "$LOCKFILE"
 
 echo "========================================" >> "$LOG_FILE"
 echo "[$(date)] 开始执行雪球爬虫流程 v9 (nodriver)" >> "$LOG_FILE"
