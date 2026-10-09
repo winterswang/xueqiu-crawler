@@ -756,6 +756,64 @@ def test_cli_verify_passes_when_cooldown_expired(tmp_path, monkeypatch, site_con
     assert exit_code == 0
 
 
+def test_detail_scope_failure_does_not_fall_back_to_another_backend(
+    tmp_path, site_config
+):
+    """详情级失败不换后端 —— 后端不是问题所在.
+
+    回归（2026-10-09 线上）：4 个账号因**详情**被拦回退到 nodriver，nodriver 去拉
+    时间线、撞上真 WAF → 变成账号级硬失败 → 熔断跳闸。回退决策原来只看 status。
+    """
+    store = GatewayStore(tmp_path / "gateway.sqlite3")
+    backend = scripted_backend(
+        [
+            result(
+                AttemptStatus.BLOCKED_WAF,
+                error="waf_content:1",
+                scope=AttemptScope.DETAIL,
+            )
+        ]
+    )
+    clock = FakeClock()
+
+    Orchestrator(
+        store=store,
+        site_config=site_config,  # backend_priority = (opencli, nodriver)
+        backend=backend,
+        clock=clock,
+        sleep=clock.sleep,
+    ).run(purpose="daily", tasks=[TaskSpec("user_timeline", "1")])
+
+    assert [name for _, name in backend.calls] == ["opencli"], "不该回退到 nodriver"
+
+
+def test_account_scope_failure_still_falls_back(tmp_path, site_config):
+    """账号级失败仍然回退（列表都拿不到 → 换个后端确实可能有用）."""
+    store = GatewayStore(tmp_path / "gateway.sqlite3")
+    backend = scripted_backend(
+        [
+            result(
+                AttemptStatus.BLOCKED_WAF,
+                error="waf_blocked",
+                scope=AttemptScope.ACCOUNT,
+            ),
+            result(AttemptStatus.SUCCESS, new_articles=1, saved_articles=1),
+        ]
+    )
+    clock = FakeClock()
+
+    summary = Orchestrator(
+        store=store,
+        site_config=site_config,
+        backend=backend,
+        clock=clock,
+        sleep=clock.sleep,
+    ).run(purpose="daily", tasks=[TaskSpec("user_timeline", "1")])
+
+    assert [name for _, name in backend.calls] == ["opencli", "nodriver"]
+    assert summary["successful"] == 1
+
+
 def test_detail_scope_failures_never_open_the_circuit(tmp_path, site_config):
     """端到端钉住 scope 传播：适配器的 DETAIL 级失败不能触发站点级熔断.
 

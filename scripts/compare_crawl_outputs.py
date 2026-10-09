@@ -173,15 +173,34 @@ def compare_articles(
     )
 
 
-def gateway_attempt_statuses(db_path: Path) -> dict[str, int]:
-    """影子库里的 attempt 状态分布，用于回答「为什么没数据」。不影响判定。"""
+def gateway_attempt_statuses(db_path: Path, day: str | None = None) -> dict[str, int]:
+    """影子库里的 attempt 状态分布，用于回答「为什么没数据」。不影响判定。
+
+    `day` 是必需的实参语义：给了就**只统计那一天的 job**。原来不过滤日期，
+    于是把影子库里**历史所有运行**累加在一起 —— 2026-10-09 实测今早那轮
+    21 次尝试被报成 57 次，还混进前一天的 8 条 `circuit_open`，直接读出
+    「今早熔断跳了 8 个账号」这种不存在的因果关系。
+    """
     if not db_path.exists():
         return {}
     try:
         with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as connection:
-            rows = connection.execute(
-                "SELECT status, COUNT(*) FROM attempts GROUP BY status"
-            ).fetchall()
+            if day:
+                rows = connection.execute(
+                    """
+                    SELECT a.status, COUNT(*)
+                    FROM attempts a
+                    JOIN tasks t ON t.id = a.task_id
+                    JOIN jobs j ON j.id = t.job_id
+                    WHERE date(j.started_at, 'unixepoch', 'localtime') = ?
+                    GROUP BY a.status
+                    """,
+                    (day,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT status, COUNT(*) FROM attempts GROUP BY status"
+                ).fetchall()
     except sqlite3.Error:
         return {}
     return {str(status): int(count) for status, count in rows}
@@ -214,7 +233,7 @@ def build_report(
         "gateway_failed": stats["gateway"]["failed"],
     }
     if gateway_db is not None:
-        failures["gateway_attempt_statuses"] = gateway_attempt_statuses(gateway_db)
+        failures["gateway_attempt_statuses"] = gateway_attempt_statuses(gateway_db, day)
 
     return {
         "date": day,
