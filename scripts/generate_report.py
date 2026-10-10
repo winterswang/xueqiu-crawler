@@ -190,6 +190,15 @@ def generate_today_report(
         # 复用 generate_daily_report 生成，格式与正常日报完全一致。
         today = datetime.now().strftime('%Y-%m-%d')
         no_update_path = output_path or f"{data_dir}/daily_reports/{today}.md"
+        # 爬2(20261009): 索引被清后重跑会走到这里 —— 当天可能已有一份有内容
+        # 的好日报(早前有新增时生成)。无条件写空壳 = 好日报被覆盖，叠加 ⑤ 的
+        # 发布幂等还会把空版本推给 IMA。已有非空日报 → 保留原文直接返回。
+        out_file = Path(no_update_path)
+        if out_file.exists() and out_file.stat().st_size > 0:
+            kept = out_file.read_text(encoding='utf-8')
+            logger.info("今日已有日报 (%s, %d B)，不以「无新增」空壳覆盖",
+                        out_file.name, out_file.stat().st_size)
+            return kept
         report = generate_daily_report([], [], no_update_path)
         logger.info(f"已生成「今日无新增」最小日报: {no_update_path}")
         return report
