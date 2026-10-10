@@ -50,6 +50,20 @@ def test_no_articles_report_is_well_formed(tmp_path):
     assert '今日新增' in text
 
 
+def test_existing_report_not_downgraded_to_empty(tmp_path):
+    """爬2(20261009) 回归：索引被清后重跑，0 新增不得把当天已有内容的好日报
+    覆盖成「无新增」空壳（叠加发布幂等还会把空版本推给 IMA）。"""
+    data_dir = _empty_data_dir(tmp_path)
+    out = data_dir / 'daily_reports' / 'no-update.md'
+    good = '价值投资日报\n\n今日新增 3 篇：AAA、BBB、CCC\n'
+    out.write_text(good, encoding='utf-8')
+
+    text = generate_today_report(data_dir=str(data_dir), output_path=str(out))
+
+    assert out.read_text(encoding='utf-8') == good
+    assert '今日新增 3 篇' in text
+
+
 def test_no_articles_does_not_call_llm(tmp_path):
     """空数据路径不应实例化分析器（避免无谓的 LLM 调用与费用）。"""
     data_dir = _empty_data_dir(tmp_path)

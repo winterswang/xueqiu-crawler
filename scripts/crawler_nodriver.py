@@ -547,6 +547,11 @@ class XueqiuCrawlerNodriver:
             if comment_m:
                 detail['comments'] = int(comment_m.group(1))
 
+        except WafDetectedError:
+            # 爬1(20261009): 详情页 WAF 必须上抛走分级熔断 —— 此前被下面的
+            # 宽 except 吞成解析失败, 详情级 WAF 处理全是死代码, 被拦文章
+            # 静默丢弃且不计 blocked (审计价值投资线 P1#1)。
+            raise
         except Exception as e:
             self.logger.error(f"解析文章详情失败: {e}")
 
