@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+from analyze_opencli_usage import _parse_ts as analyze_parse_ts  # noqa: E402
 from analyze_opencli_usage import (  # noqa: E402
     SITE_OPERATIONS,
     _peak,
@@ -242,7 +243,6 @@ def test_adapter_ledger_is_folded_in_without_breaking_old_keys(tmp_path, monkeyp
                 "rate_waited_ms": 0,
                 "rate_reserved_ms": 10925,
                 "long_pause_ms": 0,
-                "inline_at_acquire": None,
                 "inflight_at_acquire": 2,
                 "concurrency_max": None,
                 "overflowed": False,
@@ -264,15 +264,37 @@ def test_adapter_ledger_is_folded_in_without_breaking_old_keys(tmp_path, monkeyp
     assert summary["enforced"] is False, "没配 concurrency 时应报告「观测模式」"
 
 
-def test_uncovered_operations_flags_browser_calls():
-    """`browser:*` 不经钩子、不受插件治理 —— 报告里必须单列，否则会被误算成已覆盖。"""
+def test_uncovered_operations_flags_only_navigating_browser_calls():
+    """只列 `browser:open`（**会真导航**那个），别把本地交互也算成风险。
+
+    `browser:get / extract / close` 只跟已打开的本地标签页交互、不发站点请求
+    （限速器自己的注释就是这么写的）。把它们一起算作「覆盖不到」会把无害的本地
+    操作说成风险，反而把真正该看的 `browser:open` 淹掉。
+    """
     cutoff = datetime.now() - timedelta(days=3650)
     rows = [
         {"ts": "2026-10-12T08:00:00", "operation": "browser:open"},
         {"ts": "2026-10-12T08:00:01", "operation": "browser:extract"},
-        {"ts": "2026-10-12T08:00:02", "operation": "article"},
+        {"ts": "2026-10-12T08:00:02", "operation": "browser:close"},
+        {"ts": "2026-10-12T08:00:03", "operation": "article"},
     ]
     counter = uncovered_operations(rows, cutoff)
     assert counter["browser:open"] == 1
-    assert counter["browser:extract"] == 1
+    assert "browser:extract" not in counter, "本地交互、不发站点请求，不该算覆盖不到"
+    assert "browser:close" not in counter
     assert "article" not in counter, "article 走钩子、是被治理的，不该算作覆盖不到"
+
+
+def test_adapter_timestamp_with_z_parses_on_any_python():
+    """带 `Z` 的 UTC 时间戳必须能解析并落到正确的时间窗内。
+
+    `datetime.fromisoformat` 到 Python 3.11 才认尾部 `Z`；低版本会抛 ValueError →
+    每行都解析成 None → 整块静默读成「没有记录」。这条测试直接钉住解析结果。
+    """
+    row = {"ts": "2026-10-12T04:41:28.757Z"}
+    parsed = analyze_parse_ts(row)
+    assert parsed is not None, "带 Z 的时间戳解析失败了 —— 低版本 Python 会把整块读成空"
+    assert parsed.year == 2026 and parsed.month == 10 and parsed.day == 12
+
+    summary = summarize_adapter([row], datetime(2026, 1, 1))
+    assert summary["total"] == 1, "该行应落在时间窗内"

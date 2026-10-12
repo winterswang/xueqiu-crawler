@@ -109,6 +109,9 @@ function guardFields(guard) {
     rate_fail_open: rate.fail_open ?? (guard.rateError ? true : null),
     // concurrency_max 为 null = 观测模式（只看不拦）。
     concurrency_max: conc.max ?? null,
+    // 配了 `concurrency` 但 `concurrency_enabled: false` 时闸门仍是观测态 ——
+    // 只凭 max 会被读成「已生效」（review 指出）。这个字段才是权威。
+    concurrency_enforced: conc.enforced ?? null,
     inflight_at_acquire: conc.inflight ?? null,
     acquired_slot: conc.acquired ?? null,
     concurrency_waited_ms: conc.waited_ms ?? null,

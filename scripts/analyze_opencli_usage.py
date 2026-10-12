@@ -54,12 +54,16 @@ SITE_OPERATIONS = frozenset(
 # 插件侧台账（opencli-adapters/lib/requestlog.js 写）。它记的是**传输层真相**：
 # 域名、限频等待/长停、被跳过原因、真实并发。Python 台账看不到这些 ——
 # 尤其是「限速器自己的决策」，2026-10-12 那次排查就栽在这个盲区上。
-ADAPTER_LOG = Path(os.path.expanduser("~/.opencli/adapter-calls.jsonl"))
+ADAPTER_LOG = Path("~/.opencli/adapter-calls.jsonl").expanduser()
 
 # 插件**看不见**的操作：`opencli browser …` 不经过任何钩子（上游
 # jackwener/opencli#2606），所以它们既不在插件台账里、也不受插件层的限频与并发治理。
 # 报告里要把它们单列，否则按插件台账算「域名密度」会漏掉这一大块。
-UNCOVERED_OPERATION_PREFIXES = ("browser:",)
+#
+# 只列 `browser:open`（**会真导航到目标站点**那一个）。`browser:get/extract/close`
+# 只跟已打开的本地标签页交互、不发站点请求 —— 把它们一起算作「覆盖不到」会把一个
+# 无害的本地操作说成风险，反而把真正该看的那个淹掉。
+UNCOVERED_OPERATION_PREFIXES = ("browser:open",)
 
 
 def _adapter_log_path(explicit: str | None) -> Path | None:
@@ -109,9 +113,14 @@ def _parse_ts(record: dict) -> datetime | None:
     插件台账是带 `Z` 的 UTC（`2026-10-12T04:41:28.757Z`）。不归一化就会在比较时抛
     `TypeError: can't compare offset-naive and offset-aware datetimes`。
     """
-    raw = record.get("ts") or ""
+    raw = str(record.get("ts") or "")
+    # `fromisoformat` 到 Python 3.11 才认尾部的 `Z`；低版本（含 macOS 自带 python3）
+    # 会抛 ValueError → 每一行都解析成 None → 整块静默读成「没有记录」。
+    # 显式换成 `+00:00` 就不挑版本了。
+    if raw.endswith(("Z", "z")):
+        raw = f"{raw[:-1]}+00:00"
     try:
-        ts = datetime.fromisoformat(str(raw))
+        ts = datetime.fromisoformat(raw)
     except ValueError:
         return None
     return ts.astimezone().replace(tzinfo=None) if ts.tzinfo else ts
@@ -209,14 +218,19 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
 
 def _in_window(row: dict, cutoff: datetime, end: datetime | None) -> bool:
     ts = _parse_ts(row)
-    return bool(ts) and ts >= cutoff and (end is None or ts < end)
+    if ts is None:  # 先收窄类型，避免 mypy 报「datetime 与 None 不可比较」
+        return False
+    return ts >= cutoff and (end is None or ts < end)
 
 
 def summarize_adapter(
     records: list[dict], cutoff: datetime, end: datetime | None = None
 ) -> dict:
     """插件台账摘要 —— 回答「打哪个域名、等了多久、并发几路、有没有被放行」。"""
-    rows = [row for row in records if _in_window(row, cutoff, end)]
+    rows = sorted(
+        (row for row in records if _in_window(row, cutoff, end)),
+        key=lambda row: _parse_ts(row) or datetime.min,
+    )
     return {
         "total": len(rows),
         "first": str(rows[0].get("started_at", "")) if rows else "",
@@ -230,7 +244,15 @@ def summarize_adapter(
             for r in rows
             if isinstance(r.get("inflight_at_acquire"), int)
         ),
-        "enforced": any(r.get("concurrency_max") for r in rows),
+        # 用行内的 `concurrency_enforced`（闸门真正生效与否），而不是「配了 max」——
+        # 配了 max 但 `concurrency_enabled: false` 时仍是观测态，只看 max 会误报「已生效」。
+        # 老行没有这个字段时退回按 max 判断。
+        "enforced": any(
+            r.get("concurrency_enforced")
+            if r.get("concurrency_enforced") is not None
+            else r.get("concurrency_max")
+            for r in rows
+        ),
         "rate_waited_ms": sum(int(r.get("rate_waited_ms") or 0) for r in rows),
         "long_pause_hits": sum(1 for r in rows if (r.get("long_pause_ms") or 0) > 0),
         "skipped": Counter(
@@ -242,7 +264,9 @@ def summarize_adapter(
         "rate_errors": sum(1 for r in rows if r.get("rate_error")),
         "overflowed": sum(1 for r in rows if r.get("overflowed")),
         "gate_fail_open": sum(1 for r in rows if r.get("gate_fail_open")),
-        "failed": sum(1 for r in rows if not r.get("ok")),
+        # `ok` 缺失（例如超长行被降级截断成 {schema, ts, layer, truncated}）不等于失败，
+        # 显式判 `is False`，否则会把截断的成功行算成失败、还带不出错误码。
+        "failed": sum(1 for r in rows if r.get("ok") is False),
         "error_codes": Counter(
             str(r.get("error_code")) for r in rows if r.get("error_code")
         ),
@@ -543,6 +567,11 @@ def main() -> int:
                     "peak_minutes_all": dict(summary["by_minute"].most_common(20)),
                     # 插件侧台账（传输层真相）。键是**新增**的，老消费者不受影响。
                     "adapter_total": adapter.get("total", 0),
+                    "adapter_first": adapter.get("first", ""),
+                    "adapter_last": adapter.get("last", ""),
+                    "adapter_by_operation": dict(
+                        adapter.get("by_operation", Counter())
+                    ),
                     "adapter_by_domain": dict(adapter.get("by_domain", Counter())),
                     "adapter_by_source_kind": dict(
                         adapter.get("by_source_kind", Counter())
