@@ -34,7 +34,7 @@
 
 | | |
 |---|---|
-| 入参 | `user_id`（位置参数，必填，纯数字）、`count`（int，默认 20，期望条数）、`page`（int，默认 1） |
+| 入参 | `--user_id <value>`（**命名选项，不是位置参数**，必填，纯数字）、`--count`（int，默认 20，期望条数）、`--page`（int，默认 1）。⚠️ 本插件里**唯一**不用位置参数的命令 —— 别照 `comments` / `news` 的样子敲 |
 | 输出字段 | `article_id`、`title`、`author`、`time`、`created_at`、`likes`、`replies`、`forwards`、`text`、`is_column`（bool）、`url` |
 | 错误 | `ArgumentError`（user_id 非法）、`CommandExecutionError`（含风控页） |
 | 消费者依赖 | `opencli_extractor.get_user_articles` 取 `article_id/title/author/time/likes/replies/url/text`；`crawler_nodriver` 另用 **`is_column`** 判断是否专栏（跳过非专栏是有意设计） |
@@ -115,7 +115,7 @@ opencli 的错误类带 `code`（插件台账的 `error_code`、Python 台账的
 | 约定 | 内容 | 谁依赖 / 谁守着 |
 |---|---|---|
 | **超时预算** | 限速器的等待发生在 **opencli 子进程内部**，会被调用方 `subprocess.run(timeout=…)` 一并计时。最坏 = 取锁 2s + 长停 75s + 执行 ≈ **87s** | 调用方超时统一 120s：`opencli_extractor.py`、`fetcher_opencli.py`、`detail_fetcher.py`。crawler 侧有解析插件源码的双向守卫测试；monitor 侧见 §6 |
-| **6 秒下限** | 任何站点策略的 `min_delay_s` **不得低于 6** | `scripts/schedule-checks/peak.mjs` 用「6 秒下限 ⇒ 一分钟不可能超过 10 次」判定「限速器被绕过」 |
+| **6 秒下限** | **内置站点策略**（尤其 `web`）的 `min_delay_s` 不得低于 6。⚠️ 这不是全站硬下限：`DEFAULT_POLICY` 兜底是 **3**，用户 `rate-limits.json` 也不受它约束 | `scripts/schedule-checks/peak.mjs` 用「6 秒下限 ⇒ 一分钟不可能超过 10 次」判定「限速器被绕过」；守护测试 `test_builtin_sites_declare_web_with_pacing` **只断言 `web`**（`xueqiu`/`xiaohongshu` 是恰好达标，不在该不变量覆盖内） |
 | **并发闸** | 默认 `concurrency` 缺省 = **观测模式**（只记录不拦）。启用（`concurrency: 1/2/3`）前**必须**把调用方超时抬到 ~150s | `lib/concurrency.js` 文件头 + README；`test_concurrency_gate_defaults_to_observe_only` |
 | **两份台账** | 插件台账 `~/.opencli/adapter-calls.jsonl` = 传输层真相；Python 台账 `~/.opencli/xueqiu-calls.jsonl` = 调用方意图与结局。用 `ppid` 或 `XUEQIU_OPENCLI_CALL_ID` join | `lib/requestlog.js` 文件头 |
 | **hook 注册** | `rate-limit.js` 必须保留 `onBeforeExecute(` 字样，否则 discovery 不加载它 → **整套限速与台账静默消失** | `tests/test_opencli_adapter_plugin_integrity.py` |
@@ -137,7 +137,7 @@ opencli 的错误类带 `code`（插件台账的 `error_code`、Python 台账的
 | 你要做的改动 | 必须一起改 | 会被哪条测试拦住 |
 |---|---|---|
 | 改**输出字段名** | 所有消费方解析处（§2 各命令的「消费者依赖」行）+ `CONTRACT.md` 本节 | ⚠️ **没有自动检查**（见 §7 盲区） |
-| 改**命令名** | `scripts/analyze_opencli_usage.py` 的 `SITE_OPERATIONS` + `install.sh` 的校验清单 + README 文件表 | `tests/test_opencli_command_names.py` |
+| 改**命令名** | `scripts/analyze_opencli_usage.py` 的 `SITE_OPERATIONS`（**有测试守**）+ `install.sh` 的校验清单 + README 文件表（**无自动检查，靠人**） | `tests/test_opencli_command_names.py`（只覆盖 `SITE_OPERATIONS` 那半边；漏改 `install.sh` 它不会红，要到执行 `install.sh` 时才退出 1） |
 | 改**错误码/错误类** | 消费方的 `BLOCKED_WAF` / `EMPTY_RESULT` / `风控验证页` 判定 | ⚠️ 无自动检查 |
 | 改**节流参数**（`min/max/long_pause`） | 三个仓的调用方超时（`opencli_extractor.py` / `fetcher_opencli.py` / `detail_fetcher.py`） | `test_opencli_throttle.py`（crawler）+ `test_opencli_contract.py`（monitor） |
 | 改**`min_delay_s`** 低于 6 | `peak.mjs` 的 `PEAK_IMPOSSIBLE` 判据 | `test_builtin_sites_declare_web_with_pacing` |

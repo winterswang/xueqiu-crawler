@@ -232,6 +232,61 @@ def _local_ts(value: object) -> datetime | None:
     return _parse_ts({"ts": value})
 
 
+# 同一 pid 的两次调用间隔超过它就当成**两轮**任务。
+# 防的是 OS 复用 pid：长窗（如 `--hours 72`）下，一个已退出的进程的 pid 被新进程
+# 接着用，两者会被并成一个簇，渲染出「一个进程 N 次，08:00–18:00」的假跨度。
+_CLUSTER_GAP_SECONDS = 2 * 60 * 60
+
+
+def _segments(group: list[dict]) -> list[list[dict]]:
+    """把同一进程的调用按时间断裂点切成连续段（见 `_CLUSTER_GAP_SECONDS`）。
+
+    解析不出时间的行自成一段（它们无法参与时间排序，但仍要计数 —— 不能吞掉）。
+    """
+    timed = sorted(
+        ((ts, row) for row in group if (ts := _local_ts(row.get("started_at")))),
+        key=lambda pair: pair[0],
+    )
+    segments: list[list[dict]] = []
+    current: list[dict] = []
+    previous: datetime | None = None
+    for ts, row in timed:
+        if (
+            previous is not None
+            and (ts - previous).total_seconds() > _CLUSTER_GAP_SECONDS
+        ):
+            segments.append(current)
+            current = []
+        current.append(row)
+        previous = ts
+    if current:
+        segments.append(current)
+    untimed = [row for row in group if _local_ts(row.get("started_at")) is None]
+    if untimed:
+        segments.append(untimed)
+    return segments
+
+
+def _cluster_entry(ppid: object, group: list[dict]) -> dict:
+    """一段同进程的调用 → 报告里的一「簇」。"""
+    stamps = sorted(ts for ts in (_local_ts(r.get("started_at")) for r in group) if ts)
+    return {
+        "ppid": ppid,
+        "count": len(group),
+        "domains": Counter(str(r.get("domain_key") or "?") for r in group),
+        "operations": Counter(str(r.get("operation") or "?") for r in group),
+        "targets": Counter(
+            str(r.get("target") or "") for r in group if r.get("target")
+        ).most_common(3),
+        # 本地时间（不是原始 UTC 串）—— 渲染端 `[11:16]` 切的就是 `HH:MM`。
+        "first": stamps[0].isoformat() if stamps else "",
+        "last": stamps[-1].isoformat() if stamps else "",
+        "error_codes": Counter(
+            str(r.get("error_code")) for r in group if r.get("error_code")
+        ),
+    }
+
+
 def _unattributed_clusters(
     rows: list[dict], min_count: int = 5
 ) -> tuple[list[dict], list[dict]]:
@@ -241,10 +296,12 @@ def _unattributed_clusters(
     无法区分 —— 但**同一个进程连着发很多次**几乎必然是一个脚本/一个 agent 会话在批量抓。
     聚起来才能看出「有一轮 N 次、打哪个域名、关键词是什么、失败了什么」。
 
+    同一 ppid 的调用还会按时间断裂切段（`_segments`），避免 pid 复用把两个无关进程并簇。
+
     ⚠️ 这个前提对「**每次调用各起一个 shell**」的模式不成立：agent 会话来一条敲一条、
     或逐条手敲时，每次 opencli 的 ppid 都不同，全都落进 `len < min_count` 的散点里，
     永远看不到。所以本函数只负责 **长驻进程** 那一半，**未达标的行原样返回**，由调用方
-    再按「目标」聚合一次（`_unattributed_by_target`）——两条腿合起来才覆盖得住。
+    再按「域名/命令」聚合一次（`_unattributed_by_domain_operation`）——两条腿合起来才覆盖得住。
 
     返回 `(达到 min_count 的簇, 未达标的散点行)`。
     """
@@ -255,45 +312,31 @@ def _unattributed_clusters(
         if kind and kind != "manual":
             continue
         pid = row.get("ppid")
-        if pid is None:  # 缺 ppid 的行不能吞掉，交给调用方按目标聚合
+        if pid is None:  # 缺 ppid 的行不能吞掉，交给调用方按域名/命令聚合
             leftover.append(row)
             continue
         buckets.setdefault(pid, []).append(row)
 
     clusters: list[dict] = []
     for pid, group in buckets.items():
-        if len(group) < min_count:
-            leftover.extend(group)
-            continue
-        stamps = sorted(
-            ts for ts in (_local_ts(r.get("started_at")) for r in group) if ts
-        )
-        clusters.append(
-            {
-                "ppid": pid,
-                "count": len(group),
-                "domains": Counter(str(r.get("domain_key") or "?") for r in group),
-                "operations": Counter(str(r.get("operation") or "?") for r in group),
-                "targets": Counter(
-                    str(r.get("target") or "") for r in group if r.get("target")
-                ).most_common(3),
-                # 本地时间（不是原始 UTC 串）—— 渲染端 `[11:16]` 切的就是 `HH:MM`。
-                "first": stamps[0].isoformat() if stamps else "",
-                "last": stamps[-1].isoformat() if stamps else "",
-                "error_codes": Counter(
-                    str(r.get("error_code")) for r in group if r.get("error_code")
-                ),
-            }
-        )
+        for segment in _segments(group):
+            if len(segment) < min_count:
+                leftover.extend(segment)
+            else:
+                clusters.append(_cluster_entry(pid, segment))
     clusters.sort(key=lambda c: -c["count"])
     return clusters, leftover
 
 
-def _unattributed_by_target(rows: list[dict], top: int = 4) -> list[tuple[str, int]]:
+def _unattributed_by_domain_operation(
+    rows: list[dict], top: int = 4
+) -> list[tuple[str, int]]:
     """把散点（未聚成进程簇的未标身份调用）按「域名/命令」聚合。
 
     补的正是 ppid 聚簇漏掉的那一半：**每次调用各起一个 shell** 时 ppid 每次不同，
-    只能靠「打同一个目标」把同一轮任务认出来。返回 `[("xiaohongshu/search", 12), …]`。
+    只能靠「打同一个域名+命令」把同一轮任务认出来。返回 `[("xiaohongshu/search", 12), …]`。
+
+    注意返回的是 `域名/命令` 组合串，**不是**台账里的 `target` 字段（那是关键词/URL）。
     """
     counter = Counter(
         f"{r.get('domain_key') or '?'}/{r.get('operation') or '?'}" for r in rows
@@ -351,11 +394,13 @@ def summarize_adapter(
         ),
         # `web` 调用没能解析出目标域名 = 掉到弱档（6–8s、无长停）。这是「被 WAF 盯的
         # 详情页静默失去保护」的信号，必须能一眼看到。
-        # 「管理外流量」：未标身份的调用，先按进程聚类（长驻进程），散点再按目标聚合
+        # 「管理外流量」：未标身份的调用，先按进程聚类（长驻进程），散点再按域名/命令聚合
         # （见 _unattributed_clusters / _unattributed_by_target 的 docstring）
         "unattributed": clusters,
         "unattributed_singles": len(singles_rows),
-        "unattributed_singles_by_target": _unattributed_by_target(singles_rows),
+        "unattributed_singles_by_domain_operation": _unattributed_by_domain_operation(
+            singles_rows
+        ),
         "unrouted_web": sum(
             1
             for r in rows
@@ -377,6 +422,50 @@ def uncovered_operations(
         if operation.startswith(UNCOVERED_OPERATION_PREFIXES):
             counter[operation] += 1
     return counter
+
+
+def _render_unattributed(adapter: dict, lines: list[str]) -> None:
+    """「管理外流量」那一段：没有未标身份的调用就什么都不做。
+
+    两条腿都用上 —— 长驻进程看的是一簇 N 次，散点看的是「域名/命令」的分布
+    （见 `_unattributed_clusters` / `_unattributed_by_domain_operation`）。
+    """
+    clusters = adapter.get("unattributed") or []
+    singles = adapter.get("unattributed_singles") or 0
+    if not clusters and not singles:
+        return
+    lines.append("")
+    lines.append("  —— 管理外流量（未标身份的调用）——")
+    for c in clusters:
+        # first/last 已在 _unattributed_clusters 里归一成本地时间；空则整段省掉
+        span = f"{c['first'][11:16]}–{c['last'][11:16]}" if c["first"] else ""
+        domains = "  ".join(f"{k} {v}" for k, v in c["domains"].most_common())
+        ops = "  ".join(f"{k} {v}" for k, v in c["operations"].most_common(4))
+        tail = f"，{span}" if span else ""
+        lines.append(f"  ⚠️ 进程 {c['ppid']}：{c['count']} 次，{domains}{tail}")
+        lines.append(f"     command: {ops}")
+        if c["targets"]:
+            lines.append(
+                "     关键词 top: " + " / ".join(str(t) for t, _ in c["targets"])
+            )
+        if c["error_codes"]:
+            lines.append(
+                "     失败: "
+                + "，".join(f"{k} {v}" for k, v in c["error_codes"].most_common())
+            )
+    if singles:
+        # 每次调用各起一个 shell 时 ppid 每次不同 → 聚不成进程簇。按域名/命令再聚一次，
+        # 否则一条批量任务会整片消失在「< 5 次」里。
+        by_domain_op = adapter.get("unattributed_singles_by_domain_operation") or []
+        detail = "，".join(f"{k} {v}" for k, v in by_domain_op)
+        lines.append(
+            f"  · 另有 {singles} 次未聚成进程簇（每次调用各起一个 shell 时就会这样）"
+        )
+        if detail:
+            lines.append(f"     按域名/命令聚合: {detail}")
+    lines.append(
+        "  → 这些调用没设 XUEQIU_CALL_SOURCE，来源（脚本 / agent 会话 / 手敲）无法区分"
+    )
 
 
 def render_adapter(adapter: dict, uncovered: Counter) -> str:
@@ -428,41 +517,7 @@ def render_adapter(adapter: dict, uncovered: Counter) -> str:
             )
             lines.append(f"  失败 {adapter['failed']} 次（{codes or '无错误码'}）")
 
-    clusters = adapter.get("unattributed") or []
-    if clusters or adapter.get("unattributed_singles"):
-        lines.append("")
-        lines.append("  —— 管理外流量（未标身份的调用）——")
-        for c in clusters:
-            # first/last 已在 _unattributed_clusters 里归一成本地时间；空则整段省掉
-            span = f"{c['first'][11:16]}–{c['last'][11:16]}" if c["first"] else ""
-            domains = "  ".join(f"{k} {v}" for k, v in c["domains"].most_common())
-            ops = "  ".join(f"{k} {v}" for k, v in c["operations"].most_common(4))
-            tail = f"，{span}" if span else ""
-            lines.append(f"  ⚠️ 进程 {c['ppid']}：{c['count']} 次，{domains}{tail}")
-            lines.append(f"     command: {ops}")
-            if c["targets"]:
-                lines.append(
-                    "     关键词 top: " + " / ".join(str(t) for t, _ in c["targets"])
-                )
-            if c["error_codes"]:
-                lines.append(
-                    "     失败: "
-                    + "，".join(f"{k} {v}" for k, v in c["error_codes"].most_common())
-                )
-        if adapter.get("unattributed_singles"):
-            # 每次调用各起一个 shell 时 ppid 每次不同 → 聚不成进程簇。按目标再聚一次，
-            # 否则一条批量任务会整片消失在「< 5 次」里。
-            by_target = adapter.get("unattributed_singles_by_target") or []
-            detail = "，".join(f"{k} {v}" for k, v in by_target)
-            lines.append(
-                f"  · 另有 {adapter['unattributed_singles']} 次未聚成进程簇"
-                "（每次调用各起一个 shell 时就会这样）"
-            )
-            if detail:
-                lines.append(f"     按目标聚合: {detail}")
-        lines.append(
-            "  → 这些调用没设 XUEQIU_CALL_SOURCE，来源（脚本 / agent 会话 / 手敲）无法区分"
-        )
+    _render_unattributed(adapter, lines)
 
     if uncovered:
         lines.append(
@@ -724,10 +779,11 @@ def main() -> int:
                     "adapter_unattributed_singles": adapter.get(
                         "unattributed_singles", 0
                     ),
-                    "adapter_unattributed_singles_by_target": [
-                        {"target": k, "count": v}
+                    "adapter_unattributed_singles_by_domain_operation": [
+                        {"domain_operation": k, "count": v}
                         for k, v in (
-                            adapter.get("unattributed_singles_by_target") or []
+                            adapter.get("unattributed_singles_by_domain_operation")
+                            or []
                         )
                     ],
                     # 不经钩子、不受插件治理的调用（`browser:*`）—— 不计入域名密度

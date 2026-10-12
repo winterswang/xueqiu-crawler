@@ -24,7 +24,7 @@ from analyze_opencli_usage import _parse_ts as analyze_parse_ts  # noqa: E402
 from analyze_opencli_usage import (  # noqa: E402
     SITE_OPERATIONS,
     _peak,
-    _unattributed_by_target,
+    _unattributed_by_domain_operation,
     _unattributed_clusters,
     load_records,
     render,
@@ -384,7 +384,7 @@ def test_shell_per_call_is_recovered_by_target():
     clusters, leftover = _unattributed_clusters(rows)
     assert clusters == [], "8 个不同 ppid 不该被聚成一个进程簇"
     assert len(leftover) == 8
-    assert _unattributed_by_target(leftover) == [("xiaohongshu/search", 8)]
+    assert _unattributed_by_domain_operation(leftover) == [("xiaohongshu/search", 8)]
 
 
 def test_only_manual_rows_considered_and_missing_ppid_not_dropped():
@@ -401,19 +401,23 @@ def test_only_manual_rows_considered_and_missing_ppid_not_dropped():
 
 
 def test_unparseable_time_does_not_blank_out_the_elsewhere_span():
-    """一行时间戳缺失，不能把整簇的跨度抹成空、也不能让它只剩半截。
+    """一行时间戳坏掉，不能把**其余**行的跨度抹成空、也不能让它只剩半截。
 
     旧实现用 `min(str(started_at))`：空串恒为最小/最大，于是**一行坏数据**就让整簇
-    的 `first`/`last` 变成 ""，渲染出 `–` 这种空跨度。次数也不该因此少算。
+    的 `first`/`last` 变成 ""，渲染出 `–` 这种空跨度。
+
+    坏行本身排不上时间轴 → 自成一段、落散点（它仍计入「未标身份」的散点统计，
+    只是不跟可定位的行混作同一轮）。
     """
     rows = [
         _adapter_row(9, ""),  # 坏行
-        *[_adapter_row(9, f"2026-10-12T{h:02d}:00:00.000Z") for h in (7, 8, 9, 10)],
+        *[_adapter_row(9, f"2026-10-12T{h:02d}:00:00.000Z") for h in (7, 8, 9, 10, 11)],
     ]
     clusters, leftover = _unattributed_clusters(rows)
-    assert leftover == []
+    assert len(leftover) == 1, "坏行该落散点，而不是并进某一轮"
+    assert leftover[0]["started_at"] == ""
     assert len(clusters) == 1
-    assert clusters[0]["count"] == 5, "坏行也要计入次数"
+    assert clusters[0]["count"] == 5, "可定位的 5 次仍要成簇"
     assert clusters[0]["first"], "一行坏数据把整簇跨度抹空了"
     assert clusters[0]["last"], "一行坏数据把整簇跨度抹空了"
 
@@ -434,4 +438,21 @@ def test_summarize_adapter_exposes_leftover_breakdown():
     summary = summarize_adapter(rows, datetime(2026, 1, 1))
     assert summary["unattributed"] == []
     assert summary["unattributed_singles"] == 3
-    assert summary["unattributed_singles_by_target"] == [("xiaohongshu/search", 3)]
+    assert summary["unattributed_singles_by_domain_operation"] == [
+        ("xiaohongshu/search", 3)
+    ]
+
+
+def test_same_ppid_far_apart_splits_into_two_clusters():
+    """同一 ppid、但相隔很远的调用不能被并成一簇 —— OS 会复用 pid。
+
+    长窗（`--hours 72`）下，一个已退出进程的 pid 被新进程接着用，两者会被并成
+    「一个进程 N 次，07:00–17:00」的假跨度。超过断裂阈值即切段。
+    """
+    rows = [
+        _adapter_row(4242, f"2026-10-12T{h:02d}:00:00.000Z") for h in range(5, 12)
+    ] + [_adapter_row(4242, f"2026-10-13T{h:02d}:00:00.000Z") for h in range(5, 12)]
+    clusters, leftover = _unattributed_clusters(rows)
+    assert leftover == []
+    assert len(clusters) == 2, "相隔一天的同一 pid 被并成了一簇"
+    assert {c["count"] for c in clusters} == {7}
