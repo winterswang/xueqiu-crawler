@@ -100,7 +100,7 @@ opencli 的错误类带 `code`（插件台账的 `error_code`、Python 台账的
 
 | 类 | `code` | 退出码 | 消费者该怎么处理 |
 |---|---|---|---|
-| `CliError(code, …)` | 自定义，如 **`BLOCKED_WAF`** | 由插件指定 | **确定性信号，不要重试**（重试只会对着刚被拦的 URL 再打） |
+| `CliError(code, …)` | 自定义：**`BLOCKED_WAF`**（雪球 `web article` 命中风控页）、**`SECURITY_BLOCK`**（小红书 `search` 命中「安全限制 / 账号异常」页） | 由插件指定 | **确定性信号，不要重试**（重试只会对着刚被拦的页面再打） |
 | `CommandExecutionError` | `COMMAND_EXEC` | GENERIC_ERROR | 可重试 |
 | `ArgumentError` | `ARGUMENT` | USAGE_ERROR | 别重试——参数错了，重试也一样 |
 | `EmptyResultError` | `EMPTY_RESULT` | EMPTY_RESULT | 「成功但为空」，**不是故障**（health 判定要能区分） |
@@ -151,7 +151,7 @@ opencli 的错误类带 `code`（插件台账的 `error_code`、Python 台账的
 
 1. **`browser …` 子命令不经钩子** → 不受限频/并发/台账管辖。它占实际调用量的 **~54%**（monitor 抓正文的一条主路）。上游 [jackwener/opencli#2606](https://github.com/jackwener/OpenCLI/issues/2606)。
 2. **输出字段改名没有自动检查** → 会静默让消费方拿到空值。这是本文件存在的首要原因。
-3. **不设 `XUEQIU_CALL_SOURCE` 的调用** → 台账里记 `manual`，与实际手敲无法区分。已知有两个来源：**agent 会话**（批量抓取）与**不在册的脚本**。`analyze_opencli_usage.py` 会把它们按 `ppid` 聚合成「管理外流量」。
+3. **不设 `XUEQIU_CALL_SOURCE` 的调用** → 台账里记 `manual`，与实际手敲无法区分。已知有两个来源：**agent 会话**（批量抓取）与**不在册的脚本**。`analyze_opencli_usage.py` 把它们聚合成「管理外流量」，靠两条腿：**长驻进程按 `ppid` 聚簇**，**每次调用各起一个 shell** 的散点再**按「域名/命令」聚合**一次。两条腿都不完美——前者看不见逐条敲的会话（ppid 每次不同），后者认不出「是不是同一轮任务」，只说明「同一拨目标被打了 N 次」。
 4. **`XUEQIU_OPENCLI_CALL_ID` 目前无人设置** → 两账 1:1 join 的机制空转，实际靠 `ppid` + 时间窗。
 5. **`check-drift.sh` 不在 CI** → 升级 `@jackwener/opencli` 后要人记得手动跑。
 6. **`xiaohongshu search` 在仓库里没有调用方** → 它唯一的真实消费者是 agent 会话/手敲，属于「在用但不在册」。

@@ -10,9 +10,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -20,6 +24,8 @@ from analyze_opencli_usage import _parse_ts as analyze_parse_ts  # noqa: E402
 from analyze_opencli_usage import (  # noqa: E402
     SITE_OPERATIONS,
     _peak,
+    _unattributed_by_target,
+    _unattributed_clusters,
     load_records,
     render,
     summarize,
@@ -298,3 +304,134 @@ def test_adapter_timestamp_with_z_parses_on_any_python():
 
     summary = summarize_adapter([row], datetime(2026, 1, 1))
     assert summary["total"] == 1, "该行应落在时间窗内"
+
+
+# ---------- 「管理外流量」聚类：未标身份的调用怎么归因 ----------
+#
+# `XUEQIU_CALL_SOURCE` 不设就落 `source_kind="manual"`，与「手敲一行」无法区分。
+# 读取侧要做的是**尽量还原出「谁在批量抓」**，靠两条腿：长驻进程按 ppid 聚簇，
+# 每次一 shell 的散点按「目标」再聚一次。下面几条分别钉住这两条腿与它们的边界。
+
+
+def _adapter_row(
+    ppid: object,
+    started_at: str,
+    *,
+    source_kind: str = "manual",
+    domain_key: str = "xiaohongshu",
+    operation: str = "search",
+    target: str | None = "AI工具",
+    error_code: str | None = None,
+) -> dict:
+    row: dict = {
+        "ppid": ppid,
+        "started_at": started_at,
+        "ts": started_at,
+        "source_kind": source_kind,
+        "domain_key": domain_key,
+        "operation": operation,
+    }
+    if target is not None:
+        row["target"] = target
+    if error_code is not None:
+        row["error_code"] = error_code
+    return row
+
+
+@pytest.fixture()
+def tz_shanghai():
+    """把进程时区钉到东八区。
+
+    没有它，「本地 ≠ UTC」的断言在 CI（多半跑在 UTC）下会**空转通过** —— 那时
+    `astimezone()` 归一等价于不归一，正好盖住要抓的 bug。
+    """
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "Asia/Shanghai"
+    time.tzset()
+    yield
+    if old is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = old
+    time.tzset()
+
+
+def test_cluster_span_is_local_not_utc(tz_shanghai):
+    """簇的时间跨度必须是**本地**时间，不是原始 UTC 串。
+
+    `started_at` 是插件写的 UTC（`…Z`）。此前渲染端直接 `started_at[11:16]` 切片，
+    于是在同一份报告里出现两套时钟 —— 2026-10-12 真发生过：报告印 `06:03–06:54`，
+    而那一刻本地时间是 `14:03–14:54`，差 8 小时。
+    """
+    rows = [_adapter_row(62253, f"2026-10-12T{h:02d}:00:00.000Z") for h in range(6, 12)]
+    clusters, leftover = _unattributed_clusters(rows)
+    assert leftover == []
+    assert len(clusters) == 1
+    cluster = clusters[0]
+    assert cluster["count"] == 6
+    # 06:00Z / 11:00Z → 东八区 14:00 / 19:00
+    assert cluster["first"][11:16] == "14:00", f"切出来的是 UTC：{cluster['first']}"
+    assert cluster["last"][11:16] == "19:00", f"切出来的是 UTC：{cluster['last']}"
+
+
+def test_shell_per_call_is_recovered_by_target():
+    """每次调用各起一个 shell（ppid 各不相同）时，ppid 聚簇看不见它 —— 按目标能补上。
+
+    这是那条「agent 会话逐条敲 opencli」的漏口：8 次调用 8 个 ppid，一个簇都聚不成，
+    若不补第二条腿，整轮批量任务就消失在「< 5 次」里，正是要感知的那种流量。
+    """
+    rows = [_adapter_row(70000 + i, f"2026-10-12T10:{i:02d}:00.000Z") for i in range(8)]
+    clusters, leftover = _unattributed_clusters(rows)
+    assert clusters == [], "8 个不同 ppid 不该被聚成一个进程簇"
+    assert len(leftover) == 8
+    assert _unattributed_by_target(leftover) == [("xiaohongshu/search", 8)]
+
+
+def test_only_manual_rows_considered_and_missing_ppid_not_dropped():
+    """只归因未标身份的行；缺 ppid 的行必须落散点，不能被吞掉。"""
+    rows = [
+        _adapter_row(1, "2026-10-12T10:00:00.000Z", source_kind="monitor"),
+        _adapter_row(None, "2026-10-12T10:01:00.000Z"),
+        *[_adapter_row(2, f"2026-10-12T10:0{i}:00.000Z") for i in range(2, 7)],
+    ]
+    clusters, leftover = _unattributed_clusters(rows)
+    assert [c["ppid"] for c in clusters] == [2], "monitor 行不该进簇"
+    assert len(leftover) == 1, "缺 ppid 的行被吞掉了"
+    assert leftover[0]["ppid"] is None
+
+
+def test_unparseable_time_does_not_blank_out_the_elsewhere_span():
+    """一行时间戳缺失，不能把整簇的跨度抹成空、也不能让它只剩半截。
+
+    旧实现用 `min(str(started_at))`：空串恒为最小/最大，于是**一行坏数据**就让整簇
+    的 `first`/`last` 变成 ""，渲染出 `–` 这种空跨度。次数也不该因此少算。
+    """
+    rows = [
+        _adapter_row(9, ""),  # 坏行
+        *[_adapter_row(9, f"2026-10-12T{h:02d}:00:00.000Z") for h in (7, 8, 9, 10)],
+    ]
+    clusters, leftover = _unattributed_clusters(rows)
+    assert leftover == []
+    assert len(clusters) == 1
+    assert clusters[0]["count"] == 5, "坏行也要计入次数"
+    assert clusters[0]["first"], "一行坏数据把整簇跨度抹空了"
+    assert clusters[0]["last"], "一行坏数据把整簇跨度抹空了"
+
+
+def test_cluster_with_no_parseable_time_at_all_blanks_the_span():
+    """全是坏行时，跨度留空（渲染端会整段省掉），但次数照记。"""
+    rows = [_adapter_row(9, "") for _ in range(5)]
+    clusters, leftover = _unattributed_clusters(rows)
+    assert leftover == []
+    assert clusters[0]["count"] == 5
+    assert clusters[0]["first"] == ""
+    assert clusters[0]["last"] == ""
+
+
+def test_summarize_adapter_exposes_leftover_breakdown():
+    """摘要里要同时带上「散点计数」与「散点按目标聚合」——上游渲染与 JSON 都靠它。"""
+    rows = [_adapter_row(70000 + i, f"2026-10-12T10:{i:02d}:00.000Z") for i in range(3)]
+    summary = summarize_adapter(rows, datetime(2026, 1, 1))
+    assert summary["unattributed"] == []
+    assert summary["unattributed_singles"] == 3
+    assert summary["unattributed_singles_by_target"] == [("xiaohongshu/search", 3)]
