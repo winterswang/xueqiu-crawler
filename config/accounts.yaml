@@ -89,3 +89,8 @@ accounts:
   id: '1222910358'
   name: Trociz
   url: https://xueqiu.com/u/1222910358
+- description: 医药投资分析（港股创新药/18A）
+  enabled: true
+  id: '3770558188'
+  name: 青侨阳光
+  url: https://xueqiu.com/u/3770558188

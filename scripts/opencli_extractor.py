@@ -53,6 +53,30 @@ class WafBlockedError(RuntimeError):
 # scripts/sync_waf_patterns.py 的同源校验）。
 _WAF_BLOCKED_MARKER = "风控验证页"
 
+# opencli 子进程的墙钟上限（秒），列表与详情页共用。
+#
+# 为什么是 120（2026-10-12）：插件层限速器（opencli-adapters/rate-limit.js，
+# 站点 xueqiu）的等待发生在 **opencli 子进程内部**，会被 subprocess.run 的墙钟
+# 一并计时。它的策略是「6–12 秒间隔 + 每 30 次一次 45–75 秒长停」，单次可能的最长
+# 等待即 12 + 75 = 87 秒，再加一次真实执行的余量（列表约 19 秒）。原来的 30/60 秒
+# 上限每命中一次长停就必然被误杀 —— 2026-10-12 实测：列表调用被掐死在 30.0s，
+# 2/18 账号记失败，其中一个账号因此漏掉一篇真文。
+#
+# 120 不是硬上界，是**在下面这条前提下**够用：调用串行、且该时间窗内没有别的
+# opencli 调用方。两处会让实际上界高于 120，改这个数之前先复核：
+#   · 限速状态跨进程共享（~/.opencli/xueqiu-throttle.json）。并发调用方各自预留，
+#     排队会累加；另有插件内部的取锁轮询，最长 LOCK_WAIT_MS = 30 秒，**与预留
+#     等待相加**（lock 30s + 87s + 19s ≈ 136s）。
+#   · `web article` 超时会重试（get_article_content 最多 3 轮），单篇最坏
+#     3 × 120s；原先 60s 时是 3 × 60s。这是 60 → 120 换来「以后补 web 限速覆盖时
+#     不会再撞破上限」的代价，属于有意取舍。
+# 早上 07:30–08:35 窗口实测只有本爬虫在调用（台账里 0 笔非爬虫来源），所以当天
+# 那两笔失败与取锁等待无关，120 在这个窗口内够用。
+#
+# 同步维护：插件层的 long_pause_min/max_s、max_delay_s 若调大，这里必须一起调大；
+# tests/test_opencli_throttle.py 只钉住「调用方这一侧」的超时，读不到那边。
+OPENCLI_CALL_TIMEOUT_SECONDS = 120
+
 
 def is_available() -> bool:
     """Check if opencli is installed and the Chrome extension is connected."""
@@ -175,7 +199,7 @@ def get_user_articles(user_id: str, count: int = 20) -> list[dict]:
             str(count),
             "-f",
             "json",
-            timeout=30,
+            timeout=OPENCLI_CALL_TIMEOUT_SECONDS,
             check=True,
         )
     except RuntimeError as e:
@@ -273,7 +297,22 @@ def _attempt_via_adapter(url: str) -> dict | None:
     不能把它和普通抓取失败混为一谈，否则调用方会去重试一个需要人工过滑块的状态。
     """
     try:
-        call = _run("web", "article", url, "-f", "json", timeout=60)
+        # 与列表共用同一个上限（见 OPENCLI_CALL_TIMEOUT_SECONDS）。
+        #
+        # ⚠️ 这条命令当前**完全没有被限速** —— 不是「暂时撞不上长停」那么轻：
+        # 插件层的站点键取命令第一段，这条是 `web`，而策略只声明了 `xueqiu`
+        # （无 wildcard），于是 policyFor('web') 返回 null，**连基础的 6–12 秒
+        # 间隔都没有**。Python 版原本专门覆盖了 `web article`
+        # （opencli_rate_limiter._should_throttle 有该分支，注释写着「切过去就等于
+        # 把正文抓取的限速整个拿掉」），迁移到插件层并默认关闭后，这块就掉了。
+        #
+        # 也就是说：被 WAF 拦的正是这类详情页请求，而它现在按每个账号约 3 篇
+        # 背靠背的节奏发出去。补 `web` 的限速覆盖是**待办**，不是「不需要」；
+        # 这里的 120 秒就是为那次补齐预留的 —— 补上后会新获得 45–75 秒长停，
+        # 60 秒的上限会被立刻撞破。
+        call = _run(
+            "web", "article", url, "-f", "json", timeout=OPENCLI_CALL_TIMEOUT_SECONDS
+        )
     except (subprocess.TimeoutExpired, OSError) as exc:
         # 这条命令把「导航 + 渲染等待 + 最多 8 个选择器的抽取 + markdown 转换」
         # 压在一次调用里，旧路径是三步各有各的预算（30/10/15 秒）。超时必须

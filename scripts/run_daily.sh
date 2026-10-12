@@ -10,7 +10,8 @@
 # 爬取引擎由 CRAWL_ENGINE 环境变量选择（默认 legacy）：
 #   legacy  = 旧链路写 data/（现状）
 #   gateway = crawl-gateway 写 data/（切换后用）
-#   shadow  = 旧链路写 data/，gateway 同时写 data-gateway/ 并对比，只告警不阻断
+#   shadow  = 旧链路写 data/，gateway 写 data-gateway/ 并对比，只告警不阻断
+#             （gateway 延后到流程末尾跑，理由见文件末尾「影子对比」段）
 # 例: CRAWL_ENGINE=shadow bash scripts/run_daily.sh --crawl-only
 
 set -e
@@ -44,7 +45,8 @@ fi
 # 爬取引擎（见 docs/crawl_gateway_migration_plan.md Step 3/4）
 #   legacy  = 旧链路，写 data/（默认，现状）
 #   gateway = crawl-gateway 写 data/
-#   shadow  = 旧链路照常写 data/；gateway 同时写 data-gateway/ 并对比，只告警不阻断
+#   shadow  = 旧链路照常写 data/；gateway 写 data-gateway/ 并对比，只告警不阻断
+#             （gateway 延后到流程末尾跑，理由见文件末尾「影子对比」段）
 # 刻意放在取锁之前：配错引擎应立刻失败，不留锁、不写生产日志。
 CRAWL_ENGINE="${CRAWL_ENGINE:-legacy}"
 case "$CRAWL_ENGINE" in
@@ -54,21 +56,33 @@ esac
 
 SHADOW_DIR="$PROJECT_DIR/data-gateway"
 GATEWAY_DB="$SHADOW_DIR/gateway.sqlite3"
+# 影子对比排在生产链路之后、且挂在 EXIT trap 上（见 run_shadow_compare）。
+# 这个标志位的作用是**区分引擎**：只有 CRAWL_ENGINE=shadow 且已走过镜像那一轮
+# 才置 1，legacy / gateway 下始终为 0，所以它守的是「别在非 shadow 引擎下跑影子」。
+# （拿不到锁而 `exit 0` 的路径到不了 trap —— 那段 exit 在 trap 安装之前。）
+SHADOW_ARMED=0
 
-# 资源清理函数：防止 OOM（僵尸 Chromium 进程）+ 删除锁文件
-cleanup() {
-    # 清理锁文件（无论成功失败都删除，避免下次被锁跳过）
+# 释放并发锁。只由 EXIT trap 的**末尾**调用。
+#
+# 为什么从 cleanup 里拆出来（2026-10-12 review）：影子也是爬取（约 6 分钟的站点
+# 请求），必须留在锁的保护范围内，而 cleanup 会在爬取阶段结束时就被调用一次 ——
+# 锁若在那里被删，影子就是在无锁状态下跑，来一次并发调用就会两遍爬取同时打雪球。
+# 拆开之后：cleanup 照旧在爬取后立刻释放内存，锁留到流程真正结束。
+release_lock() {
     # 只删自己的锁: 锁过期被下一实例接管后,无条件删除会拆掉它的锁
     if grep -q "^$$ " "$PROJECT_DIR/.cron_running.lock" 2>/dev/null; then
         rm -f "$PROJECT_DIR/.cron_running.lock"
     fi
-    
+}
+
+# 资源清理函数：防止 OOM（僵尸 Chromium 进程）。可重复调用。
+cleanup() {
     # nodriver 使用 google-chrome，Playwright 使用 chromium_headless_shell
     pkill -f "google-chrome.*headless" 2>/dev/null || true
     pkill -f "chromium_headless_shell" 2>/dev/null || true
     pkill -f "playwright/driver" 2>/dev/null || true
     sleep 1
-  
+
     # 清理 nodriver 临时 profile（超过 1 小时的）
     # 这是**旧 OpenClaw 宿主**的 cache 位置；当前主机用 opencli，其状态在 ~/.opencli/，
     # 且 opencli 源码里不存在 uc_ 前缀目录 —— 所以本行在当前主机上是空操作。
@@ -80,6 +94,44 @@ cleanup() {
 # 兼容旧函数名
 cleanup_chromium() {
     cleanup
+}
+
+# 影子运行与对比（仅 CRAWL_ENGINE=shadow，见爬取阶段末尾的 SHADOW_ARMED=1）。
+#
+# 为什么挂在 EXIT trap 上、而不是写成末尾的普通代码块：
+#   ① 要跟生产链路隔开一段时间 —— gateway 与 legacy 抓的是同一批详情页，而雪球的
+#      风控墙由累积请求量触发，两遍贴着跑时第二遍必然撞墙（2026-10-09~12 实测：
+#      第一遍 32 篇 0 拦截，第二遍 21 篇里 12 篇被拦，其中 8 篇正是第一遍 6–9 分钟
+#      前刚成功抓过的同一个 URL）。隔开后才可比。
+#   ② 步骤 3–6 任一失败时 `set -e` 会直接退出 —— 写成普通代码块会被整段跳过，
+#      当天的对比数据静默消失（正是这个 PR 要消灭的那类静默降级）。EXIT trap
+#      在正常与出错两条退出路径上都会执行。
+# 副作用（已知）：步骤 3–6 失败时，脚本会先跑完影子（约 6 分钟）再退出。
+run_shadow_compare() {
+    [ "$SHADOW_ARMED" = "1" ] || return 0
+    echo "[shadow] 影子运行（延后执行，避开生产链路的请求高峰）..." >> "$LOG_FILE"
+    # 只告警、不阻断：legacy 才是生产链路
+    if $PYTHON_BIN -m crawl_gateway --config config/sites.yaml \
+            --db "$GATEWAY_DB" run --site xueqiu --purpose daily-shadow \
+            --all-accounts --execute --data-dir "$SHADOW_DIR" >> "$LOG_FILE" 2>&1; then
+        # 用脚本开头缓存的 $DATE，不用现算的 `date +%Y-%m-%d`：两处必须一致，
+        # 否则报告文件名和对比口径会指向不同的日子。
+        # 已知限制：若整轮从 23:4x 起跑、影子在跨零点后才执行，gateway 会把结果
+        # 写进 history/<user>/<次日>.json，而这里仍按 $DATE（当日）去读 → gateway
+        # 侧读到空、对比退化成「两侧当天均无新增」。真正的修法是让两侧按同一
+        # 「运行标识」落盘，不在本 PR 范围内；本 PR 只是把两侧口径对齐。
+        if $PYTHON_BIN scripts/compare_crawl_outputs.py \
+                --legacy-dir data --gateway-dir "$SHADOW_DIR" \
+                --gateway-db "$GATEWAY_DB" \
+                --date "$DATE" \
+                --out "logs/shadow_compare_$DATE.json" >> "$LOG_FILE" 2>&1; then
+            echo "[shadow] ✅ 两侧产物无差异" >> "$LOG_FILE"
+        else
+            echo "[shadow] ⚠️ 两侧产物有差异，见 logs/shadow_compare_$DATE.json" >> "$LOG_FILE"
+        fi
+    else
+        echo "[shadow] ⚠️ gateway 影子运行失败（不影响主流程）" >> "$LOG_FILE"
+    fi
 }
 
 # 内存检查：低于 500MB 可用时告警
@@ -112,7 +164,11 @@ if [ -f "$LOCKFILE" ]; then
 fi
 
 # 提前设置trap，保证任何退出（包括写锁后立即崩溃）都会清理锁
-trap 'cleanup' EXIT
+# 顺序：影子 → cleanup（收尾杀 Chrome）→ release_lock。
+# release_lock 必须在最后 —— 放前面等于让影子在无锁状态下跑（影子也是爬取）。
+# `|| true` 不能省：EXIT trap 里前一条命令返回非 0 时，后面的命令**不会**执行，
+# 残留的就是锁文件（2026-10-12 实测）。
+trap 'run_shadow_compare || true; cleanup; release_lock' EXIT
 
 # 写入当前 PID 和时间戳
 printf '%s %s\n' "$$" "$(date +%s)" > "$LOCKFILE.tmp" && mv -f "$LOCKFILE.tmp" "$LOCKFILE"
@@ -174,28 +230,30 @@ if [ "$MODE" != "skip-crawl" ]; then
                 echo "[shadow] 已镜像 data/ 初始化影子目录已知状态（含各账号 .md）" >> "$LOG_FILE"
             fi
 
+            # 镜像成功 = 影子这一轮算数，从这里起就要保证它跑完。
+            # 置位点选在**镜像之后、legacy 爬取之前**：
+            #   · 早于镜像 → 拿不到锁 `exit 0` 时不该跑（守卫失效）；
+            #   · 晚于 legacy 爬取 → 爬取阶段一失败就 set -e 退出、影子被静默跳过，
+            #     当天的对比数据直接消失（2026-10-12 review 指出）。镜像已成功时
+            #     影子无论如何都该产出一次对比，哪怕 legacy 那轮半途失败。
+            SHADOW_ARMED=1
+
             # 生产链路照常跑（必须在镜像之后）
             $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
 
-            # 影子运行与对比都只告警、不阻断日报（legacy 才是生产链路）
-            if $PYTHON_BIN -m crawl_gateway --config config/sites.yaml \
-                    --db "$GATEWAY_DB" run --site xueqiu --purpose daily-shadow \
-                    --all-accounts --execute --data-dir "$SHADOW_DIR" >> "$LOG_FILE" 2>&1; then
-                if $PYTHON_BIN scripts/compare_crawl_outputs.py \
-                        --legacy-dir data --gateway-dir "$SHADOW_DIR" \
-                        --gateway-db "$GATEWAY_DB" \
-                        --out "logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE" 2>&1; then
-                    echo "[shadow] ✅ 两侧产物无差异" >> "$LOG_FILE"
-                else
-                    echo "[shadow] ⚠️ 两侧产物有差异，见 logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE"
-                fi
-            else
-                echo "[shadow] ⚠️ gateway 影子运行失败（不影响主流程）" >> "$LOG_FILE"
-            fi
+            # gateway 影子运行与对比**不在这里** —— 刻意挪到整条流程之后，
+            # 由 EXIT trap 里的 run_shadow_compare 执行（见该函数注释）。
             ;;
     esac
 
-    # 爬取完成后立即清理 Chrome，释放内存供后续 AI 分析使用
+    # 爬取完成后立即清理 Chrome，释放内存供后续 AI 分析使用。
+    # 照旧无条件执行 —— 影子虽然后面才跑，但它不依赖这里杀掉的进程：cleanup 的
+    # pkill 模式是 **headless 专用**（google-chrome.*headless /
+    # chromium_headless_shell / playwright/driver），而 opencli 走的是扩展模式、
+    # 宿主是用户正常打开的 Chrome，不在其中；扩展模式下 crawler_nodriver 也不会
+    # 自己起浏览器。所以这里省下的内存是白得的，杀掉的东西影子也不需要。
+    # ⚠️ 若将来出现「headless 跑 opencli」的宿主，这一句要重新评估。
+    # 并发锁不在这里释放（见 release_lock）—— 影子也是爬取，得留在锁里。
     echo "[清理] 释放浏览器资源..." >> "$LOG_FILE"
     cleanup_chromium
 fi
