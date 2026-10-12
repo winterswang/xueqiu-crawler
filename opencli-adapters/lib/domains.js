@@ -26,36 +26,33 @@ export function urlFromArgs(args) {
   return '';
 }
 
-/** 末两段启发式（`a.b.example.com` → `example.com`）。只作为兜底。 */
-function registrableDomain(hostname) {
-  const parts = hostname.split('.').filter(Boolean);
-  // IP 字面量与单标签主机不能切：`1.2.3.4` 切出来是 `3.4` —— 那会开出一个
-  // `3.4-throttle.json` 的垃圾状态文件，而且额度被凭空拆走。
-  if (parts.length <= 2) return hostname;
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return hostname;
-  return parts.slice(-2).join('.');
-}
-
 /**
- * 把 hostname 或「注册域」映射成规范键；**对两者都要查**。
+ * 把 hostname 映射成规范键：**按后缀逐级匹配**，匹配不到就原样用整个 hostname。
  *
- * 只查完整 hostname 是不够的：`api.xueqiu.com` 不在别名表里，会先落到
- * 末两段 `xueqiu.com` —— 若不再查一次别名表，这个键就成了新字符串
- * （另开 `xueqiu.com-throttle.json`，且策略查找落回 `web` 的弱档、**丢掉长停**）。
- * 那正是「被 WAF 盯的详情页静默掉档」，必须阻止。
+ * 两个关键取舍：
+ *
+ * 1. **按后缀匹配而不是只查完整 hostname**：`api.xueqiu.com` 不在别名表里，靠
+ *    逐级去最左标签才能命中 `xueqiu.com` 的别名。漏了这一步它就会得到键
+ *    `xueqiu.com` —— 另开一个状态文件、且策略落回 `web` 弱档（**丢掉长停**），
+ *    正是本文件开头强调「绝不能发生」的静默掉档。
+ *
+ * 2. **绝不用「末两段」猜注册域**。`www.sse.com.cn` / `stock.10jqka.com.cn` 这类
+ *    多级公共后缀切出来都是 `com.cn` —— 一堆互不相关的站点被塞进同一个额度
+ *    （互相排队），台账里的 `domain_key` 也变成 `com.cn` 这种误导性归因。宁可让
+ *    子域各拿各的键（偏保守：拆开只会少限速，不会把无关站点绑在一起），
+ *    已知「一个站点多个子域」的用 DOMAIN_RULES 显式归组（cninfo/hkexnews/sseinfo…）。
  */
 function canonicalFor(hostname) {
-  const candidates = [hostname];
-  const registrable = registrableDomain(hostname);
-  if (registrable !== hostname) candidates.push(registrable);
-
-  for (const candidate of candidates) {
+  const labels = hostname.split('.');
+  for (let i = 0; i < labels.length; i += 1) {
+    const candidate = labels.slice(i).join('.');
+    // 后缀匹配天然按标签对齐，所以 `notxueqiu.com` 不会命中 `xueqiu.com`。
     const aliased = CANONICAL_DOMAIN_KEY[candidate];
     if (aliased) return { key: aliased, matched: candidate };
     const ruled = DOMAIN_RULES.find((r) => r.re.test(candidate));
     if (ruled) return { key: ruled.key, matched: candidate };
   }
-  return { key: registrable, matched: null };
+  return { key: hostname, matched: null };
 }
 
 /**
@@ -75,14 +72,16 @@ export function resolveDomainKey(site, args) {
   // 让调用方告警；非 web 站退回站点键是正常路径（它们的域名是固定的），不告警。
   const fallback = (via) => ({ key: site, host: '', via, degraded: site === 'web' });
 
-  let hostname = SITE_DEFAULT_DOMAIN[site] ?? '';
+  let hostname = String(SITE_DEFAULT_DOMAIN[site] ?? '').replace(/\.$/, '');
   let via = hostname ? 'site' : 'url';
 
   if (!hostname) {
     const url = urlFromArgs(args);
     if (!url) return fallback('site-key');
     try {
-      hostname = new URL(url).hostname.toLowerCase();
+      // 去掉尾点：FQDN 形态（`https://xueqiu.com./1/1`）合法且真的出现过，
+      // 不归一化就会绕过别名表 → 新状态文件 + 落回 web 弱档（丢掉长停）。
+      hostname = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
     } catch {
       // 有 URL 但解析不出 hostname（`https://`、`https://[bad`…）。
       return fallback('url-unparseable');

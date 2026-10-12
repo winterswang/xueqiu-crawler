@@ -105,7 +105,8 @@ function guardFields(guard) {
     rate_waited_ms: ms(rate.waited_s),
     rate_reserved_ms: ms(rate.reserved_s),
     long_pause_ms: ms(rate.long_pause_s),
-    rate_fail_open: rate.fail_open ?? null,
+    rate_error: guard.rateError ?? null,
+    rate_fail_open: rate.fail_open ?? (guard.rateError ? true : null),
     // concurrency_max 为 null = 观测模式（只看不拦）。
     concurrency_max: conc.max ?? null,
     inflight_at_acquire: conc.inflight ?? null,
@@ -169,9 +170,17 @@ export function installRateLimit() {
       return;
     }
     ctx.__xqGuard.throttled = true;
-    // 顺序刻意如此：限速的 sleep 不该占着并发名额（否则 max=1 时睡的人占着槽，
-    // 并发闸就退化成纯串行器了）。槽代表「真的在飞」。
-    ctx.__xqGuard.rate = await acquireSlot(key, full, policy);
+    try {
+      // 顺序刻意如此：限速的 sleep 不该占着并发名额（否则 max=1 时睡的人占着槽，
+      // 并发闸就退化成纯串行器了）。槽代表「真的在飞」。
+      ctx.__xqGuard.rate = await acquireSlot(key, full, policy);
+    } catch (err) {
+      // 限速器自己抛了（状态文件建不出来之类）：异常会被 opencli 的 emitHook 兜住、
+      // 命令照常执行，但**本次实际是不限速的**。必须记下来 —— 否则台账里会出现
+      // 「throttled: true 而等待全为 null」的行，正是这套台账要消除的那种误导读法。
+      ctx.__xqGuard.rateError = err?.message ?? String(err);
+      throw err;
+    }
     ctx.__xqGuard.concurrency = await acquireInflight(key, policy, {
       source: callerInfo().source,
       command: full,

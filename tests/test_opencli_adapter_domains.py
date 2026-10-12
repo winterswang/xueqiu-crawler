@@ -47,7 +47,16 @@ CASES: list[tuple[str, dict, str]] = [
     # --- 非雪球域名各拿各的键 ---
     ("web", {"url": "https://www.cninfo.com.cn/a.pdf"}, "cninfo.com.cn"),
     ("web", {"url": "https://www1.hkexnews.hk/a.pdf"}, "hkexnews.hk"),
-    ("web", {"url": "https://xueqiu.com.evil.com/a"}, "evil.com"),
+    # 冒名域名必须拿到**自己**的键（关键是不能被归到 xueqiu、蹭不到那份额度）：
+    # 不再做末两段切分后，未知域名就用完整 hostname 当键。
+    ("web", {"url": "https://xueqiu.com.evil.com/a"}, "xueqiu.com.evil.com"),
+    # --- ★ 回归：多级公共后缀**绝不能**被「末两段」切成 com.cn ---
+    #     切了会让同花顺/新浪/东财这些互不相关的站点塞进同一个额度（互相排队），
+    #     台账里的 domain_key 也变成 'com.cn' 这种误导性归因。
+    ("web", {"url": "https://www.sse.com.cn/a"}, "www.sse.com.cn"),
+    ("web", {"url": "https://stock.10jqka.com.cn/x.html"}, "stock.10jqka.com.cn"),
+    # --- ★ 回归：尾点（FQDN 形态）必须归一化，否则绕过别名表、静默掉档 ---
+    ("web", {"url": "https://xueqiu.com./1/1"}, "xueqiu"),
     # --- IP 字面量不能切末两段（否则会得到 '3.4' 这种垃圾键） ---
     ("web", {"url": "http://93.184.216.34/a"}, "93.184.216.34"),
     # --- 解析不出域名：退回站点键，且 web 要标 degraded 好让调用方告警 ---

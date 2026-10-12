@@ -83,14 +83,6 @@ function explicitPolicy(key) {
   return cfg.domains[key] ?? cfg.sites[key] ?? null;
 }
 
-/** 未声明的键返回 null（= 不限速）。 */
-export function policyFor(key) {
-  const hit = explicitPolicy(key);
-  const cfg = loadConfig();
-  if (!hit && !cfg.wildcard) return null;
-  return { ...cfg.defaults, ...(cfg.wildcard ?? {}), ...(hit ?? {}) };
-}
-
 /**
  * 一次调用的策略查找链：**域名键 → 站点键 → 通配**。
  *

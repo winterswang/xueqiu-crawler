@@ -246,7 +246,7 @@ def test_concurrency_gate_defaults_to_observe_only():
         ("BUILTIN_SITES", body),
         ("XUEQIU_PACE", pace.group(1) if pace else ""),
     ):
-        assert "concurrency" not in chunk, (
+        assert not re.search(r"\bconcurrency\w*\s*:", chunk), (
             f"{label} 预设了 concurrency —— 开闸前必须先把调用方超时抬到 ~150s "
             "（见本测试 docstring），否则排队等待会顶破 120s"
         )

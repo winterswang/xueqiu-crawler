@@ -29,6 +29,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { acquireLock, newLockToken, releaseLock } from './lockfile.js';
 import { OPENCLI_DIR } from './paths.js';
 
 const MAX_LINE_BYTES = 4096;
@@ -59,8 +60,14 @@ function callerInfo() {
   return { source, sourceKind: 'other' };
 }
 
-/** 轮转：抢到独立的 rotlock 才动，抢不到就本次不轮转（继续 append）。 */
-function maybeRotate(target) {
+/**
+ * 轮转：抢到 rotlock 才动，抢不到就本次不轮转（继续 append）。
+ *
+ * 锁**复用 lib/lockfile.js 的原语**，不自己写 `open(..., 'wx')`：轮转窗口里有一次
+ * 32MB 的 rename，进程在这期间被 KILL 是可能的（本目录其他注释反复提到被 KILL 的场景），
+ * 而手写锁没有陈旧回收 —— 一个残留的 `.rotlock` 会让轮转**永久失效**、台账无上限增长。
+ */
+async function maybeRotate(target) {
   let size = 0;
   try {
     size = fs.statSync(target).size;
@@ -69,27 +76,15 @@ function maybeRotate(target) {
   }
   if (size < ROTATE_BYTES) return;
   const rotLock = `${target}.rotlock`;
-  let fd;
-  try {
-    fd = fs.openSync(rotLock, 'wx');
-  } catch {
-    return; // 别人在轮转，本次跳过
-  }
+  const token = newLockToken();
+  const { fd, failOpen } = await acquireLock('adapter-log', rotLock, token);
+  if (failOpen) return;
   try {
     fs.renameSync(target, `${target}.1`); // rename 是原子的；重复轮转只留一个 .1
   } catch {
     /* 轮转失败不影响本次追加 */
   } finally {
-    try {
-      fs.closeSync(fd);
-    } catch {
-      /* 已关闭 */
-    }
-    try {
-      fs.unlinkSync(rotLock);
-    } catch {
-      /* 已被回收 */
-    }
+    releaseLock(fd, rotLock, token);
   }
 }
 
@@ -98,6 +93,12 @@ function maybeRotate(target) {
  *
  * @param {object} record 由调用方组好（见 rate-limit.js 的 buildRecord）
  */
+// 目录建过一次就够了；轮转检查也不必每次调用都 stat（一个 registry 命令会为
+// 每一次列表/详情抓取付这份成本）。对齐限速器那边「不要每调用两次 mkdirSync」的处理。
+const ensuredDirs = new Set();
+const STAT_EVERY = 64;
+let statCountdown = 0;
+
 export function appendRecord(record) {
   const target = logPath();
   if (!target) return;
@@ -119,8 +120,15 @@ export function appendRecord(record) {
     return; // 循环引用之类：放弃这一行，不抛
   }
   try {
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    maybeRotate(target);
+    const dir = path.dirname(target);
+    if (!ensuredDirs.has(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      ensuredDirs.add(dir);
+    }
+    if (--statCountdown <= 0) {
+      statCountdown = STAT_EVERY;
+      maybeRotate(target).catch(() => {}); // 不阻塞本次追加；轮转失败也不影响它
+    }
     const fd = fs.openSync(target, 'a'); // O_APPEND：单行写入跨进程原子
     try {
       fs.writeSync(fd, line);
