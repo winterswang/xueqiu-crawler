@@ -4,6 +4,12 @@
 不再依赖 `~/.opencli/clis/` 裸覆盖 —— 后者会被 opencli 升级 / smart-sync 覆盖或删除，
 2026-09-30 已实际发生过一次，导致适配器丢失。
 
+> **改动前先读 [`CONTRACT.md`](./CONTRACT.md)** —— 那是接口契约：逐命令的入参 / 输出字段 /
+> 错误码、行为契约、**改动检查表**与已知盲区。本文件讲「为什么这样设计」，契约文件讲
+> 「改了会影响谁」。
+>
+> agent 会话会自动加载 `xueqiu-adapters` skill（用户级），它指向同一份契约。
+
 ## 为什么用 plugin 而不是 `~/.opencli/clis/`
 
 opencli 的启动顺序是：
@@ -33,7 +39,7 @@ discoverClis(BUILTIN_CLIS) → discoverClis(USER_CLIS) → discoverPlugins()
 | `search.js` | xiaohongshu | `opencli xiaohongshu search` | 覆盖官方基线：DOM 抓取 + `xsec_token` 直出，只支持 `--sort comprehensive` |
 | `article.js` | **web**（通用） | `opencli web article` | 自研；读取任意网页正文（跨站选择器链），输出 markdown |
 | `utils.js` | — | — | **非命令模块**，仅供 `stock-notices.js` 相对引用；是官方基线 `clis/xueqiu/utils.js` 的副本 |
-| `lib/*.js` | — | — | **非命令模块**，被 `rate-limit.js` import：`paths` / `env` / `util` / `lockfile` / `policy` / `domain-tables` / `domains` / `ratelimit` / `concurrency` / `requestlog` |
+| `lib/*.js` | — | — | **非命令模块**（11 个）：`paths` / `env` / `util` / `lockfile` / `policy` / `domain-tables` / `domains` / `ratelimit` / `concurrency` / `requestlog` 由 `rate-limit.js` import；`xueqiu-symbol.js` 由 `news.js` / `stock-notices.js` import |
 | `rate-limit.js` | —（全站点） | — | **非命令模块**：注册 `onBeforeExecute` 钩子，对**走 registry 的** opencli 调用统一跨进程限速（`browser` 子命令例外、通用站 `web` 按目标域名分流，均见下节） |
 
 > `utils.js` 只导出 `formatChinaDate` / `stripHtml` / `fetchXueqiuJson`。
