@@ -109,10 +109,11 @@ run_shadow_compare() {
         if $PYTHON_BIN scripts/compare_crawl_outputs.py \
                 --legacy-dir data --gateway-dir "$SHADOW_DIR" \
                 --gateway-db "$GATEWAY_DB" \
-                --out "logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE" 2>&1; then
+                --date "$DATE" \
+                --out "logs/shadow_compare_$DATE.json" >> "$LOG_FILE" 2>&1; then
             echo "[shadow] ✅ 两侧产物无差异" >> "$LOG_FILE"
         else
-            echo "[shadow] ⚠️ 两侧产物有差异，见 logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE"
+            echo "[shadow] ⚠️ 两侧产物有差异，见 logs/shadow_compare_$DATE.json" >> "$LOG_FILE"
         fi
     else
         echo "[shadow] ⚠️ gateway 影子运行失败（不影响主流程）" >> "$LOG_FILE"
@@ -149,8 +150,10 @@ if [ -f "$LOCKFILE" ]; then
 fi
 
 # 提前设置trap，保证任何退出（包括写锁后立即崩溃）都会清理锁
-# 影子先跑、cleanup 后跑：cleanup 会 pkill Chrome，得在影子用完浏览器之后
-trap 'run_shadow_compare; cleanup' EXIT
+# 影子先跑、cleanup 后跑：cleanup 会 pkill Chrome 并删并发锁，两件事都得在影子
+# 用完浏览器之后。`|| true` 不能省 —— EXIT trap 里前一条命令返回非 0 时，后面的
+# cleanup **不会**执行，残留的就是锁文件与没清掉的 Chrome（2026-10-12 实测）。
+trap 'run_shadow_compare || true; cleanup' EXIT
 
 # 写入当前 PID 和时间戳
 printf '%s %s\n' "$$" "$(date +%s)" > "$LOCKFILE.tmp" && mv -f "$LOCKFILE.tmp" "$LOCKFILE"
@@ -212,19 +215,32 @@ if [ "$MODE" != "skip-crawl" ]; then
                 echo "[shadow] 已镜像 data/ 初始化影子目录已知状态（含各账号 .md）" >> "$LOG_FILE"
             fi
 
+            # 镜像成功 = 影子这一轮算数，从这里起就要保证它跑完。
+            # 置位点选在**镜像之后、legacy 爬取之前**：
+            #   · 早于镜像 → 拿不到锁 `exit 0` 时不该跑（守卫失效）；
+            #   · 晚于 legacy 爬取 → 爬取阶段一失败就 set -e 退出、影子被静默跳过，
+            #     当天的对比数据直接消失（2026-10-12 review 指出）。镜像已成功时
+            #     影子无论如何都该产出一次对比，哪怕 legacy 那轮半途失败。
+            SHADOW_ARMED=1
+
             # 生产链路照常跑（必须在镜像之后）
             $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
 
             # gateway 影子运行与对比**不在这里** —— 刻意挪到整条流程之后，
             # 由 EXIT trap 里的 run_shadow_compare 执行（见该函数注释）。
-            # 只有走到这里才置位：拿不到锁而提前 `exit 0` 时不该跑影子。
-            SHADOW_ARMED=1
             ;;
     esac
 
-    # 爬取完成后立即清理 Chrome，释放内存供后续 AI 分析使用
-    echo "[清理] 释放浏览器资源..." >> "$LOG_FILE"
-    cleanup_chromium
+    # 爬取完成后立即清理 Chrome，释放内存供后续 AI 分析使用。
+    # 影子模式下必须推迟：影子还没跑（在 EXIT trap 里），这里 pkill 掉浏览器会
+    # 让它每个 opencli 调用都失败；同时 cleanup 会删掉并发锁，而影子也是**爬取**、
+    # 必须留在锁的保护范围内。两件事都交给 trap 末尾的 cleanup 完成。
+    if [ "$SHADOW_ARMED" = "1" ]; then
+        echo "[清理] 影子模式下推迟释放浏览器资源与并发锁（影子尚未运行）" >> "$LOG_FILE"
+    else
+        echo "[清理] 释放浏览器资源..." >> "$LOG_FILE"
+        cleanup_chromium
+    fi
 fi
 
 # === 分析 + 发布阶段（--crawl-only 时跳过） ===
