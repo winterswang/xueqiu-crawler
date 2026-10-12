@@ -56,6 +56,10 @@ esac
 
 SHADOW_DIR="$PROJECT_DIR/data-gateway"
 GATEWAY_DB="$SHADOW_DIR/gateway.sqlite3"
+# 影子对比排在生产链路之后、且挂在 EXIT trap 上（见 run_shadow_compare）。
+# 这个标志位保证它只在「影子那一轮真的跑过爬取」之后才执行 —— 例如拿不到锁
+# 而 `exit 0` 跳过本次时，绝不能反而去跑一轮影子。
+SHADOW_ARMED=0
 
 # 资源清理函数：防止 OOM（僵尸 Chromium 进程）+ 删除锁文件
 cleanup() {
@@ -82,6 +86,37 @@ cleanup() {
 # 兼容旧函数名
 cleanup_chromium() {
     cleanup
+}
+
+# 影子运行与对比（仅 CRAWL_ENGINE=shadow，见爬取阶段末尾的 SHADOW_ARMED=1）。
+#
+# 为什么挂在 EXIT trap 上、而不是写成末尾的普通代码块：
+#   ① 要跟生产链路隔开一段时间 —— gateway 与 legacy 抓的是同一批详情页，而雪球的
+#      风控墙由累积请求量触发，两遍贴着跑时第二遍必然撞墙（2026-10-09~12 实测：
+#      第一遍 32 篇 0 拦截，第二遍 21 篇里 12 篇被拦，其中 8 篇正是第一遍 6–9 分钟
+#      前刚成功抓过的同一个 URL）。隔开后才可比。
+#   ② 步骤 3–6 任一失败时 `set -e` 会直接退出 —— 写成普通代码块会被整段跳过，
+#      当天的对比数据静默消失（正是这个 PR 要消灭的那类静默降级）。EXIT trap
+#      在正常与出错两条退出路径上都会执行。
+# 副作用（已知）：步骤 3–6 失败时，脚本会先跑完影子（约 6 分钟）再退出。
+run_shadow_compare() {
+    [ "$SHADOW_ARMED" = "1" ] || return 0
+    echo "[shadow] 影子运行（延后执行，避开生产链路的请求高峰）..." >> "$LOG_FILE"
+    # 只告警、不阻断：legacy 才是生产链路
+    if $PYTHON_BIN -m crawl_gateway --config config/sites.yaml \
+            --db "$GATEWAY_DB" run --site xueqiu --purpose daily-shadow \
+            --all-accounts --execute --data-dir "$SHADOW_DIR" >> "$LOG_FILE" 2>&1; then
+        if $PYTHON_BIN scripts/compare_crawl_outputs.py \
+                --legacy-dir data --gateway-dir "$SHADOW_DIR" \
+                --gateway-db "$GATEWAY_DB" \
+                --out "logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE" 2>&1; then
+            echo "[shadow] ✅ 两侧产物无差异" >> "$LOG_FILE"
+        else
+            echo "[shadow] ⚠️ 两侧产物有差异，见 logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE"
+        fi
+    else
+        echo "[shadow] ⚠️ gateway 影子运行失败（不影响主流程）" >> "$LOG_FILE"
+    fi
 }
 
 # 内存检查：低于 500MB 可用时告警
@@ -114,7 +149,8 @@ if [ -f "$LOCKFILE" ]; then
 fi
 
 # 提前设置trap，保证任何退出（包括写锁后立即崩溃）都会清理锁
-trap 'cleanup' EXIT
+# 影子先跑、cleanup 后跑：cleanup 会 pkill Chrome，得在影子用完浏览器之后
+trap 'run_shadow_compare; cleanup' EXIT
 
 # 写入当前 PID 和时间戳
 printf '%s %s\n' "$$" "$(date +%s)" > "$LOCKFILE.tmp" && mv -f "$LOCKFILE.tmp" "$LOCKFILE"
@@ -179,9 +215,10 @@ if [ "$MODE" != "skip-crawl" ]; then
             # 生产链路照常跑（必须在镜像之后）
             $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
 
-            # gateway 影子运行与对比**不在这里** —— 刻意挪到整条流程的最后
-            # （见文件末尾「影子对比」段）。原因见那里的注释：两遍贴着跑时
-            # 第二遍必然撞风控墙，对比结果不可用。
+            # gateway 影子运行与对比**不在这里** —— 刻意挪到整条流程之后，
+            # 由 EXIT trap 里的 run_shadow_compare 执行（见该函数注释）。
+            # 只有走到这里才置位：拿不到锁而提前 `exit 0` 时不该跑影子。
+            SHADOW_ARMED=1
             ;;
     esac
 
@@ -211,36 +248,6 @@ if [ "$MODE" != "crawl-only" ]; then
     echo "📊 价值投资日报 - $(date +%Y-%m-%d)" >> "$LOG_FILE"
     IMA_NOTE_URL="$IMA_NOTE_URL" $PYTHON_BIN scripts/push_feishu.py 2>&1 | tee -a "$LOG_FILE"
     echo "========================================" >> "$LOG_FILE"
-fi
-
-# === 影子对比（仅 CRAWL_ENGINE=shadow；刻意排在发布之后）===
-# 为什么不在步骤 2 里跑：gateway 与 legacy 抓的是**同一批详情页**，而雪球的风控墙
-# 由累积请求量触发 —— 两遍贴着跑时第二遍必然撞墙。2026-10-09~12 实测：第一遍
-# 32 篇 0 拦截，第二遍 21 篇里 12 篇被拦，且其中 8 篇正是第一遍 6–9 分钟前刚成功
-# 抓过的同一个 URL。也就是说，贴着跑的对比结果只反映「谁跑第二遍」，无法用来判断
-# gateway 的质量；gateway 还会因此每天少抓一批、index 持续落后并扩大，形成
-# 「落后 → 重抓 → 加压 → 再落后」的正反馈。
-# 隔开一段时间（这里是步骤 3–6 的耗时，正常约 10–15 分钟）再跑，两侧起点条件才可比。
-# 放在末尾还有个好处：影子无论多慢都不再推迟日报与飞书。
-# 注意 --crawl-only 会跳过步骤 3–6，此时影子紧跟爬取阶段、间隔接近 0 —— 该模式
-# 只用于本地调试，不影响生产路径。
-if [ "$CRAWL_ENGINE" = "shadow" ] && [ "$MODE" != "skip-crawl" ]; then
-    echo "[shadow] 影子运行（延后执行，避开生产链路的请求高峰）..." >> "$LOG_FILE"
-    # 只告警、不阻断：legacy 才是生产链路
-    if $PYTHON_BIN -m crawl_gateway --config config/sites.yaml \
-            --db "$GATEWAY_DB" run --site xueqiu --purpose daily-shadow \
-            --all-accounts --execute --data-dir "$SHADOW_DIR" >> "$LOG_FILE" 2>&1; then
-        if $PYTHON_BIN scripts/compare_crawl_outputs.py \
-                --legacy-dir data --gateway-dir "$SHADOW_DIR" \
-                --gateway-db "$GATEWAY_DB" \
-                --out "logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE" 2>&1; then
-            echo "[shadow] ✅ 两侧产物无差异" >> "$LOG_FILE"
-        else
-            echo "[shadow] ⚠️ 两侧产物有差异，见 logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE"
-        fi
-    else
-        echo "[shadow] ⚠️ gateway 影子运行失败（不影响主流程）" >> "$LOG_FILE"
-    fi
 fi
 
 echo "[$(date)] 流程执行完成" >> "$LOG_FILE"
