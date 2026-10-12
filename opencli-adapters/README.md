@@ -81,14 +81,29 @@ Python 实现同形）。互斥用**独占创建的锁文件**（Node 没有 flo
   一类请求（2026-10-12：台账里 625 次 `web article` 全部指向 xueqiu.com，当天早上
   第二遍爬取被墙拦掉的就是它）。将来若真的用 `web article` 抓非雪球站点，需要改成
   按目标域名判定，否则会把 cninfo/hkexnews 这类下载也拖成雪球的节奏。
-  `web` 用**自己的**状态文件（`~/.opencli/web-throttle.json`），与 `xueqiu/` 的
-  列表调用各算各的窗口。
+- **状态按「目标站点」归组，不按 opencli 站点键**（源码里的 `STATE_GROUP`）：
+  `web` 与 `xueqiu` **共用** `~/.opencli/xueqiu-throttle.json` 一个额度。两者打的
+  是同一个站点，各算各的窗口等于请求密度翻倍 —— 而风控墙看的是总量。这也是
+  Python 版原先的语义（单个状态文件）。
+- ⚠️ **钩子覆盖不到 `opencli browser ...`**。`onBeforeExecute` 的唯一触发点在
+  `executeCommand`（`dist/src/execution.js:206`），而它只被 `commanderAdapter.js`
+  调用 —— `browser` 命令直接挂在 commander 上、经 daemon-client 发指令，**不经过
+  这条路**，所以 `browser open`（会导航到真实站点）**完全没有被限速**。Python 版
+  曾专门覆盖它，现已默认关闭。当前生产链路不受影响（`web article` 已注册，只有在
+  该命令缺失时才会退回 `browser` 路径），但别以为「钩子覆盖了一切」。要补只能在
+  调用方做，或者在 opencli 里给 browser 也发钩子。
 - 环境变量：通用 `OPENCLI_RATELIMIT_DISABLED=1` / `OPENCLI_RATELIMIT_<SITE>_MIN_DELAY_SECONDS` …
   调试用 `OPENCLI_RATELIMIT_DEBUG=1`；`xueqiu` 站点继续兼容既有 `XUEQIU_OPENCLI_*` 命名。
 
 **因此 Python 侧的限速器已让位**：`xueqiu-analyzer-skill/.../opencli_rate_limiter.py`
 默认关闭（`XUEQIU_OPENCLI_THROTTLE=1` 可重新启用做回退），否则会与新钩子叠加成双重等待。
 FrontierAgent 的 `plugins/tools/_platform_cli.py` 同理，只保留自己的跨进程锁与失败退避。
+
+> 走回退档时**必须同时关掉插件层**：`XUEQIU_OPENCLI_THROTTLE=1 OPENCLI_RATELIMIT_DISABLED=1`。
+> 两个实现的锁机制不互斥 —— Python 用 `fcntl.flock` 且从不删锁文件，本模块用
+> 「独占创建 + 释放时删除」锁**同一个路径**（`xueqiu-throttle.json.lock`）。同时开
+> 会让双方都在临界区里读改写同一个状态文件（写临时文件的文件名现在已按 pid 分开，
+> 但那只是降低了互相 rename 半截文件的风险，互斥本身仍不成立）。
 
 ### 为什么这里有一个通用站命令 `web article`
 

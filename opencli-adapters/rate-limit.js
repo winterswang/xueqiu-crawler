@@ -1,10 +1,22 @@
 /**
  * 通用跨进程站点限速器 —— 以 opencli 插件钩子实现。
  *
- * 为什么放在这里：做在 adapter 层，**所有**调用方自动被覆盖，绕不过去 ——
+ * 为什么放在这里：做在 adapter 层，**所有走 registry 的调用方**自动被覆盖 ——
  * FrontierAgent 的工具、xueqiu-crawler / xueqiu-monitor 的脚本、以及手敲
  * `opencli xueqiu ...` 都走同一条 `onBeforeExecute` 钩子。调用方不需要记得
  * 先调限速器（以前靠调用方自觉，结果有 4 条路径完全绕过限速）。
+ *
+ * ⚠️ **例外，务必知道**：`opencli browser ...` 子命令**不经过这条钩子**，因此
+ * **完全没有被限速**。钩子的唯一触发点是 `emitHook('onBeforeExecute', …)`，它在
+ * `executeCommand` 里（dist/src/execution.js:206），而 `executeCommand` 只被
+ * `commanderAdapter.js:107` 调用 —— 那是 `cli()` 注册的站点命令走的路径。
+ * `browser` 命令是直接挂在 commander 上、经 daemon-client 发指令的，根本不经过
+ * `executeCommand`，所以 hook 看不到它（2026-10-12 核实）。
+ * 影响面：`opencli browser open` 会**导航到真实站点**，Python 版的
+ * `_should_throttle` 曾经专门覆盖它（注释「browser open … 必须限速」）；现在
+ * Python 侧默认关闭，于是这条路径落空。当前生产链路不受影响（`web article`
+ * 已注册，回退路径 `_attempt_via_browser` 只在该命令未注册时才走），但别以为
+ * 「钩子覆盖了一切」。真要补，只能在调用方做，或在 opencli 里给 browser 也发钩子。
  *
  * 机制：opencli 在 `execution.js` 里执行任何命令前 emit `onBeforeExecute`
  * （dist/src/execution.js:206），钩子 API 由 `@jackwener/opencli/registry` 导出。
@@ -18,8 +30,10 @@
  *
  * 配置：`~/.opencli/rate-limits.json`，每站点不同策略；未在配置（含内置表）
  * 里声明的站点**不限速**（宁可漏也不能误伤本地命令）。
- * 状态：`~/.opencli/<site>-throttle.json`，形状 {next_at, calls, last_source}
- * —— 与既有 Python 实现同形，便于互读。
+ * 状态：`~/.opencli/<state-group>-throttle.json`，形状
+ * {next_at, calls, last_source} —— 与既有 Python 实现同形，便于互读。
+ * 归组而非按站点键：`web` 抓的就是 xueqiu.com 的详情页，必须与 `xueqiu/` 共用一个
+ * 额度（见 STATE_GROUP）。
  * 调试：`OPENCLI_RATELIMIT_DEBUG=1` 打印每次等待。
  */
 import * as fs from 'node:fs';
@@ -62,6 +76,23 @@ const BUILTIN_SITES = {
   web: XUEQIU_PACE,
 };
 
+/**
+ * 状态归组：把「打同一个站点」的 opencli 站点键并成一个额度。
+ *
+ * 为什么需要：缓存状态的默认键是 opencli 的**站点键**，而 `web article` 抓的是
+ * xueqiu.com 的详情页 —— 它和 `xueqiu user-articles` 打的是同一个站点。各算各的
+ * 窗口 = 实际请求密度翻倍（列表刚睡完 6–12 秒，详情页紧接着就能发），而风控墙看的
+ * 是**总量**。Python 版原先是共用一个状态文件的，这里对齐那个语义。
+ *
+ * 刻意做成代码里的映射、而不写在 BUILDIN_SITES 的 `state_path` 上：用户在
+ * `~/.opencli/rate-limits.json` 里覆盖 `sites.web` 时是**整体替换**对象，写在
+ * 内置项上的 `state_path` 会随之丢失、又退回各算各的。
+ */
+const STATE_GROUP = {
+  xueqiu: 'xueqiu',
+  web: 'xueqiu', // ← `web article` 抓的就是雪球详情页
+};
+
 /** 站点未覆盖字段的兜底。注意 enabled 的默认值只在站点被声明时才有意义。 */
 const DEFAULT_POLICY = {
   enabled: true,
@@ -78,14 +109,27 @@ const LOCK_STALE_MS = 60_000; // 持锁只为读改写状态，超过这个时�
 const LOCK_WAIT_MS = 30_000;
 const LOCK_POLL_MS = 25;
 
-const DEBUG = Boolean(process.env.OPENCLI_RATELIMIT_DEBUG);
+// 用 envFlagOn 而不是 Boolean(process.env.X)：后者把 `=0` / `=false` 也当成「开」
+// —— 用户设 `OPENCLI_RATELIMIT_DEBUG=0` 想关掉，反而打出全部等待日志
+// （2026-10-12 review）。
+const DEBUG = envFlagOn(['OPENCLI_RATELIMIT_DEBUG']);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function envFlagOff(names) {
   for (const name of names) {
     const value = String(process.env[name] ?? '').trim().toLowerCase();
-    if (value === '0' || value === 'false' || value === 'off' || value === 'disabled') return true;
+    // 否定值集合必须与 envFlagOn 的那套**互补**，否则 `=no` 在一个助手里算「关」、
+    // 在另一个里算「开」（2026-10-12 review）。
+    if (
+      value === '0' ||
+      value === 'false' ||
+      value === 'off' ||
+      value === 'no' ||
+      value === 'disabled'
+    ) {
+      return true;
+    }
   }
   return false;
 }
@@ -182,10 +226,12 @@ function applyEnv(site, base) {
 }
 
 function statePathFor(site, policy) {
-  const override = site === 'xueqiu' ? process.env.XUEQIU_OPENCLI_THROTTLE_STATE : '';
+  const group = STATE_GROUP[site] ?? site;
+  const override =
+    group === 'xueqiu' ? process.env.XUEQIU_OPENCLI_THROTTLE_STATE : '';
   const chosen = policy.state_path || override;
   if (chosen) return path.resolve(String(chosen).replace(/^~(?=\/|$)/, os.homedir()));
-  return path.join(OPENCLI_DIR, `${site}-throttle.json`);
+  return path.join(OPENCLI_DIR, `${group}-throttle.json`);
 }
 
 function readState(statePath) {
@@ -200,7 +246,12 @@ function readState(statePath) {
 
 function writeState(statePath, state) {
   // 先写临时文件再 rename —— 读方永远看不到半截 JSON。
-  const tmp = `${statePath}.tmp`;
+  //
+  // 临时名带 pid：Python 版用的是 `${statePath}.tmp`（同一个名字），若同时开两个
+  // 实现（`XUEQIU_OPENCLI_THROTTLE=1` 的回退档），两边会互相 rename 对方写到一半的
+  // 临时文件，读方解析失败后 readState 会静默回落成 {next_at:0,calls:0}、把限速
+  // 排期整个丢掉（2026-10-12 review）。
+  const tmp = `${statePath}.${process.pid}.tmp`;
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   fs.writeFileSync(tmp, JSON.stringify(state));
   fs.renameSync(tmp, statePath);
@@ -237,10 +288,21 @@ async function acquireSlot(site, source, policy) {
   // 被下面的 catch 当作「无法创建锁」直接放行 —— **限速静默失效、没有任何告警**。
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
 
+  // 这把锁的「所有权凭证」。解锁时必须核对，否则会误删别人的活锁 ——
+  // 若本进程在临界区里被挂起超过 LOCK_STALE_MS（笔记本睡眠 / SIGSTOP），别人会
+  // 回收我们的锁并建一把新的；我们恢复后若无脑 unlink，删掉的就是**别人的**锁，
+  // 第三个进程随即能挤进临界区做并发读改写（2026-10-12 review）。
+  const lockToken = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
   for (;;) {
     let fd;
     try {
       fd = fs.openSync(lockPath, 'wx'); // 独占创建 = 跨进程互斥
+      try {
+        fs.writeSync(fd, lockToken);
+      } catch {
+        /* 写不进凭证不影响互斥；解锁时按「空文件 = 自己的」兜底 */
+      }
     } catch (err) {
       if (err.code !== 'EEXIST') {
         log.warn(`rate-limit[${site}]: 无法创建锁 ${lockPath}（${err.message}），本轮放行`);
@@ -280,9 +342,16 @@ async function acquireSlot(site, source, policy) {
       });
       waited = Math.max(0, nextAt - nowS);
     } finally {
-      fs.closeSync(fd);
       try {
-        fs.unlinkSync(lockPath);
+        fs.closeSync(fd);
+      } catch {
+        /* 已关闭 */
+      }
+      // 只删**自己的**锁：核对凭证，见 lockToken 的注释。空文件按「自己的」处理
+      // （凭证写失败时的兜底，否则锁会一直留到陈旧回收）。
+      try {
+        const owner = fs.readFileSync(lockPath, 'utf8');
+        if (owner === '' || owner === lockToken) fs.unlinkSync(lockPath);
       } catch {
         /* 已被陈旧回收线程删掉 */
       }

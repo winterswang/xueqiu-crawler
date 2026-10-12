@@ -74,8 +74,9 @@ _WAF_BLOCKED_MARKER = "风控验证页"
 # 早上 07:30–08:35 窗口实测只有本爬虫在调用（台账里 0 笔非爬虫来源），所以当天
 # 那两笔失败与取锁等待无关，120 在这个窗口内够用。
 #
-# 同步维护：插件层的 long_pause_min/max_s、max_delay_s 若调大，这里必须一起调大；
-# tests/test_opencli_throttle.py 只钉住「调用方这一侧」的超时，读不到那边。
+# 双向守卫：tests/test_opencli_throttle.py 会**解析插件源码**取
+# max_delay_s + long_pause_max_s，再把这里的值与之比较 —— 所以插件层把限速调大、
+# 或这里把超时改小，测试都会红。改任一处的数值都请先跑那个测试。
 OPENCLI_CALL_TIMEOUT_SECONDS = 120
 
 
