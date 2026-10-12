@@ -33,7 +33,7 @@ discoverClis(BUILTIN_CLIS) → discoverClis(USER_CLIS) → discoverPlugins()
 | `search.js` | xiaohongshu | `opencli xiaohongshu search` | 覆盖官方基线：DOM 抓取 + `xsec_token` 直出，只支持 `--sort comprehensive` |
 | `article.js` | **web**（通用） | `opencli web article` | 自研；读取任意网页正文（跨站选择器链），输出 markdown |
 | `utils.js` | — | — | **非命令模块**，仅供 `stock-notices.js` 相对引用；是官方基线 `clis/xueqiu/utils.js` 的副本 |
-| `rate-limit.js` | —（全站点） | — | **非命令模块**：注册 `onBeforeExecute` 钩子，对所有站点的 opencli 调用统一跨进程限速（见下节） |
+| `rate-limit.js` | —（全站点） | — | **非命令模块**：注册 `onBeforeExecute` 钩子，对**走 registry 的** opencli 调用统一跨进程限速（`browser` 子命令例外、通用站 `web` 按目标域名分流，均见下节） |
 
 > `utils.js` 只导出 `formatChinaDate` / `stripHtml` / `fetchXueqiuJson`。
 > 因为 `@jackwener/opencli/clis/...` 不在包的 `exports` 里，无法深层 import，只能随插件携带。
@@ -53,7 +53,7 @@ discoverClis(BUILTIN_CLIS) → discoverClis(USER_CLIS) → discoverPlugins()
 执行前就被 import 并完成注册。
 
 **跨进程**：opencli 每次调用都是新进程，状态因此放文件：
-`~/.opencli/<state-group>-throttle.json`，形状 `{next_at, calls, last_source}`（与既有
+`~/.opencli/<site>-throttle.json`，形状 `{next_at, calls, last_source}`（与既有
 Python 实现同形）。**归组键不是 opencli 站点键** —— 打同一个站点的调用必须共用一个
 额度（`web article` 抓 xueqiu.com 的详情页时归到 `xueqiu` 那组，落到
 `xueqiu-throttle.json`），否则各算各的窗口等于请求密度翻倍。互斥用**独占创建的锁文件**
@@ -87,8 +87,9 @@ Python 实现同形）。**归组键不是 opencli 站点键** —— 打同一�
   内置节奏是 3–8s（比 Python 版更宽松：它按**动词**匹配，对所有 `web article` 一律
   套雪球节奏）。URL 解析不出来时退回 `web` 自己的节奏，**不是**不限速。
 - `web` 内置表里另有 opencli 自带的 `web read`（读任意网页），同样按上面的规则走。
-- **状态按「目标站点」归组，不按 opencli 站点键**（源码里的 `STATE_GROUP`）：经
-  `HOST_RULES` 归到 `xueqiu` 的 `web` 调用与 `xueqiu/` 的列表调用**共用**
+- **状态按「目标站点」归组，不按 opencli 站点键**：`hostSiteFor` 把打 `xueqiu.com`
+  的 `web` 调用重归到 site=`xueqiu`，而状态文件名由 site 直接决定，于是它与
+  `xueqiu/` 的列表调用**共用**
   `~/.opencli/xueqiu-throttle.json` 一个额度 —— 打的是同一个站点，各算各的窗口等于
   请求密度翻倍，而风控墙看的是总量（Python 版原先就是单个状态文件）。
 - ⚠️ **钩子覆盖不到 `opencli browser ...`**。`onBeforeExecute` 的唯一触发点在

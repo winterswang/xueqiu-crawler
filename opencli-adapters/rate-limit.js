@@ -30,10 +30,11 @@
  *
  * 配置：`~/.opencli/rate-limits.json`，每站点不同策略；未在配置（含内置表）
  * 里声明的站点**不限速**（宁可漏也不能误伤本地命令）。
- * 状态：`~/.opencli/<state-group>-throttle.json`，形状
+ * 状态：`~/.opencli/<site>-throttle.json`，形状
  * {next_at, calls, last_source} —— 与既有 Python 实现同形，便于互读。
- * 归组而非按站点键：`web` 抓的就是 xueqiu.com 的详情页，必须与 `xueqiu/` 共用一个
- * 额度（见 STATE_GROUP）。
+ * 额度按**站点**存，而 `hostSiteFor` 会把打 xueqiu.com 的 `web` 调用重归到
+ * site=`xueqiu` —— 于是 `web article` 抓详情页与 `xueqiu/` 的列表调用自然共用
+ * 同一份额度（xueqiu-throttle.json），不会各算各的窗口。
  * 调试：`OPENCLI_RATELIMIT_DEBUG=1 OPENCLI_VERBOSE=1` 打印每次等待。
  * **两个都要设**：前者打开本模块自己的日志，后者是 opencli logger 的开关
  * （`log.debug` 直接转调 `verbose`，而 `verbose` 只在 `OPENCLI_VERBOSE` 下才写），
@@ -86,25 +87,18 @@ const BUILTIN_SITES = {
  * （爬虫/监控的主路径，且**被 WAF 盯的就是这一类**），也可能是 cninfo/hkexnews 的
  * 公告页。风控看的是「打同一个站点的请求总量」，所以判定与额度都必须落到**域名**上：
  * 打 xueqiu.com 的与 `xueqiu user-articles` 共用同一个 6–12s 额度与长停计数
- * （经 STATE_GROUP 落到同一个状态文件），别的域名不跟着一起算。
+ * （`hostSiteFor` 重归到 site=`xueqiu`，状态文件名由 site 决定），别的域名不跟着算。
  *
  * 没命中规则的 `web` 调用退回 `web` 自己的温和节奏（不是不限速）—— 宁可慢一点，
  * 也不要因为「URL 解析不出来」而静默变成完全不限速。
  */
 const HOST_RULES = [{ host: /(^|\.)xueqiu\.com$/i, site: 'xueqiu' }];
 
-/**
- * 状态归组：把「打同一个站点」的 opencli 站点键并成一个额度。
- *
- * 默认键是 opencli 的站点键，而 `xueqiu` 与经 HOST_RULES 归到它的 `web` 调用打的是
- * 同一个站点，必须共用一个状态文件 —— 各算各的窗口 = 请求密度翻倍，而风控墙看的
- * 是总量（Python 版原先就是单个状态文件）。
- *
- * 刻意做成代码里的映射、而不写在 BUILDIN_SITES 的 `state_path` 上：用户在
- * `~/.opencli/rate-limits.json` 里覆盖 `sites.xueqiu` 时是**整体替换**对象，写在
- * 内置项上的 `state_path` 会随之丢失、又退回各算各的。
- */
-const STATE_GROUP = { xueqiu: 'xueqiu' };
+// 注意：额度共用**不是**靠一张「站点→组」的映射表实现的 —— `hostSiteFor` 已经把
+// 打 xueqiu.com 的 `web` 调用重新归到 site='xueqiu'，而状态文件名由 site 直接决定
+// （见 statePathFor）。所以这里不要再加一层 group 映射：多一层就没有哪一层是
+// load-bearing 的了，后来人会照着注释把 cninfo 之类的域名也并进雪球额度
+// （2026-10-12 review 指出先前那版 STATE_GROUP 已经是恒等映射、纯死代码）。
 
 /** 站点未覆盖字段的兜底。注意 enabled 的默认值只在站点被声明时才有意义。 */
 const DEFAULT_POLICY = {
@@ -167,7 +161,17 @@ function envFlagOn(names) {
   for (const name of names) {
     const value = String(process.env[name] ?? '').trim().toLowerCase();
     if (value === '') continue;
-    if (value === '0' || value === 'false' || value === 'off' || value === 'no') continue;
+    // 否定值集合必须与 envFlagOff 的那套**逐字一致**，否则同一个值在两个助手里
+    // 含义相反（例：`=disabled` 在 envFlagOff 里是「关」，漏在这里就变成「开」）。
+    if (
+      value === '0' ||
+      value === 'false' ||
+      value === 'off' ||
+      value === 'no' ||
+      value === 'disabled'
+    ) {
+      continue;
+    }
     return true;
   }
   return false;
@@ -247,12 +251,11 @@ function applyEnv(site, base) {
 }
 
 function statePathFor(site, policy) {
-  const group = STATE_GROUP[site] ?? site;
   const override =
-    group === 'xueqiu' ? process.env.XUEQIU_OPENCLI_THROTTLE_STATE : '';
+    site === 'xueqiu' ? process.env.XUEQIU_OPENCLI_THROTTLE_STATE : '';
   const chosen = policy.state_path || override;
   if (chosen) return path.resolve(String(chosen).replace(/^~(?=\/|$)/, os.homedir()));
-  return path.join(OPENCLI_DIR, `${group}-throttle.json`);
+  return path.join(OPENCLI_DIR, `${site}-throttle.json`);
 }
 
 function readState(statePath) {
@@ -285,6 +288,72 @@ const randomBetween = (min, max) => {
 };
 
 /**
+ * 取状态锁：独占创建 = 跨进程互斥（Node 没有 flock）。
+ *
+ * 成功返回 `{ fd }`；需要 fail-open 放过本次调用时返回 `{ failOpen: true }`
+ * （锁被别人占着超过 LOCK_WAIT_MS、或锁文件根本建不出来）。
+ *
+ * 陈旧锁回收放在这里：持锁超过 LOCK_STALE_MS 说明是崩溃残留 —— 但注意它与
+ * `lockToken` 的配合，见 releaseLock。
+ */
+async function acquireLock(site, lockPath, lockToken) {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeSync(fd, lockToken);
+      } catch {
+        /* 写不进凭证不影响互斥；解锁时按「空文件 = 自己的」兜底 */
+      }
+      return { fd };
+    } catch (err) {
+      if (err.code !== 'EEXIST') {
+        log.warn(`rate-limit[${site}]: 无法创建锁 ${lockPath}（${err.message}），本轮放行`);
+        return { failOpen: true };
+      }
+    }
+    try {
+      if (Date.now() - fs.statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
+        fs.unlinkSync(lockPath); // 崩溃残留，回收后重试
+        continue;
+      }
+    } catch {
+      /* 锁刚被另一方释放，直接重试 */
+    }
+    if (Date.now() > deadline) {
+      // 文案别再说「仅记录状态」—— 这里既没等到、也没写状态，本次就是**不限速**放行。
+      log.warn(`rate-limit[${site}]: 等待状态锁超时，本次不限速放行`);
+      return { failOpen: true };
+    }
+    await sleep(LOCK_POLL_MS + Math.random() * LOCK_POLL_MS);
+  }
+}
+
+/**
+ * 释放状态锁：**只删自己的**，靠 lockToken 核对所有权。
+ *
+ * 不核对会误删别人的活锁 —— 若本进程在临界区里被挂起超过 LOCK_STALE_MS
+ * （笔记本睡眠 / SIGSTOP），别人会回收我们的锁并建一把新的；我们恢复后若无脑
+ * unlink，删掉的就是**别人的**锁，第三个进程随即能挤进临界区做并发读改写
+ * （2026-10-12 review）。空文件按「自己的」处理：凭证写失败时的兜底，
+ * 否则锁会一直留到陈旧回收。
+ */
+function releaseLock(fd, lockPath, lockToken) {
+  try {
+    fs.closeSync(fd);
+  } catch {
+    /* 已关闭 */
+  }
+  try {
+    const owner = fs.readFileSync(lockPath, 'utf8');
+    if (owner === '' || owner === lockToken) fs.unlinkSync(lockPath);
+  } catch {
+    /* 已被陈旧回收线程删掉 */
+  }
+}
+
+/**
  * 预留下一个槽位并睡到它开始。
  *
  * **fail-open 的依据**（别在这里补 try/catch —— 那是重复的）：opencli 只在
@@ -299,86 +368,38 @@ const randomBetween = (min, max) => {
 async function acquireSlot(site, source, policy) {
   const statePath = statePathFor(site, policy);
   const lockPath = `${statePath}.lock`;
-  const deadline = Date.now() + LOCK_WAIT_MS;
   let waited = 0;
   let reserved = 0;
 
   // 锁文件先于状态文件落地，所以目录得在这里建 —— writeState 里那次 mkdirSync
   // 在**拿到锁之后**才执行，太晚。漏了这一步的后果（2026-10-12 实测）：在
   // `~/.opencli` 还不存在的机器上（全新安装 / 新用户），openSync 报 ENOENT，
-  // 被下面的 catch 当作「无法创建锁」直接放行 —— **限速静默失效、没有任何告警**。
+  // 被 acquireLock 当作「无法创建锁」直接放行 —— **限速静默失效、没有任何告警**。
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
 
-  // 这把锁的「所有权凭证」。解锁时必须核对，否则会误删别人的活锁 ——
-  // 若本进程在临界区里被挂起超过 LOCK_STALE_MS（笔记本睡眠 / SIGSTOP），别人会
-  // 回收我们的锁并建一把新的；我们恢复后若无脑 unlink，删掉的就是**别人的**锁，
-  // 第三个进程随即能挤进临界区做并发读改写（2026-10-12 review）。
   const lockToken = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const { fd, failOpen } = await acquireLock(site, lockPath, lockToken);
+  if (failOpen) return { enabled: true, waited_s: 0 };
 
-  for (;;) {
-    let fd;
-    try {
-      fd = fs.openSync(lockPath, 'wx'); // 独占创建 = 跨进程互斥
-      try {
-        fs.writeSync(fd, lockToken);
-      } catch {
-        /* 写不进凭证不影响互斥；解锁时按「空文件 = 自己的」兜底 */
-      }
-    } catch (err) {
-      if (err.code !== 'EEXIST') {
-        log.warn(`rate-limit[${site}]: 无法创建锁 ${lockPath}（${err.message}），本轮放行`);
-        return { enabled: true, waited_s: 0 };
-      }
-      try {
-        if (Date.now() - fs.statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-          fs.unlinkSync(lockPath); // 崩溃残留，回收后重试
-          continue;
-        }
-      } catch {
-        /* 锁刚被另一方释放，直接重试 */
-      }
-      if (Date.now() > deadline) {
-        // 文案别再说「仅记录状态」—— 这里既没等到、也没写状态，本次就是**不限速**放行。
-        log.warn(`rate-limit[${site}]: 等待状态锁超时，本次不限速放行`);
-        return { enabled: true, waited_s: 0 };
-      }
-      await sleep(LOCK_POLL_MS + Math.random() * LOCK_POLL_MS);
-      continue;
-    }
-
-    try {
-      const state = readState(statePath);
-      const nowS = Date.now() / 1000;
-      const nextAt = Math.max(nowS, asNumber(state.next_at));
-      const calls = Math.trunc(asNumber(state.calls)) + 1;
-      const every = Math.trunc(asNumber(policy.long_pause_every));
-      const longPause =
-        every > 0 && calls % every === 0
-          ? randomBetween(asNumber(policy.long_pause_min_s), asNumber(policy.long_pause_max_s))
-          : 0;
-      reserved = randomBetween(asNumber(policy.min_delay_s), asNumber(policy.max_delay_s)) + longPause;
-      writeState(statePath, {
-        next_at: nextAt + reserved,
-        calls,
-        last_source: source,
-      });
-      waited = Math.max(0, nextAt - nowS);
-    } finally {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        /* 已关闭 */
-      }
-      // 只删**自己的**锁：核对凭证，见 lockToken 的注释。空文件按「自己的」处理
-      // （凭证写失败时的兜底，否则锁会一直留到陈旧回收）。
-      try {
-        const owner = fs.readFileSync(lockPath, 'utf8');
-        if (owner === '' || owner === lockToken) fs.unlinkSync(lockPath);
-      } catch {
-        /* 已被陈旧回收线程删掉 */
-      }
-    }
-    break;
+  try {
+    const state = readState(statePath);
+    const nowS = Date.now() / 1000;
+    const nextAt = Math.max(nowS, asNumber(state.next_at));
+    const calls = Math.trunc(asNumber(state.calls)) + 1;
+    const every = Math.trunc(asNumber(policy.long_pause_every));
+    const longPause =
+      every > 0 && calls % every === 0
+        ? randomBetween(asNumber(policy.long_pause_min_s), asNumber(policy.long_pause_max_s))
+        : 0;
+    reserved = randomBetween(asNumber(policy.min_delay_s), asNumber(policy.max_delay_s)) + longPause;
+    writeState(statePath, {
+      next_at: nextAt + reserved,
+      calls,
+      last_source: source,
+    });
+    waited = Math.max(0, nextAt - nowS);
+  } finally {
+    releaseLock(fd, lockPath, lockToken);
   }
 
   if (waited > 0) {
@@ -388,7 +409,7 @@ async function acquireSlot(site, source, policy) {
   return { enabled: true, waited_s: waited, reserved_s: reserved };
 }
 
-function shouldThrottle(site, name, args, policy) {
+function shouldThrottle(name, args, policy) {
   if (policy.enabled === false) return false;
   const skip = Array.isArray(policy.skip_commands) ? policy.skip_commands : [];
   if (skip.includes(name)) return false;
@@ -436,11 +457,21 @@ function installRateLimit() {
     // 策略、环境变量覆盖、状态额度都按**归组后的站点**算 —— 这样打 xueqiu.com 的
     // `web article` 与 `xueqiu user-articles` 共用一份额度和长停计数，
     // 且 `XUEQIU_OPENCLI_*` 那套开关对两者一致生效。
+    //
+    // 更彻底的做法是让 opencli 在 hookCtx 里直接带目标域名（或让调用方改用站点专属
+    // 命令），那样就不必从任意 args 里反推域名、也不必维护 HOST_RULES。这属于
+    // opencli 侧/调用方侧的改动，见下面那条 warn 的前提。
+    if (site === 'web' && !urlFromArgs(ctx?.args)) {
+      // 反推不出发域名 → 退回 `web` 自身那档（3–8s，**没有长停**）。让这件事可见：
+      // 否则 args 形态一变（opencli 改位置参数名、URL 挪进嵌套选项…），被 WAF 盯的
+      // xueqiu 详情页就会**静默**掉到弱档，且没有任何线索（2026-10-12 review）。
+      log.warn(`rate-limit: web 调用解析不出目标 URL（${full}），按其自身节奏限速`);
+    }
     const target = hostSiteFor(site, ctx?.args) || site;
     const base = policyFor(target);
     if (!base) return;
     const policy = applyEnv(target, base);
-    if (!shouldThrottle(site, name, ctx?.args, policy)) return;
+    if (!shouldThrottle(name, ctx?.args, policy)) return;
     await acquireSlot(target, full, policy);
   });
 }
