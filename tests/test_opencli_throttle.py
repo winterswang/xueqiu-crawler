@@ -10,24 +10,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import opencli_extractor
 
-# 插件层限速器（opencli-adapters/rate-limit.js）的「单次可能的最长等待」是
-# max_delay_s + long_pause_max_s —— 它的等待发生在 **opencli 子进程内部**，会被
-# subprocess.run 的墙钟一并计时，所以调用方的 timeout 必须大于「这个等待 + 单次
-# 真实执行」，否则长停一命中就必然被误杀（2026-10-12 实测：30s 上限下 2/18 账号失败）。
+# 插件层限速器的「单次可能的最长等待」是 max_delay_s + long_pause_max_s + 取锁轮询
+# 上限 —— 它的等待发生在 **opencli 子进程内部**，会被 subprocess.run 的墙钟一并计时，
+# 所以调用方的 timeout 必须大于「这个等待 + 单次真实执行」，否则长停一命中就必然被
+# 误杀（2026-10-12 实测：30s 上限下 2/18 账号失败）。
 #
 # 这些数**从插件源码里读**，不照抄 —— 这样插件层把 long_pause/max_delay 调大时，
 # 下面的断言会一起失败（双向守卫），而不是只有「timeout 被改小」才会红。
-PLUGIN_JS = (
-    Path(__file__).resolve().parent.parent / "opencli-adapters" / "rate-limit.js"
-)
+#
+# 读的是**整个插件目录**（入口 + lib/）而不是某一个文件：2026-10-12 把限速器拆成
+# lib/ 之后，常量分散到 policy.js / lockfile.js，只读入口会直接「找不到常量」。
+PLUGIN_DIR = Path(__file__).resolve().parent.parent / "opencli-adapters"
 SINGLE_RUN_HEADROOM_SECONDS = 20
+
+
+def plugin_source() -> str:
+    """把插件所有 .js 拼成一份可搜索的语料（入口 + lib/）."""
+    files = sorted(PLUGIN_DIR.glob("*.js")) + sorted((PLUGIN_DIR / "lib").glob("*.js"))
+    assert files, f"{PLUGIN_DIR} 下没有 .js"
+    return "\n".join(p.read_text(encoding="utf-8") for p in files)
 
 
 def _plugin_policy_js(site: str) -> str:
     """取出 BUILTIN_SITES 里某个站点的策略源码片段（内联对象或它引用的常量）."""
-    src = PLUGIN_JS.read_text(encoding="utf-8")
+    src = plugin_source()
     table = re.search(r"const BUILTIN_SITES = \{(.*?)\n\};", src, re.S)
-    assert table, "找不到 BUILTIN_SITES —— rate-limit.js 结构变了，请同步这个测试"
+    assert table, "找不到 BUILTIN_SITES —— 插件结构变了，请同步这个测试"
     entry = re.search(
         rf"^\s*{re.escape(site)}\s*:\s*(\{{.*?\}}|[A-Za-z_$][\w$]*)\s*,?\s*$",
         table.group(1),
@@ -51,7 +59,7 @@ def _plugin_number(site: str, key: str) -> float:
 
 def _plugin_const_ms(name: str) -> float:
     """读模块级毫秒常量（如 LOCK_WAIT_MS），换成秒."""
-    src = PLUGIN_JS.read_text(encoding="utf-8")
+    src = plugin_source()
     found = re.search(rf"const {re.escape(name)} = ([\d_]+)", src)
     assert found, f"找不到常量 {name}"
     return float(found.group(1).replace("_", "")) / 1000.0
@@ -159,7 +167,7 @@ def test_web_calls_to_xueqiu_resolve_to_xueqiu_group():
     停 45–75 秒。反过来，不归组又会让打 xueqiu.com 的详情页与 `xueqiu/` 列表调用
     各算各的窗口，请求密度翻倍 —— 风控墙看的是总量。
     """
-    src = PLUGIN_JS.read_text(encoding="utf-8")
+    src = plugin_source()
     rules = re.search(r"const HOST_RULES = \[(.*?)\];", src, re.S)
     assert rules, "找不到 HOST_RULES —— rate-limit.js 结构变了，请同步这个测试"
     entry = re.search(r"host:\s*/(.+?)/i\s*,\s*site:\s*'([^']+)'", rules.group(1))
