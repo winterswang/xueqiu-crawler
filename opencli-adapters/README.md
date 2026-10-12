@@ -33,10 +33,62 @@ discoverClis(BUILTIN_CLIS) → discoverClis(USER_CLIS) → discoverPlugins()
 | `search.js` | xiaohongshu | `opencli xiaohongshu search` | 覆盖官方基线：DOM 抓取 + `xsec_token` 直出，只支持 `--sort comprehensive` |
 | `article.js` | **web**（通用） | `opencli web article` | 自研；读取任意网页正文（跨站选择器链），输出 markdown |
 | `utils.js` | — | — | **非命令模块**，仅供 `stock-notices.js` 相对引用；是官方基线 `clis/xueqiu/utils.js` 的副本 |
+| `rate-limit.js` | —（全站点） | — | **非命令模块**：注册 `onBeforeExecute` 钩子，对所有站点的 opencli 调用统一跨进程限速（见下节） |
 
 > `utils.js` 只导出 `formatChinaDate` / `stripHtml` / `fetchXueqiuJson`。
 > 因为 `@jackwener/opencli/clis/...` 不在包的 `exports` 里，无法深层 import，只能随插件携带。
 > **官方升级后若改动了这个文件，需要手动同步**（见下方漂移检查）。
+
+## 跨进程站点限速（`rate-limit.js`）
+
+**做在 adapter 层的理由**：调用方自觉限速不可靠 —— 2026-10-11 盘点发现
+`xueqiu-monitor/scripts/backfill_*.py`、已废弃的 `stock_fetcher_opencli.py` 等
+**4 条路径完全绕过了** `xueqiu_analyzer.opencli_rate_limiter`。放进插件后，所有调用方
+（本仓库脚本、`xueqiu-monitor`、FrontierAgent 的工具、手敲 `opencli`）都走同一条钩子。
+
+**机制**：opencli 在执行任何命令前触发 `onBeforeExecute`
+（`dist/src/execution.js:206`），钩子 API 从 `@jackwener/opencli/registry` 导出。
+插件目录是**平铺急加载**的，且 discovery 的模块识别正则
+（`dist/src/discovery.js:26`）显式包含 `onBeforeExecute(` —— 所以本文件会在第一个命令
+执行前就被 import 并完成注册。
+
+**跨进程**：opencli 每次调用都是新进程，状态因此放文件：
+`~/.opencli/<site>-throttle.json`，形状 `{next_at, calls, last_source}`（与既有
+Python 实现同形）。互斥用**独占创建的锁文件**（Node 没有 flock），带陈旧锁回收。
+算法是「预留即睡」：持锁读改写 `next_at` → 释放锁 → 才 sleep，长命令不阻塞别的 crawler。
+
+**配置** `~/.opencli/rate-limits.json`（可省略，省略时用内置表）：
+
+```json
+{
+  "defaults": { "enabled": true, "min_delay_s": 3, "max_delay_s": 8 },
+  "sites": {
+    "xiaohongshu": { "min_delay_s": 15, "max_delay_s": 15 },
+    "xueqiu": { "min_delay_s": 6, "max_delay_s": 12,
+                "long_pause_every": 30, "long_pause_min_s": 45, "long_pause_max_s": 75 },
+    "web":    { "min_delay_s": 6, "max_delay_s": 12,
+                "long_pause_every": 30, "long_pause_min_s": 45, "long_pause_max_s": 75 }
+  }
+}
+```
+
+- 站点可覆盖 `enabled` / `min_delay_s` / `max_delay_s` / `long_pause_*` /
+  `skip_commands` / `state_path`；`sites["*"]` 为通配。
+- **未声明的站点不限速**（宁可漏，也不误伤本地命令）。
+- 内置表里 `web` 与 `xueqiu` 同节奏，**这是必须的而不是可选**：雪球生产链路的
+  **详情页**走的是通用命令 `opencli web article`，站点键是 `web`，`xueqiu` 的策略
+  盖不到它。漏掉这一条 = 详情页**连基础的 6–12 秒间隔都没有**，而那正是被风控拦的
+  一类请求（2026-10-12：台账里 625 次 `web article` 全部指向 xueqiu.com，当天早上
+  第二遍爬取被墙拦掉的就是它）。将来若真的用 `web article` 抓非雪球站点，需要改成
+  按目标域名判定，否则会把 cninfo/hkexnews 这类下载也拖成雪球的节奏。
+  `web` 用**自己的**状态文件（`~/.opencli/web-throttle.json`），与 `xueqiu/` 的
+  列表调用各算各的窗口。
+- 环境变量：通用 `OPENCLI_RATELIMIT_DISABLED=1` / `OPENCLI_RATELIMIT_<SITE>_MIN_DELAY_SECONDS` …
+  调试用 `OPENCLI_RATELIMIT_DEBUG=1`；`xueqiu` 站点继续兼容既有 `XUEQIU_OPENCLI_*` 命名。
+
+**因此 Python 侧的限速器已让位**：`xueqiu-analyzer-skill/.../opencli_rate_limiter.py`
+默认关闭（`XUEQIU_OPENCLI_THROTTLE=1` 可重新启用做回退），否则会与新钩子叠加成双重等待。
+FrontierAgent 的 `plugins/tools/_platform_cli.py` 同理，只保留自己的跨进程锁与失败退避。
 
 ### 为什么这里有一个通用站命令 `web article`
 

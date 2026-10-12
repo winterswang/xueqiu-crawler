@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -9,16 +10,50 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import opencli_extractor
 
-# 插件层限速器（opencli-adapters/rate-limit.js，站点 xueqiu）单次可能的最长等待：
-# max_delay_s(12) + long_pause_max_s(75) = 87 秒。它的等待发生在 **opencli
-# 子进程内部**，会被 subprocess.run 的墙钟一并计时 —— 所以调用方的 timeout 必须
-# 大于「这个等待 + 单次真实执行」，否则长停一命中就必然被误杀。
+# 插件层限速器（opencli-adapters/rate-limit.js）的「单次可能的最长等待」是
+# max_delay_s + long_pause_max_s —— 它的等待发生在 **opencli 子进程内部**，会被
+# subprocess.run 的墙钟一并计时，所以调用方的 timeout 必须大于「这个等待 + 单次
+# 真实执行」，否则长停一命中就必然被误杀（2026-10-12 实测：30s 上限下 2/18 账号失败）。
 #
-# 这两个数是**照抄**插件层的内置策略，不是读出来的：插件层的 long_pause/max_delay
-# 改大时，下面的断言不会自动跟着失败。所以这两个测试只钉住调用方这一侧（把
-# timeout 改小会红），另一侧需要在改 rate-limit.js 时人工同步。
-PLUGIN_THROTTLE_MAX_WAIT_SECONDS = 12 + 75
+# 这些数**从插件源码里读**，不照抄 —— 这样插件层把 long_pause/max_delay 调大时，
+# 下面的断言会一起失败（双向守卫），而不是只有「timeout 被改小」才会红。
+PLUGIN_JS = (
+    Path(__file__).resolve().parent.parent / "opencli-adapters" / "rate-limit.js"
+)
 SINGLE_RUN_HEADROOM_SECONDS = 20
+
+
+def _plugin_policy_js(site: str) -> str:
+    """取出 BUILTIN_SITES 里某个站点的策略源码片段（内联对象或它引用的常量）."""
+    src = PLUGIN_JS.read_text(encoding="utf-8")
+    table = re.search(r"const BUILTIN_SITES = \{(.*?)\n\};", src, re.S)
+    assert table, "找不到 BUILTIN_SITES —— rate-limit.js 结构变了，请同步这个测试"
+    entry = re.search(
+        rf"^\s*{re.escape(site)}\s*:\s*(\{{.*?\}}|[A-Za-z_$][\w$]*)\s*,?\s*$",
+        table.group(1),
+        re.M | re.S,
+    )
+    assert entry, f"BUILTIN_SITES 没有声明 `{site}` —— 该站点的调用将完全不限速"
+    value = entry.group(1)
+    if value.startswith("{"):
+        return value
+    const = re.search(rf"const {re.escape(value)} = \{{(.*?)\n\}};", src, re.S)
+    assert const, f"`{value}` 的定义找不到，无法解析 {site} 的策略"
+    return const.group(1)
+
+
+def _plugin_number(site: str, key: str) -> float:
+    policy = _plugin_policy_js(site)
+    found = re.search(rf"\b{re.escape(key)}\s*:\s*([0-9.]+)", policy)
+    assert found, f"{site} 的策略里没有 `{key}`：{policy[:80]}"
+    return float(found.group(1))
+
+
+def _plugin_worst_wait_seconds(site: str) -> float:
+    """单次调用在插件层可能被等待的最长时间（只算预留，不含取锁轮询）."""
+    return _plugin_number(site, "max_delay_s") + _plugin_number(
+        site, "long_pause_max_s"
+    )
 
 
 def test_user_articles_preflight_does_not_visit_xueqiu(monkeypatch):
@@ -72,8 +107,8 @@ def test_list_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     回归（2026-10-12）：插件层每 30 次调用一次 45–75 秒长停，而列表调用的
     timeout 只有 30 秒 —— 等待发生在子进程里，于是长停每命中一次就把列表调用
     掐死在 30.0s、该账号记失败（当天 2/18 失败；账号 4111857140 因此漏掉一篇
-    真文）。这条断言就是当时缺的防线：把调用方的 timeout 改小（例如回退成
-    30/60），它会先失败。插件层那一侧读不到，见上方常量注释。
+    真文）。两侧都钉住：调用方的 timeout 改小会红，插件层的 long_pause/max_delay
+    改大也会红。
     """
     captured = {}
 
@@ -88,16 +123,31 @@ def test_list_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     opencli_extractor.get_user_articles("1", 20)
 
     assert captured["timeout"] > (
-        PLUGIN_THROTTLE_MAX_WAIT_SECONDS + SINGLE_RUN_HEADROOM_SECONDS
+        _plugin_worst_wait_seconds("xueqiu") + SINGLE_RUN_HEADROOM_SECONDS
     )
+
+
+def test_builtin_sites_declare_web_so_detail_pages_are_throttled():
+    """内置表必须声明 `web`，且它的策略要带长停。
+
+    回归（2026-10-12）：雪球生产链路的**详情页**走的是通用命令
+    `opencli web article`（站点键 `web`）。内置表原先只声明了
+    xiaohongshu / xueqiu，`policyFor('web')` 返回 null —— 详情页**连基础的
+    6–12 秒间隔都没有**，而它正是被风控墙拦掉的那一类请求
+    （台账 625 次 `web article` 全部指向 xueqiu.com）。
+    Python 版原本专门覆盖了这条路径，限速上移到插件层时漏了。
+    """
+    policy = _plugin_policy_js("web")
+
+    assert "long_pause_max_s" in policy, f"web 的策略没有长停：{policy[:80]}"
+    assert _plugin_number("web", "max_delay_s") > 0, "web 的策略没有正的基础间隔"
 
 
 def test_detail_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     """详情页调用的超时同样要盖住插件层长停。
 
-    详情页当前还没被插件层限速（策略只声明了 xueqiu，而这条命令的站点键是
-    web），所以现在撞不上；但一旦补上 web 的覆盖，它就会拿到同样的 45–75 秒
-    长停 —— 提前钉住，避免修一个坑掉进另一个。
+    详情页走的是 `web article`（站点键 `web`）—— `web` 策略一旦补上（已补），
+    它就会和列表调用一样吃到 45–75 秒长停，所以超时上限必须同样够。
     """
     captured = {}
 
@@ -126,5 +176,5 @@ def test_detail_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     opencli_extractor.get_article_content("https://xueqiu.com/1/1")
 
     assert captured["timeout"] > (
-        PLUGIN_THROTTLE_MAX_WAIT_SECONDS + SINGLE_RUN_HEADROOM_SECONDS
+        _plugin_worst_wait_seconds("web") + SINGLE_RUN_HEADROOM_SECONDS
     )
