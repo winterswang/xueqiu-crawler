@@ -33,32 +33,90 @@ discoverClis(BUILTIN_CLIS) → discoverClis(USER_CLIS) → discoverPlugins()
 | `search.js` | xiaohongshu | `opencli xiaohongshu search` | 覆盖官方基线：DOM 抓取 + `xsec_token` 直出，只支持 `--sort comprehensive` |
 | `article.js` | **web**（通用） | `opencli web article` | 自研；读取任意网页正文（跨站选择器链），输出 markdown |
 | `utils.js` | — | — | **非命令模块**，仅供 `stock-notices.js` 相对引用；是官方基线 `clis/xueqiu/utils.js` 的副本 |
+| `lib/*.js` | — | — | **非命令模块**，被 `rate-limit.js` import：`paths` / `env` / `util` / `lockfile` / `policy` / `domain-tables` / `domains` / `ratelimit` / `concurrency` / `requestlog` |
 | `rate-limit.js` | —（全站点） | — | **非命令模块**：注册 `onBeforeExecute` 钩子，对**走 registry 的** opencli 调用统一跨进程限速（`browser` 子命令例外、通用站 `web` 按目标域名分流，均见下节） |
 
 > `utils.js` 只导出 `formatChinaDate` / `stripHtml` / `fetchXueqiuJson`。
 > 因为 `@jackwener/opencli/clis/...` 不在包的 `exports` 里，无法深层 import，只能随插件携带。
 > **官方升级后若改动了这个文件，需要手动同步**（见下方漂移检查）。
 
-## 跨进程站点限速（`rate-limit.js`）
+## 浏览器操作的统一治理：限频 + 并发 + 请求台账
 
-**做在 adapter 层的理由**：调用方自觉限速不可靠 —— 2026-10-11 盘点发现
-`xueqiu-monitor/scripts/backfill_*.py`、已废弃的 `stock_fetcher_opencli.py` 等
-**4 条路径完全绕过了** `xueqiu_analyzer.opencli_rate_limiter`。放进插件后，所有调用方
-（本仓库脚本、`xueqiu-monitor`、FrontierAgent 的工具、手敲 `opencli`）都走同一条钩子。
+入口是 `rate-limit.js`（插件目录里**唯一**注册钩子的文件），实现在 `lib/` 下。
+`lib/*` 不会被 opencli 的 discovery 扫到（它只平铺读顶层 `.js`），必须由入口 import。
 
-**机制**：opencli 在执行任何命令前触发 `onBeforeExecute`
-（`dist/src/execution.js:206`），钩子 API 从 `@jackwener/opencli/registry` 导出。
-插件目录是**平铺急加载**的，且 discovery 的模块识别正则
-（`dist/src/discovery.js:26`）显式包含 `onBeforeExecute(` —— 所以本文件会在第一个命令
-执行前就被 import 并完成注册。
+### ⚠️ 覆盖面：先看这张表，别以为它管住了「所有浏览器操作」
 
-**跨进程**：opencli 每次调用都是新进程，状态因此放文件：
-`~/.opencli/<site>-throttle.json`，形状 `{next_at, calls, last_source}`（与既有
-Python 实现同形）。**归组键不是 opencli 站点键** —— 打同一个站点的调用必须共用一个
-额度（`web article` 抓 xueqiu.com 的详情页时归到 `xueqiu` 那组，落到
-`xueqiu-throttle.json`），否则各算各的窗口等于请求密度翻倍。互斥用**独占创建的锁文件**
-（Node 没有 flock），带陈旧锁回收与所有权凭证。算法是「预留即睡」：持锁读改写
-`next_at` → 释放锁 → 才 sleep，长命令不阻塞别的 crawler。
+| 通道 | 限频 | 并发 | 台账 |
+| --- | --- | --- | --- |
+| 所有 `cli()` 注册命令（`xueqiu/*`、`xiaohongshu/*`、`web/article`） | ✅ | ✅ | ✅ |
+| 手敲 `opencli …`、其它脚本的裸 `subprocess` | ✅ | ✅ | ✅（`source_kind: manual`） |
+| `opencli doctor` / `list` / `--help` / update-check | ❌ | ❌ | ❌（本地探测，不经 `executeCommand`） |
+| **`opencli browser …`** | ❌ | ❌ | ❌ |
+| urllib / curl / playwright / nodriver 直连 | ❌ | ❌ | ❌ |
+
+两处「❌」的分量不同，别混为一谈：
+
+- **`opencli browser …`**：钩子的唯一触发点在 `executeCommand`
+  （`dist/src/execution.js:206`），而 `browser` 命令直接挂 commander、经 daemon 发指令，
+  **不触发任何钩子**。`browser open` 会真导航到目标站点，是唯一有实际风险的缺口；
+  已提上游 [jackwener/opencli#2606](https://github.com/jackwener/OpenCLI/issues/2606)。
+  当前生产不受影响（`web article` 已注册，`_attempt_via_browser` 只在该命令缺失时才走），
+  但**台账里 `browser:*` 不计入域名密度**，排查时要知道。
+- **非 opencli 通道**（monitor 直下公告 PDF、`curl` 打 sec.gov、智谱 reader、nodriver
+  直连抓取）：根本不经过 opencli，本插件够不着。
+
+### 频率控制：按**域名**，不按 opencli 站点键
+
+风控看的是「打同一个域名的请求总量」，而站点键只是实现细节：
+`xueqiu/user-articles`（列表）与 `web/article`（通用站的详情页）打的是同一个
+`xueqiu.com`，必须共用一份额度；反过来，同样走 `web/article` 的 cninfo/hkexnews
+公告页不该被算进雪球的账。
+
+- 解析：`lib/domains.js` 的 `resolveDomainKey` → 站点默认域名 / 参数里的 URL →
+  别名表 → 多级后缀规则 → 末两段兜底。解析不出就退回站点键（**不是**不限速）。
+- 查找链：**域名键 → 站点键 → 通配**。站点那一步不能省，否则
+  `web article` 抓 cninfo（域名键 `cninfo.com.cn` 无专门配置）会变成「未声明即不限速」。
+- 状态：`~/.opencli/<域名键>-throttle.json`。
+- ⚠️ **别名表必须把已有键映射回自己**（`xueqiu.com` → `xueqiu`，不是 `'xueqiu.com'`）：
+  状态文件名由键直接决定，换名等于限速排期清零、下一次调用零间隔打出去。
+- ⚠️ 内置档的下限**不得低于 6 秒**：`scripts/schedule-checks/peak.mjs` 用
+  「6 秒下限 ⇒ 一分钟不可能超过 10 次」判定「限速器被绕过」，低于 6 秒会让合法的
+  批量公告下载被误报成绕过。
+
+### 并发闸（`lib/concurrency.js`）—— 当前是**观测模式**
+
+限频只管「起始时刻的间隔」，管不住**同时在飞的数量**：一个调用睡完 6–12 秒才开始跑，
+而跑完要 10–20 秒；5 组 monitor pipeline 又各自没有锁，单组超时就会与下一组叠加。
+
+- 槽位：`~/.opencli/inflight/<域名键>/<token>.slot`（`ls` 就能看谁在飞）。
+  临界区用同一把 `.gate.lock` 互斥。超限时**有界排队**，超预算则放行并记
+  `overflowed: true`（与限速器同一套 fail-open 哲学）。
+- **默认 `concurrency` 缺省 = 只记录不拦**：照常占位（不占就量不出真实并发）、照常
+  释放，但不等待、不拒绝。目的是先拿到真实并发分布再拍上限。
+- 泄漏：`onAfterExecute` 在成功与抛错两条路径都会触发，所以只有**进程被 KILL** 才漏；
+  槽带 `expires_at`，由后续调用顺手 sweep 回收（`dianping-throttle.json.lock` 就是
+  一次真实残留，所以这是必需项而非锦上添花）。
+- 🚧 **启用闸门（`concurrency: 1/2/3`）时必须同时**把调用方超时从 120s 抬到 ~150s
+  （`scripts/opencli_extractor.py`、`xueqiu-monitor/src/detail_fetcher.py`）：排队等待
+  发生在子进程内、会被 `subprocess.run` 一并计时，最坏 = 87 + 2 + 20 + 10 ≈ 119s。
+
+### 请求台账：两份，各管一段，别混
+
+| 台账 | 写的人 | 权威内容 |
+| --- | --- | --- |
+| `~/.opencli/xueqiu-calls.jsonl` | **Python 调用方**（`record_opencli_call`） | 调用方意图与结局：`source`/`caller`、`expect_miss`、stderr 摘要、**以及插件看不见的 `browser:*`** |
+| `~/.opencli/adapter-calls.jsonl` | **本插件**（`lib/requestlog.js`） | 传输层真相：`domain_key`、限频等待/长停、被跳过原因、并发几路、是否 fail-open 放行、手敲与第三方调用 |
+
+join 方式：`adapter-calls.jsonl` 的 `ppid` 就是调用方 Python 进程的 pid（opencli 是
+无 shell 包装的 node 直启脚本）；调用方若设了 `XUEQIU_OPENCLI_CALL_ID` 则优先按
+`call_id` 1:1 对上。
+
+实现约束（改 `lib/requestlog.js` 前先读）：**禁止写 stdout/stderr**（调用方把 opencli
+输出当 JSON 解析）；**写失败一律吞掉、绝不上抛** —— 钩子里抛异常会被 `emitHook` 静默
+fail-open，**连限速一起失效**。
+
+### 配置与开关
 
 **配置** `~/.opencli/rate-limits.json`（可省略，省略时用内置表）：
 
@@ -69,42 +127,31 @@ Python 实现同形）。**归组键不是 opencli 站点键** —— 打同一�
     "xiaohongshu": { "min_delay_s": 15, "max_delay_s": 15 },
     "xueqiu": { "min_delay_s": 6, "max_delay_s": 12,
                 "long_pause_every": 30, "long_pause_min_s": 45, "long_pause_max_s": 75 },
-    "web":    { "min_delay_s": 3, "max_delay_s": 8 }
+    "web":    { "min_delay_s": 6, "max_delay_s": 8 }
+  },
+  "domains": {
+    "cninfo.com.cn": { "min_delay_s": 6, "max_delay_s": 8 }
   }
 }
 ```
 
-- 站点可覆盖 `enabled` / `min_delay_s` / `max_delay_s` / `long_pause_*` /
-  `skip_commands` / `state_path`；`sites["*"]` 为通配。
-- **未声明的站点不限速**（宁可漏，也不误伤本地命令）。
-- 通用命令（`web`）**按目标域名分流**（源码里的 `HOST_RULES`）：雪球生产链路的
-  **详情页**走的是 `opencli web article`，它的站点键是 `web`，光靠 `xueqiu` 的策略
-  盖不到 —— 漏掉就是详情页**连基础的 6–12 秒间隔都没有**，而那正是被风控拦的一类
-  请求（2026-10-12 当天早上第二遍爬取被墙拦掉的就是它）。所以打 `xueqiu.com` 的
-  `web` 调用归到 `xueqiu` 那组（同策略、同额度）；**其余域名不跟着一起套雪球节奏** ——
-  `xueqiu-monitor` 也走这条命令抓公告页，域名是混的（`cninfo.com.cn` / `hkexnews.hk` /
-  `sseinfo.com`），套上雪球节奏等于把公告下载拖成每 30 次停 45–75 秒。`web` 自己的
-  内置节奏是 3–8s（比 Python 版更宽松：它按**动词**匹配，对所有 `web article` 一律
-  套雪球节奏）。URL 解析不出来时退回 `web` 自己的节奏，**不是**不限速。
-- `web` 内置表里另有 opencli 自带的 `web read`（读任意网页），同样按上面的规则走。
-- **状态按「目标站点」归组，不按 opencli 站点键**：`hostSiteFor` 把打 `xueqiu.com`
-  的 `web` 调用重归到 site=`xueqiu`，而状态文件名由 site 直接决定，于是它与
-  `xueqiu/` 的列表调用**共用**
-  `~/.opencli/xueqiu-throttle.json` 一个额度 —— 打的是同一个站点，各算各的窗口等于
-  请求密度翻倍，而风控墙看的是总量（Python 版原先就是单个状态文件）。
-- ⚠️ **钩子覆盖不到 `opencli browser ...`**。`onBeforeExecute` 的唯一触发点在
-  `executeCommand`（`dist/src/execution.js:206`），而它只被 `commanderAdapter.js`
-  调用 —— `browser` 命令直接挂在 commander 上、经 daemon-client 发指令，**不经过
-  这条路**，所以 `browser open`（会导航到真实站点）**完全没有被限速**。Python 版
-  曾专门覆盖它，现已默认关闭。当前生产链路不受影响（`web article` 已注册，只有在
-  该命令缺失时才会退回 `browser` 路径），但别以为「钩子覆盖了一切」。要补只能在
-  调用方做，或者在 opencli 里给 browser 也发钩子。
-- 环境变量：通用 `OPENCLI_RATELIMIT_DISABLED=1` / `OPENCLI_RATELIMIT_<SITE>_MIN_DELAY_SECONDS` …
-  调试用 `OPENCLI_RATELIMIT_DEBUG=1 OPENCLI_VERBOSE=1`（**两个都要设**：前者开本模块
-  自己的日志，后者是 opencli logger 的开关，只设前者不会输出任何东西）；
-  `xueqiu` 站点继续兼容既有 `XUEQIU_OPENCLI_*` 命名。注意这些覆盖与禁用开关是按
-  **归组后的站点**生效的 —— `XUEQIU_OPENCLI_THROTTLE=0` 会同时关掉打 xueqiu.com 的
-  `web` 调用，因为两者共用一份额度。
+- 键可覆盖 `enabled` / `min_delay_s` / `max_delay_s` / `long_pause_*` /
+  `skip_commands` / `state_path` / `concurrency` / `concurrency_enabled`；
+  `sites` 按站点键、`domains` 按域名键，域名优先；`sites["*"]` 为通配。
+- **未声明的键不限速**（宁可漏，也不误伤本地命令）。
+
+| 环境变量 | 作用 |
+| --- | --- |
+| `OPENCLI_RATELIMIT_DISABLED=1` | 关掉整套限速（真值 = 关闭） |
+| `OPENCLI_RATELIMIT_<域名键或站点键>_MIN/MAX_DELAY_SECONDS` | 按域名或站点覆盖间隔 |
+| `XUEQIU_OPENCLI_THROTTLE=0` | 只关 xueqiu（含打 xueqiu.com 的 `web` 调用） |
+| `XUEQIU_OPENCLI_MIN/MAX_DELAY_SECONDS`、`XUEQIU_OPENCLI_LONG_PAUSE_*` | xueqiu 专用数值覆盖 |
+| `XUEQIU_OPENCLI_THROTTLE_STATE` | 覆盖 xueqiu 的状态文件路径 |
+| `OPENCLI_ADAPTER_LOG` | 插件台账路径；`off` 关闭；验证时指到 `/tmp` 可隔离 |
+| `XUEQIU_OPENCLI_INFLIGHT_DIR` | 并发槽根目录（验证时隔离用） |
+| `XUEQIU_OPENCLI_CONCURRENCY_WAIT_MS`、`XUEQIU_OPENCLI_INFLIGHT_TTL_MS` | 排队预算 / 槽存活上限 |
+| `OPENCLI_RATELIMIT_DEBUG=1` + `OPENCLI_VERBOSE=1` | 打印每次等待（**两个都要设**） |
+| `XUEQIU_CALL_SOURCE`、`XUEQIU_OPENCLI_CALL_ID` | 调用方身份（调用方设，插件读取记进台账） |
 
 **因此 Python 侧的限速器已让位**：`xueqiu-analyzer-skill/.../opencli_rate_limiter.py`
 默认关闭（`XUEQIU_OPENCLI_THROTTLE=1` 可重新启用做回退），否则会与新钩子叠加成双重等待。
@@ -112,9 +159,7 @@ FrontierAgent 的 `plugins/tools/_platform_cli.py` 同理，只保留自己的�
 
 > 走回退档时**必须同时关掉插件层**：`XUEQIU_OPENCLI_THROTTLE=1 OPENCLI_RATELIMIT_DISABLED=1`。
 > 两个实现的锁机制不互斥 —— Python 用 `fcntl.flock` 且从不删锁文件，本模块用
-> 「独占创建 + 释放时删除」锁**同一个路径**（`xueqiu-throttle.json.lock`）。同时开
-> 会让双方都在临界区里读改写同一个状态文件（写临时文件的文件名现在已按 pid 分开，
-> 但那只是降低了互相 rename 半截文件的风险，互斥本身仍不成立）。
+> 「独占创建 + 释放时删除」锁**同一个路径**（`xueqiu-throttle.json.lock`）。
 
 ### 为什么这里有一个通用站命令 `web article`
 

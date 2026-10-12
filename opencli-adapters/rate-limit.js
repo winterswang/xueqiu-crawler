@@ -44,6 +44,7 @@ import { onAfterExecute, onBeforeExecute } from '@jackwener/opencli/registry';
 import { log } from './lib/env.js';
 import { resolveDomainKey } from './lib/domains.js';
 import { applyEnv, policyForCall, shouldThrottle } from './lib/policy.js';
+import { acquireInflight, releaseInflight } from './lib/concurrency.js';
 import { acquireSlot } from './lib/ratelimit.js';
 import { appendRecord, callerInfo, pickTarget, stripInternalArgs, truncate } from './lib/requestlog.js';
 
@@ -54,6 +55,7 @@ function buildRecord(ctx) {
   const startedAt = Number(guard.startedAt) || Number(ctx.startedAt) || finishedAt;
   const { source, sourceKind } = callerInfo();
   const rate = guard.rate || {};
+  const conc = guard.concurrency || {};
   const err = ctx.error;
   const ms = (seconds) => (seconds == null ? null : Math.round(seconds * 1000));
   let argsJson = null;
@@ -94,12 +96,12 @@ function buildRecord(ctx) {
     rate_reserved_ms: ms(rate.reserved_s),
     long_pause_ms: ms(rate.long_pause_s),
     rate_fail_open: rate.fail_open ?? null,
-    // 并发闸（lib/concurrency.js）接入后填；先占位，让字段口径一次定死。
-    concurrency_max: null,
-    inflight_at_acquire: null,
-    acquired_slot: null,
-    concurrency_waited_ms: null,
-    overflowed: null,
+    // 并发闸：`concurrency_max` 为 null 表示**观测模式**（只看不拦）。
+    concurrency_max: conc.max ?? null,
+    inflight_at_acquire: conc.inflight ?? null,
+    acquired_slot: conc.acquired ?? null,
+    concurrency_waited_ms: conc.waited_ms ?? null,
+    overflowed: conc.overflowed ?? null,
     ok: !err,
     error_code: err?.code ?? null,
     error: err ? truncate(err.message ?? String(err), 500) : null,
@@ -141,14 +143,23 @@ export function installRateLimit() {
       return;
     }
     ctx.__xqGuard.throttled = true;
+    // 顺序刻意如此：限速的 sleep 不该占着并发名额（否则 max=1 时睡的人占着槽，
+    // 并发闸就退化成纯串行器了）。槽代表「真的在飞」。
     ctx.__xqGuard.rate = await acquireSlot(key, full, policy);
+    ctx.__xqGuard.concurrency = await acquireInflight(key, policy, {
+      source: callerInfo().source,
+      command: full,
+    });
   });
 
   // 一行一次调用：成功与抛错两条路径都会走到（execution.js 的成功分支与 catch 分支
   // 都 emit 了这个钩子）。**只在 before 钩子登记过的调用上写**，别把 `__startup__`
   // 之类也记进来。
   onAfterExecute(async (ctx) => {
-    if (!ctx?.__xqGuard) return;
+    const guard = ctx?.__xqGuard;
+    if (!guard) return;
+    // 先释放并发槽再写台账：日志写失败也必须把名额还回去。
+    releaseInflight(guard.key, guard.concurrency?.token ?? null);
     appendRecord(buildRecord(ctx));
   });
 }

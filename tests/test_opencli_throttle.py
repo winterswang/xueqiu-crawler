@@ -223,3 +223,30 @@ def test_detail_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     assert captured["timeout"] > (
         _plugin_worst_wait_seconds("xueqiu") + SINGLE_RUN_HEADROOM_SECONDS
     )
+
+
+def test_concurrency_gate_defaults_to_observe_only():
+    """内置策略里**不得**预设 `concurrency` —— 默认必须是「只记录不拦」.
+
+    启用闸门会让排队等待发生在 opencli 子进程内、被调用方 `subprocess.run` 一并计时，
+    最坏墙钟 ≈ 限速 87s + 取锁 2s + 排队预算 20s + 执行 10s ≈ 119s。调用方现在是
+    120s 超时，**必须先把它抬到 ~150s**（`scripts/opencli_extractor.py`、
+    `xueqiu-monitor/src/detail_fetcher.py`）才能开闸。
+
+    这条断言就是防止有人「顺手把 concurrency 调成 1/2」—— 那会把 119s 顶破 120s，
+    表现为调用方超时、账号记失败，而根因藏在插件层。
+    """
+    src = plugin_source()
+    table = re.search(r"const BUILTIN_SITES = \{(.*?)\n\};", src, re.S)
+    assert table, "找不到 BUILTIN_SITES —— 插件结构变了，请同步这个测试"
+    body = table.group(1)
+    # 策略可以内联、也可以引用常量（XUEQIU_PACE），所以两边都查。
+    pace = re.search(r"const XUEQIU_PACE = \{(.*?)\n\};", src, re.S)
+    for label, chunk in (
+        ("BUILTIN_SITES", body),
+        ("XUEQIU_PACE", pace.group(1) if pace else ""),
+    ):
+        assert "concurrency" not in chunk, (
+            f"{label} 预设了 concurrency —— 开闸前必须先把调用方超时抬到 ~150s "
+            "（见本测试 docstring），否则排队等待会顶破 120s"
+        )
