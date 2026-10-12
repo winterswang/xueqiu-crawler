@@ -62,30 +62,67 @@ export function loadConfig() {
   }
   const userSites = raw && typeof raw.sites === 'object' && raw.sites ? raw.sites : {};
   const { '*': wildcard, ...named } = userSites;
+  // 新增可选的 `domains`（按域名覆盖）—— 结构不动 `sites`，老配置原样继续生效。
+  const userDomains =
+    raw && typeof raw.domains === 'object' && raw.domains ? raw.domains : {};
   cachedConfig = {
     defaults: {
       ...DEFAULT_POLICY,
       ...(raw && typeof raw.defaults === 'object' ? raw.defaults : {}),
     },
     sites: { ...BUILTIN_SITES, ...named },
+    domains: { ...userDomains },
     wildcard: wildcard ?? null,
   };
   return cachedConfig;
 }
 
+/** 显式声明（域名优先于站点键）。没声明返回 null。 */
+function explicitPolicy(key) {
+  const cfg = loadConfig();
+  return cfg.domains[key] ?? cfg.sites[key] ?? null;
+}
+
 /** 未声明的键返回 null（= 不限速）。 */
 export function policyFor(key) {
+  const hit = explicitPolicy(key);
   const cfg = loadConfig();
-  const hit = cfg.sites[key];
   if (!hit && !cfg.wildcard) return null;
   return { ...cfg.defaults, ...(cfg.wildcard ?? {}), ...(hit ?? {}) };
 }
 
-/** 环境变量覆盖：通用 OPENCLI_RATELIMIT_*，站点既有命名（xueqiu）继续兼容。 */
-export function applyEnv(key, base) {
+/**
+ * 一次调用的策略查找链：**域名键 → 站点键 → 通配**。
+ *
+ * 站点键那一步不能省：`web article` 抓 cninfo 时域名键是 `cninfo.com.cn`（没有专门
+ * 配置），必须落回 `sites.web` 的那档 6–8 秒 —— 否则就成了「未声明即不限速」，
+ * 正是要避免的静默缺口。
+ */
+export function policyForCall(domainKey, siteKey) {
+  for (const key of [domainKey, siteKey]) {
+    if (!key) continue;
+    const hit = explicitPolicy(key);
+    if (hit) {
+      const cfg = loadConfig();
+      return { ...cfg.defaults, ...(cfg.wildcard ?? {}), ...hit };
+    }
+  }
+  const cfg = loadConfig();
+  return cfg.wildcard ? { ...cfg.defaults, ...cfg.wildcard } : null;
+}
+
+/**
+ * 环境变量覆盖。
+ *
+ * `key` 是域名键（决定 `OPENCLI_RATELIMIT_<KEY>_*`），`siteKey` 是 opencli 站点键 ——
+ * 两者都试，顺序 domain 优先。这样既支持新增的按域名调参
+ * （`OPENCLI_RATELIMIT_CNINFO_COM_CN_MIN_DELAY_SECONDS`），也让既有的
+ * `OPENCLI_RATELIMIT_WEB_*` / `XUEQIU_OPENCLI_*` 继续生效。
+ */
+export function applyEnv(key, base, siteKey = '') {
   let policy = base;
   if (envFlagOn(['OPENCLI_RATELIMIT_DISABLED'])) return { ...policy, enabled: false };
-  if (key === 'xueqiu') {
+  if (key === 'xueqiu' || siteKey === 'xueqiu') {
     if (envFlagOff(['XUEQIU_OPENCLI_THROTTLE'])) return { ...policy, enabled: false };
     policy = {
       ...policy,
@@ -96,17 +133,16 @@ export function applyEnv(key, base) {
       long_pause_max_s: envNumber(['XUEQIU_OPENCLI_LONG_PAUSE_MAX_SECONDS'], policy.long_pause_max_s),
     };
   }
-  const upper = key.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const upperOf = (k) => k.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const keys = [...new Set([key, siteKey].filter(Boolean))].map(upperOf);
+  const names = (suffix) => [
+    ...keys.map((k) => `OPENCLI_RATELIMIT_${k}_${suffix}`),
+    `OPENCLI_RATELIMIT_${suffix}`,
+  ];
   return {
     ...policy,
-    min_delay_s: envNumber(
-      [`OPENCLI_RATELIMIT_${upper}_MIN_DELAY_SECONDS`, 'OPENCLI_RATELIMIT_MIN_DELAY_SECONDS'],
-      policy.min_delay_s,
-    ),
-    max_delay_s: envNumber(
-      [`OPENCLI_RATELIMIT_${upper}_MAX_DELAY_SECONDS`, 'OPENCLI_RATELIMIT_MAX_DELAY_SECONDS'],
-      policy.max_delay_s,
-    ),
+    min_delay_s: envNumber(names('MIN_DELAY_SECONDS'), policy.min_delay_s),
+    max_delay_s: envNumber(names('MAX_DELAY_SECONDS'), policy.max_delay_s),
   };
 }
 

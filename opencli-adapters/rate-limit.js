@@ -28,60 +28,82 @@
  *
  * ## 键与额度
  *
- * 频率额度按**流量键**存：现在是 opencli 站点键；通用站 `web` 额外用 `HOST_RULES`
- * 把打 xueqiu.com 的调用归到 `xueqiu` 额度（否则列表调用与详情页抓取会各算各的
- * 窗口，实际请求密度翻倍，而风控墙看的是总量）。
+ * 频率额度按**域名**存（见 lib/domains.js）：`xueqiu/*` 与打 xueqiu.com 的
+ * `web/article` 共用一份额度（否则列表调用与详情页抓取各算各的窗口，实际请求密度
+ * 翻倍，而风控墙看的是总量）；cninfo/hkexnews 这类公告域名各拿各的额度，
+ * 不会跟雪球互相拖累。已有的键（xueqiu / xiaohongshu）由别名表映射回原值，
+ * 所以状态文件与配置原地继续生效。
  *
  * 配置：`~/.opencli/rate-limits.json`（每键不同策略；未声明的键**不限速**）。
  * 状态：`~/.opencli/<key>-throttle.json`，形状 {next_at, calls, last_source}。
  * 调试：`OPENCLI_RATELIMIT_DEBUG=1 OPENCLI_VERBOSE=1`（**两个都要设**：前者开本模块
  * 自己的日志，后者是 opencli logger 的开关，只设前者不会输出任何东西）。
  */
-import { onBeforeExecute } from '@jackwener/opencli/registry';
+import { onAfterExecute, onBeforeExecute } from '@jackwener/opencli/registry';
 
 import { log } from './lib/env.js';
-import { applyEnv, policyFor, shouldThrottle } from './lib/policy.js';
+import { resolveDomainKey } from './lib/domains.js';
+import { applyEnv, policyForCall, shouldThrottle } from './lib/policy.js';
 import { acquireSlot } from './lib/ratelimit.js';
+import { appendRecord, callerInfo, pickTarget, stripInternalArgs, truncate } from './lib/requestlog.js';
 
-/**
- * 目标域名 → 归到哪个站点的策略与额度。
- *
- * `web article` 的站点键是 `web`，而它抓的可能是 xueqiu.com 的详情页（爬虫/监控的
- * 主路径，且**被 WAF 盯的就是这一类**），也可能是 cninfo/hkexnews 的公告页。
- * 风控看的是「打同一个站点的请求总量」，所以判定与额度都必须落到**域名**上。
- *
- * 没命中规则的 `web` 调用退回 `web` 自己的节奏（不是不限速）—— 宁可慢一点，也不要
- * 因为「URL 解析不出来」而静默变成完全不限速。
- */
-const HOST_RULES = [{ host: /(^|\.)xueqiu\.com$/i, site: 'xueqiu' }];
-
-/** 从参数里找目标 URL：通用命令的位置参数名不固定，先看常见的 `url`，再扫字符串值。 */
-function urlFromArgs(args) {
-  if (!args || typeof args !== 'object') return '';
-  if (typeof args.url === 'string' && /^https?:\/\//i.test(args.url)) return args.url;
-  for (const value of Object.values(args)) {
-    if (typeof value === 'string' && /^https?:\/\//i.test(value)) return value;
-  }
-  return '';
-}
-
-/**
- * 通用命令（`web`）按**目标域名**归到具体站点；非通用命令返回 ''（用站点键本身）。
- *
- * 解析不出来时返回 ''、由调用方退回站点键的策略 —— 即「温和限速」而不是「不限速」。
- */
-export function hostSiteFor(site, args) {
-  if (site !== 'web') return '';
-  const url = urlFromArgs(args);
-  if (!url) return '';
-  let hostname;
+/** 把钩子 ctx 上挂着的信息 + 结局组装成台账的一行（见 lib/requestlog.js）。 */
+function buildRecord(ctx) {
+  const guard = ctx.__xqGuard || {};
+  const finishedAt = Number(ctx.finishedAt) || Date.now();
+  const startedAt = Number(guard.startedAt) || Number(ctx.startedAt) || finishedAt;
+  const { source, sourceKind } = callerInfo();
+  const rate = guard.rate || {};
+  const err = ctx.error;
+  const ms = (seconds) => (seconds == null ? null : Math.round(seconds * 1000));
+  let argsJson = null;
   try {
-    hostname = new URL(url).hostname;
+    const visible = stripInternalArgs(guard.args);
+    argsJson = visible && Object.keys(visible).length ? truncate(JSON.stringify(visible), 600) : null;
   } catch {
-    return '';
+    argsJson = null; // 循环引用之类
   }
-  const rule = HOST_RULES.find((r) => r.host.test(hostname));
-  return rule ? rule.site : '';
+  return {
+    schema: 2,
+    layer: 'plugin',
+    ts: new Date(finishedAt).toISOString(),
+    started_at: new Date(startedAt).toISOString(),
+    finished_at: new Date(finishedAt).toISOString(),
+    duration_ms: Math.max(0, finishedAt - startedAt),
+    // 调用方身份靠**继承来的环境变量**认，不需要调用方配合；手敲时为空。
+    source,
+    source_kind: sourceKind,
+    call_id: process.env.XUEQIU_OPENCLI_CALL_ID || null,
+    // ppid = 调用方进程 pid（opencli 是无 shell 包装的 node 直启脚本），可与
+    // `xueqiu-calls.jsonl` 的 pid 对齐。
+    ppid: process.ppid,
+    pid: process.pid,
+    site: guard.site ?? null,
+    name: guard.name ?? null,
+    operation: guard.name ?? null,
+    // opencli 只给 "site/name"，不给 argv；完整参数在 args 里，target 是其中最有辨识度的那个。
+    command: ctx.command ?? null,
+    args: argsJson,
+    domain_key: guard.key ?? null,
+    host: guard.host ?? null,
+    domain_via: guard.via ?? null,
+    target: truncate(guard.target || pickTarget(guard.args), 300) || null,
+    throttled: guard.throttled ?? null,
+    skip_reason: guard.skipReason ?? null,
+    rate_waited_ms: ms(rate.waited_s),
+    rate_reserved_ms: ms(rate.reserved_s),
+    long_pause_ms: ms(rate.long_pause_s),
+    rate_fail_open: rate.fail_open ?? null,
+    // 并发闸（lib/concurrency.js）接入后填；先占位，让字段口径一次定死。
+    concurrency_max: null,
+    inflight_at_acquire: null,
+    acquired_slot: null,
+    concurrency_waited_ms: null,
+    overflowed: null,
+    ok: !err,
+    error_code: err?.code ?? null,
+    error: err ? truncate(err.message ?? String(err), 500) : null,
+  };
 }
 
 export function installRateLimit() {
@@ -91,19 +113,47 @@ export function installRateLimit() {
     if (slash <= 0) return; // "__startup__" 或无法解析的形态：放过
     const site = full.slice(0, slash);
     const name = full.slice(slash + 1);
-    // 策略、环境变量覆盖、状态额度都按**归组后的键**算 —— 这样打 xueqiu.com 的
-    // `web article` 与 `xueqiu user-articles` 共用一份额度和长停计数，
-    // 且 `XUEQIU_OPENCLI_*` 那套开关对两者一致生效。
-    const target = hostSiteFor(site, ctx?.args) || site;
-    const base = policyFor(target);
-    if (!base) return;
-    const policy = applyEnv(target, base);
-    if (!shouldThrottle(name, ctx?.args, policy)) return;
-    await acquireSlot(target, full, policy);
+
+    // 先解析「这次打的是哪个域名」—— 策略、环境变量覆盖、状态额度全部按它算。
+    const { key, host, via, degraded } = resolveDomainKey(site, ctx?.args);
+    if (degraded) {
+      // 参数里有 http(s) URL 但解析不出 hostname（`https://`、`https://[bad`…）。
+      // 此时会退回站点键那一档（`web` = 6–8s，**没有长停**）—— 让这件事可见，
+      // 否则被风控盯的详情页会静默掉到弱档，而没有任何线索。
+      log.warn(`rate-limit: web 调用解析不出目标域名（${full}），按其站点档限速`);
+    }
+
+    // 挂在 ctx 上带给 onAfterExecute —— opencli 明确支持（同一个 hookCtx 对象喂两个钩子，
+    // 且 HookContext 带索引签名，注释写着「Plugins can attach arbitrary data here」）。
+    ctx.__xqGuard = { startedAt: Date.now(), site, name, args: ctx?.args, key, host, via, target: '' };
+
+    const base = policyForCall(key, site);
+    if (!base) {
+      ctx.__xqGuard.skipReason = 'no_policy';
+      ctx.__xqGuard.throttled = false;
+      return;
+    }
+    const policy = applyEnv(key, base, site);
+    if (!shouldThrottle(name, ctx?.args, policy)) {
+      ctx.__xqGuard.skipReason =
+        policy.enabled === false ? 'disabled' : ctx?.args?.help || ctx?.args?.h ? 'help' : 'skip_command';
+      ctx.__xqGuard.throttled = false;
+      return;
+    }
+    ctx.__xqGuard.throttled = true;
+    ctx.__xqGuard.rate = await acquireSlot(key, full, policy);
+  });
+
+  // 一行一次调用：成功与抛错两条路径都会走到（execution.js 的成功分支与 catch 分支
+  // 都 emit 了这个钩子）。**只在 before 钩子登记过的调用上写**，别把 `__startup__`
+  // 之类也记进来。
+  onAfterExecute(async (ctx) => {
+    if (!ctx?.__xqGuard) return;
+    appendRecord(buildRecord(ctx));
   });
 }
 
 installRateLimit();
 
-export { acquireSlot, applyEnv, policyFor, urlFromArgs };
+export { acquireSlot, applyEnv, policyForCall, resolveDomainKey, buildRecord };
 export { log };

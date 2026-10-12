@@ -150,30 +150,42 @@ def test_list_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
 
 
 def test_builtin_sites_declare_web_with_pacing():
-    """通用站 `web` 必须被声明，且带正的基础间隔.
+    """通用站 `web` 必须被声明，带正的基础间隔，且**下限不低于 6 秒**.
 
     回归（2026-10-12）：雪球生产链路的**详情页**走的是 `opencli web article`，
     站点键是 `web`。内置表原先只声明了 xiaohongshu / xueqiu，`policyFor('web')`
     返回 null —— 详情页**连基础的间隔都没有**，而它正是被风控墙拦掉的那类请求。
+
+    下限 6 秒不是审美问题：`scripts/schedule-checks/peak.mjs` 用
+    「6 秒下限 ⇒ 一分钟不可能超过 10 次」（PEAK_IMPOSSIBLE=10）判定「限速器被绕过」。
+    把 `web` 调到 6 秒以下，合法的公告批量下载会被误报成绕过 —— 2026-10-12 差点
+    就这么发了（当时写的是 3–8s）。
     """
     assert _plugin_number("web", "max_delay_s") > 0, "web 的策略没有正的基础间隔"
+    assert _plugin_number("web", "min_delay_s") >= 6, (
+        "web 的下限低于 6 秒 —— 会让 peak.mjs 的「6 秒下限」不变量失效、误报限速器被绕过"
+    )
 
 
-def test_web_calls_to_xueqiu_resolve_to_xueqiu_group():
-    """`web` 调用必须**按目标域名**归到 xueqiu 组（策略与额度都跟着走）.
+def test_known_domains_alias_back_to_their_existing_keys():
+    """`xueqiu.com` 必须映射回**现有的键** `xueqiu`，不能是字符串 `'xueqiu.com'`.
 
-    只把 `web` 整站套上雪球节奏是错的：`xueqiu-monitor` 也走这条命令抓公告页，
-    域名是混的（cninfo / hkexnews / sseinfo），整站套 = 把公告下载拖成每 30 次
-    停 45–75 秒。反过来，不归组又会让打 xueqiu.com 的详情页与 `xueqiu/` 列表调用
-    各算各的窗口，请求密度翻倍 —— 风控墙看的是总量。
+    状态文件名由域名键直接决定 —— 映射成一个新名字会让状态文件换名、**限速排期清零**，
+    下一次调用就以零间隔打出去（这正是按域名重构时最危险的一处）。同时
+    `web/article` 打 xueqiu.com 时靠这条别名与 `xueqiu/` 的列表调用共用同一份额度，
+    否则两者各算各的窗口、实际请求密度翻倍。
     """
     src = plugin_source()
-    rules = re.search(r"const HOST_RULES = \[(.*?)\];", src, re.S)
-    assert rules, "找不到 HOST_RULES —— rate-limit.js 结构变了，请同步这个测试"
-    entry = re.search(r"host:\s*/(.+?)/i\s*,\s*site:\s*'([^']+)'", rules.group(1))
-    assert entry, f"HOST_RULES 里没有可解析的规则：{rules.group(1)[:80]}"
-    assert "xueqiu" in entry.group(1), f"第一条规则匹配的不是雪球：{entry.group(1)}"
-    assert entry.group(2) == "xueqiu", f"雪球没被归到 xueqiu 组：{entry.group(2)}"
+    table = re.search(r"CANONICAL_DOMAIN_KEY = \{(.*?)\n\};", src, re.S)
+    assert table, "找不到 CANONICAL_DOMAIN_KEY —— 插件结构变了，请同步这个测试"
+    pairs = dict(re.findall(r"'([^']+)'\s*:\s*'([^']+)'", table.group(1)))
+    assert pairs.get("xueqiu.com") == "xueqiu", (
+        f"xueqiu.com 的别名必须是 xueqiu（状态文件才不换名），实际：{pairs.get('xueqiu.com')!r}"
+    )
+    assert pairs.get("www.xueqiu.com") == "xueqiu"
+    assert pairs.get("xiaohongshu.com") == "xiaohongshu", (
+        "小红书同理：换名会清零它的限速排期"
+    )
 
 
 def test_detail_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
