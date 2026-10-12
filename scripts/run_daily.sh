@@ -10,7 +10,8 @@
 # 爬取引擎由 CRAWL_ENGINE 环境变量选择（默认 legacy）：
 #   legacy  = 旧链路写 data/（现状）
 #   gateway = crawl-gateway 写 data/（切换后用）
-#   shadow  = 旧链路写 data/，gateway 同时写 data-gateway/ 并对比，只告警不阻断
+#   shadow  = 旧链路写 data/，gateway 写 data-gateway/ 并对比，只告警不阻断
+#             （gateway 延后到流程末尾跑，理由见文件末尾「影子对比」段）
 # 例: CRAWL_ENGINE=shadow bash scripts/run_daily.sh --crawl-only
 
 set -e
@@ -44,7 +45,8 @@ fi
 # 爬取引擎（见 docs/crawl_gateway_migration_plan.md Step 3/4）
 #   legacy  = 旧链路，写 data/（默认，现状）
 #   gateway = crawl-gateway 写 data/
-#   shadow  = 旧链路照常写 data/；gateway 同时写 data-gateway/ 并对比，只告警不阻断
+#   shadow  = 旧链路照常写 data/；gateway 写 data-gateway/ 并对比，只告警不阻断
+#             （gateway 延后到流程末尾跑，理由见文件末尾「影子对比」段）
 # 刻意放在取锁之前：配错引擎应立刻失败，不留锁、不写生产日志。
 CRAWL_ENGINE="${CRAWL_ENGINE:-legacy}"
 case "$CRAWL_ENGINE" in
@@ -177,21 +179,9 @@ if [ "$MODE" != "skip-crawl" ]; then
             # 生产链路照常跑（必须在镜像之后）
             $PYTHON_BIN scripts/crawler_nodriver.py --all --max 20 >> "$LOG_FILE" 2>&1
 
-            # 影子运行与对比都只告警、不阻断日报（legacy 才是生产链路）
-            if $PYTHON_BIN -m crawl_gateway --config config/sites.yaml \
-                    --db "$GATEWAY_DB" run --site xueqiu --purpose daily-shadow \
-                    --all-accounts --execute --data-dir "$SHADOW_DIR" >> "$LOG_FILE" 2>&1; then
-                if $PYTHON_BIN scripts/compare_crawl_outputs.py \
-                        --legacy-dir data --gateway-dir "$SHADOW_DIR" \
-                        --gateway-db "$GATEWAY_DB" \
-                        --out "logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE" 2>&1; then
-                    echo "[shadow] ✅ 两侧产物无差异" >> "$LOG_FILE"
-                else
-                    echo "[shadow] ⚠️ 两侧产物有差异，见 logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE"
-                fi
-            else
-                echo "[shadow] ⚠️ gateway 影子运行失败（不影响主流程）" >> "$LOG_FILE"
-            fi
+            # gateway 影子运行与对比**不在这里** —— 刻意挪到整条流程的最后
+            # （见文件末尾「影子对比」段）。原因见那里的注释：两遍贴着跑时
+            # 第二遍必然撞风控墙，对比结果不可用。
             ;;
     esac
 
@@ -221,6 +211,36 @@ if [ "$MODE" != "crawl-only" ]; then
     echo "📊 价值投资日报 - $(date +%Y-%m-%d)" >> "$LOG_FILE"
     IMA_NOTE_URL="$IMA_NOTE_URL" $PYTHON_BIN scripts/push_feishu.py 2>&1 | tee -a "$LOG_FILE"
     echo "========================================" >> "$LOG_FILE"
+fi
+
+# === 影子对比（仅 CRAWL_ENGINE=shadow；刻意排在发布之后）===
+# 为什么不在步骤 2 里跑：gateway 与 legacy 抓的是**同一批详情页**，而雪球的风控墙
+# 由累积请求量触发 —— 两遍贴着跑时第二遍必然撞墙。2026-10-09~12 实测：第一遍
+# 32 篇 0 拦截，第二遍 21 篇里 12 篇被拦，且其中 8 篇正是第一遍 6–9 分钟前刚成功
+# 抓过的同一个 URL。也就是说，贴着跑的对比结果只反映「谁跑第二遍」，无法用来判断
+# gateway 的质量；gateway 还会因此每天少抓一批、index 持续落后并扩大，形成
+# 「落后 → 重抓 → 加压 → 再落后」的正反馈。
+# 隔开一段时间（这里是步骤 3–6 的耗时，正常约 10–15 分钟）再跑，两侧起点条件才可比。
+# 放在末尾还有个好处：影子无论多慢都不再推迟日报与飞书。
+# 注意 --crawl-only 会跳过步骤 3–6，此时影子紧跟爬取阶段、间隔接近 0 —— 该模式
+# 只用于本地调试，不影响生产路径。
+if [ "$CRAWL_ENGINE" = "shadow" ] && [ "$MODE" != "skip-crawl" ]; then
+    echo "[shadow] 影子运行（延后执行，避开生产链路的请求高峰）..." >> "$LOG_FILE"
+    # 只告警、不阻断：legacy 才是生产链路
+    if $PYTHON_BIN -m crawl_gateway --config config/sites.yaml \
+            --db "$GATEWAY_DB" run --site xueqiu --purpose daily-shadow \
+            --all-accounts --execute --data-dir "$SHADOW_DIR" >> "$LOG_FILE" 2>&1; then
+        if $PYTHON_BIN scripts/compare_crawl_outputs.py \
+                --legacy-dir data --gateway-dir "$SHADOW_DIR" \
+                --gateway-db "$GATEWAY_DB" \
+                --out "logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE" 2>&1; then
+            echo "[shadow] ✅ 两侧产物无差异" >> "$LOG_FILE"
+        else
+            echo "[shadow] ⚠️ 两侧产物有差异，见 logs/shadow_compare_$(date +%Y-%m-%d).json" >> "$LOG_FILE"
+        fi
+    else
+        echo "[shadow] ⚠️ gateway 影子运行失败（不影响主流程）" >> "$LOG_FILE"
+    fi
 fi
 
 echo "[$(date)] 流程执行完成" >> "$LOG_FILE"
