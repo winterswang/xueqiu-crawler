@@ -223,6 +223,55 @@ def _in_window(row: dict, cutoff: datetime, end: datetime | None) -> bool:
     return ts >= cutoff and (end is None or ts < end)
 
 
+def _unattributed_clusters(
+    rows: list[dict], min_count: int = 5
+) -> tuple[list[dict], int]:
+    """把「未标身份」的调用按**进程号**聚成一轮一轮的批量任务。
+
+    为什么按 ppid 聚合：`XUEQIU_CALL_SOURCE` 不设就落 `source_kind="manual"`，与「手敲一行」
+    无法区分 —— 但**同一个进程连着发很多次**几乎必然是一个脚本/一个 agent 会话在批量抓。
+    聚起来才能看出「有一轮 N 次、打哪个域名、关键词是什么、失败了什么」。
+
+    这正是「谁在用这个插件」的落地点：不需要任何调用方配合改代码，纯读取侧聚合。
+
+    返回 `(达到 min_count 的簇, 未达标的散点次数)` —— 单次的手敲调用不列（噪音）。
+    """
+    buckets: dict[object, list[dict]] = {}
+    for row in rows:
+        kind = row.get("source_kind")
+        if kind and kind != "manual":
+            continue
+        pid = row.get("ppid")
+        if pid is None:
+            continue
+        buckets.setdefault(pid, []).append(row)
+
+    clusters: list[dict] = []
+    singles = 0
+    for pid, group in buckets.items():
+        if len(group) < min_count:
+            singles += len(group)
+            continue
+        clusters.append(
+            {
+                "ppid": pid,
+                "count": len(group),
+                "domains": Counter(str(r.get("domain_key") or "?") for r in group),
+                "operations": Counter(str(r.get("operation") or "?") for r in group),
+                "targets": Counter(
+                    str(r.get("target") or "") for r in group if r.get("target")
+                ).most_common(3),
+                "first": min((str(r.get("started_at") or "")) for r in group),
+                "last": max((str(r.get("started_at") or "")) for r in group),
+                "error_codes": Counter(
+                    str(r.get("error_code")) for r in group if r.get("error_code")
+                ),
+            }
+        )
+    clusters.sort(key=lambda c: -c["count"])
+    return clusters, singles
+
+
 def summarize_adapter(
     records: list[dict], cutoff: datetime, end: datetime | None = None
 ) -> dict:
@@ -231,6 +280,7 @@ def summarize_adapter(
         (row for row in records if _in_window(row, cutoff, end)),
         key=lambda row: _parse_ts(row) or datetime.min,
     )
+    clusters, singles = _unattributed_clusters(rows)
     return {
         "total": len(rows),
         "first": str(rows[0].get("started_at", "")) if rows else "",
@@ -272,6 +322,9 @@ def summarize_adapter(
         ),
         # `web` 调用没能解析出目标域名 = 掉到弱档（6–8s、无长停）。这是「被 WAF 盯的
         # 详情页静默失去保护」的信号，必须能一眼看到。
+        # 「管理外流量」：未标身份的调用按进程聚类（见 _unattributed_clusters 的 docstring）
+        "unattributed": clusters,
+        "unattributed_singles": singles,
         "unrouted_web": sum(
             1
             for r in rows
@@ -343,6 +396,33 @@ def render_adapter(adapter: dict, uncovered: Counter) -> str:
                 f"{k} {v}" for k, v in adapter["error_codes"].most_common(4)
             )
             lines.append(f"  失败 {adapter['failed']} 次（{codes or '无错误码'}）")
+
+    clusters = adapter.get("unattributed") or []
+    if clusters or adapter.get("unattributed_singles"):
+        lines.append("")
+        lines.append("  —— 管理外流量（未标身份的调用）——")
+        for c in clusters:
+            span = f"{c['first'][11:16]}–{c['last'][11:16]}"
+            domains = "  ".join(f"{k} {v}" for k, v in c["domains"].most_common())
+            ops = "  ".join(f"{k} {v}" for k, v in c["operations"].most_common(4))
+            lines.append(f"  ⚠️ 进程 {c['ppid']}：{c['count']} 次，{domains}，{span}")
+            lines.append(f"     command: {ops}")
+            if c["targets"]:
+                lines.append(
+                    "     关键词 top: " + " / ".join(str(t) for t, _ in c["targets"])
+                )
+            if c["error_codes"]:
+                lines.append(
+                    "     失败: "
+                    + "，".join(f"{k} {v}" for k, v in c["error_codes"].most_common())
+                )
+        if adapter.get("unattributed_singles"):
+            lines.append(
+                f"  · 另有散点未标身份调用 {adapter['unattributed_singles']} 次（各进程 < 5 次，不单列）"
+            )
+        lines.append(
+            "  → 这些调用没设 XUEQIU_CALL_SOURCE，来源（脚本 / agent 会话 / 手敲）无法区分"
+        )
 
     if uncovered:
         lines.append(
@@ -588,6 +668,22 @@ def main() -> int:
                         "gate_fail_open": adapter.get("gate_fail_open", 0),
                     },
                     "adapter_unrouted_web": adapter.get("unrouted_web", 0),
+                    "adapter_unattributed": [
+                        {
+                            "ppid": c["ppid"],
+                            "count": c["count"],
+                            "domains": dict(c["domains"]),
+                            "operations": dict(c["operations"]),
+                            "targets": c["targets"],
+                            "first": c["first"],
+                            "last": c["last"],
+                            "error_codes": dict(c["error_codes"]),
+                        }
+                        for c in adapter.get("unattributed", [])
+                    ],
+                    "adapter_unattributed_singles": adapter.get(
+                        "unattributed_singles", 0
+                    ),
                     # 不经钩子、不受插件治理的调用（`browser:*`）—— 不计入域名密度
                     "uncovered_operations": dict(uncovered),
                 },
