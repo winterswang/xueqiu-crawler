@@ -51,6 +51,32 @@ SITE_OPERATIONS = frozenset(
 )
 
 
+# 插件侧台账（opencli-adapters/lib/requestlog.js 写）。它记的是**传输层真相**：
+# 域名、限频等待/长停、被跳过原因、真实并发。Python 台账看不到这些 ——
+# 尤其是「限速器自己的决策」，2026-10-12 那次排查就栽在这个盲区上。
+ADAPTER_LOG = Path("~/.opencli/adapter-calls.jsonl").expanduser()
+
+# 插件**看不见**的操作：`opencli browser …` 不经过任何钩子（上游
+# jackwener/opencli#2606），所以它们既不在插件台账里、也不受插件层的限频与并发治理。
+# 报告里要把它们单列，否则按插件台账算「域名密度」会漏掉这一大块。
+#
+# 只列 `browser:open`（**会真导航到目标站点**那一个）。`browser:get/extract/close`
+# 只跟已打开的本地标签页交互、不发站点请求 —— 把它们一起算作「覆盖不到」会把一个
+# 无害的本地操作说成风险，反而把真正该看的那个淹掉。
+UNCOVERED_OPERATION_PREFIXES = ("browser:open",)
+
+
+def _adapter_log_path(explicit: str | None) -> Path | None:
+    """插件台账路径；显式 `off` 或环境变量 `OPENCLI_ADAPTER_LOG=off` 时返回 None。"""
+    raw = (
+        explicit if explicit is not None else os.environ.get("OPENCLI_ADAPTER_LOG", "")
+    )
+    raw = (raw or "").strip()
+    if raw.lower() in ("off", "disabled"):
+        return None
+    return Path(os.path.expanduser(raw)) if raw else ADAPTER_LOG
+
+
 def _log_path(explicit: str | None) -> Path:
     if explicit:
         return Path(os.path.expanduser(explicit))
@@ -81,11 +107,23 @@ def load_records(path: Path) -> list[dict]:
 
 
 def _parse_ts(record: dict) -> datetime | None:
-    raw = record.get("ts") or ""
+    """台账行的 `ts` → 本地 **naive** datetime。
+
+    两份台账的时间戳格式不同：Python 台账是本地 naive（`2026-10-12T08:14:21.302`），
+    插件台账是带 `Z` 的 UTC（`2026-10-12T04:41:28.757Z`）。不归一化就会在比较时抛
+    `TypeError: can't compare offset-naive and offset-aware datetimes`。
+    """
+    raw = str(record.get("ts") or "")
+    # `fromisoformat` 到 Python 3.11 才认尾部的 `Z`；低版本（含 macOS 自带 python3）
+    # 会抛 ValueError → 每一行都解析成 None → 整块静默读成「没有记录」。
+    # 显式换成 `+00:00` 就不挑版本了。
+    if raw.endswith(("Z", "z")):
+        raw = f"{raw[:-1]}+00:00"
     try:
-        return datetime.fromisoformat(str(raw))
+        ts = datetime.fromisoformat(raw)
     except ValueError:
         return None
+    return ts.astimezone().replace(tzinfo=None) if ts.tzinfo else ts
 
 
 def _pct(part: int, whole: int) -> str:
@@ -176,6 +214,143 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
         "failures": failures,
         "probe_misses": probe_misses,
     }
+
+
+def _in_window(row: dict, cutoff: datetime, end: datetime | None) -> bool:
+    ts = _parse_ts(row)
+    if ts is None:  # 先收窄类型，避免 mypy 报「datetime 与 None 不可比较」
+        return False
+    return ts >= cutoff and (end is None or ts < end)
+
+
+def summarize_adapter(
+    records: list[dict], cutoff: datetime, end: datetime | None = None
+) -> dict:
+    """插件台账摘要 —— 回答「打哪个域名、等了多久、并发几路、有没有被放行」。"""
+    rows = sorted(
+        (row for row in records if _in_window(row, cutoff, end)),
+        key=lambda row: _parse_ts(row) or datetime.min,
+    )
+    return {
+        "total": len(rows),
+        "first": str(rows[0].get("started_at", "")) if rows else "",
+        "last": str(rows[-1].get("started_at", "")) if rows else "",
+        "by_domain": Counter(str(r.get("domain_key") or "?") for r in rows),
+        "by_source_kind": Counter(str(r.get("source_kind") or "?") for r in rows),
+        "by_operation": Counter(str(r.get("operation") or "?") for r in rows),
+        # 真实并发：观测模式下唯一能拿到它的地方（`concurrency` 未设时闸门只记录不拦）。
+        "inflight": Counter(
+            r["inflight_at_acquire"]
+            for r in rows
+            if isinstance(r.get("inflight_at_acquire"), int)
+        ),
+        # 用行内的 `concurrency_enforced`（闸门真正生效与否），而不是「配了 max」——
+        # 配了 max 但 `concurrency_enabled: false` 时仍是观测态，只看 max 会误报「已生效」。
+        # 老行没有这个字段时退回按 max 判断。
+        "enforced": any(
+            r.get("concurrency_enforced")
+            if r.get("concurrency_enforced") is not None
+            else r.get("concurrency_max")
+            for r in rows
+        ),
+        "rate_waited_ms": sum(int(r.get("rate_waited_ms") or 0) for r in rows),
+        "long_pause_hits": sum(1 for r in rows if (r.get("long_pause_ms") or 0) > 0),
+        "skipped": Counter(
+            str(r.get("skip_reason")) for r in rows if r.get("skip_reason")
+        ),
+        # 下面几个都是「本该限速/限并发，但被放行了」的计数 —— 分别对应不同原因，
+        # 混在一起看会读错（基建故障 ≠ 容量信号）。
+        "fail_open": sum(1 for r in rows if r.get("rate_fail_open")),
+        "rate_errors": sum(1 for r in rows if r.get("rate_error")),
+        "overflowed": sum(1 for r in rows if r.get("overflowed")),
+        "gate_fail_open": sum(1 for r in rows if r.get("gate_fail_open")),
+        # `ok` 缺失（例如超长行被降级截断成 {schema, ts, layer, truncated}）不等于失败，
+        # 显式判 `is False`，否则会把截断的成功行算成失败、还带不出错误码。
+        "failed": sum(1 for r in rows if r.get("ok") is False),
+        "error_codes": Counter(
+            str(r.get("error_code")) for r in rows if r.get("error_code")
+        ),
+        # `web` 调用没能解析出目标域名 = 掉到弱档（6–8s、无长停）。这是「被 WAF 盯的
+        # 详情页静默失去保护」的信号，必须能一眼看到。
+        "unrouted_web": sum(
+            1
+            for r in rows
+            if r.get("site") == "web"
+            and r.get("domain_via") in ("site-key", "url-unparseable")
+        ),
+    }
+
+
+def uncovered_operations(
+    records: list[dict], cutoff: datetime, end: datetime | None = None
+) -> Counter:
+    """从 **Python 台账** 里数出插件治理覆盖不到的操作（`browser:*`）。"""
+    counter: Counter = Counter()
+    for row in records:
+        if not _in_window(row, cutoff, end):
+            continue
+        operation = str(row.get("operation") or "?")
+        if operation.startswith(UNCOVERED_OPERATION_PREFIXES):
+            counter[operation] += 1
+    return counter
+
+
+def render_adapter(adapter: dict, uncovered: Counter) -> str:
+    """插件层观测块。没有数据时返回一句说明，而不是整块省略（沉默会被误读成「没问题」）。"""
+    lines = ["", "—— 插件层观测（adapter-calls.jsonl）——"]
+    if not adapter.get("total"):
+        lines.append(
+            "  这个时间窗内没有记录（插件侧台账是否被 OPENCLI_ADAPTER_LOG 关掉了？）"
+        )
+    else:
+        domains = "  ".join(
+            f"{name} {count}" for name, count in adapter["by_domain"].most_common(6)
+        )
+        lines.append(f"  按域名: {domains}")
+        lines.append(
+            "  按来源: "
+            + "  ".join(f"{k} {v}" for k, v in adapter["by_source_kind"].most_common(6))
+        )
+        if adapter["inflight"]:
+            gate = "已生效" if adapter["enforced"] else "观测模式（只记录不拦）"
+            dist = "  ".join(
+                f"{n}路×{c}" for n, c in sorted(adapter["inflight"].items())
+            )
+            lines.append(f"  真实并发（同时在飞）: {dist}   闸门={gate}")
+        lines.append(
+            f"  限频: 累计等待 {adapter['rate_waited_ms'] / 1000:.1f}s，"
+            f"长停命中 {adapter['long_pause_hits']} 次"
+        )
+        if adapter["skipped"]:
+            lines.append(
+                "  按原因跳过: "
+                + "  ".join(f"{k} {v}" for k, v in adapter["skipped"].most_common())
+            )
+        released = (
+            f"限速器异常 {adapter['rate_errors']}，"
+            f"取锁放行 {adapter['fail_open']}，"
+            f"排队超预算 {adapter['overflowed']}，"
+            f"闸门故障 {adapter['gate_fail_open']}"
+        )
+        lines.append(f"  ⚠️ 本该限流却被放行: {released}")
+        if adapter["unrouted_web"]:
+            lines.append(
+                f"  ⚠️ {adapter['unrouted_web']} 次 web 调用解析不出目标域名"
+                "（掉到 6–8s 弱档、无长停）—— 查参数里 URL 的形态是否变了"
+            )
+        if adapter["failed"]:
+            codes = "  ".join(
+                f"{k} {v}" for k, v in adapter["error_codes"].most_common(4)
+            )
+            lines.append(f"  失败 {adapter['failed']} 次（{codes or '无错误码'}）")
+
+    if uncovered:
+        lines.append(
+            "  ⚠️ 插件覆盖不到（不经钩子、不受限频与并发治理）: "
+            + "  ".join(f"{k} {v}" for k, v in uncovered.most_common(6))
+        )
+        lines.append("     这些调用**不计入**上面的域名密度（上游 #2606）")
+    return "\n".join(lines)
 
 
 def render(summary: dict, top_minutes: int = 8, sample_failures: int = 8) -> str:
@@ -285,6 +460,10 @@ def main() -> int:
     parser.add_argument("--log", help="台账路径，默认 ~/.opencli/xueqiu-calls.jsonl")
     parser.add_argument("--hours", type=int, default=24, help="回看小时数，默认 24")
     parser.add_argument("--date", help="只统计某天 YYYY-MM-DD（覆盖 --hours）")
+    parser.add_argument(
+        "--adapter-log",
+        help="插件侧台账路径，默认 ~/.opencli/adapter-calls.jsonl；off 关闭",
+    )
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     args = parser.parse_args()
 
@@ -308,6 +487,15 @@ def main() -> int:
 
     records = load_records(path)
     summary = summarize(records, cutoff)
+
+    window_end = cutoff + timedelta(days=1) if args.date else None
+    adapter_path = _adapter_log_path(args.adapter_log)
+    adapter = (
+        summarize_adapter(load_records(adapter_path), cutoff, window_end)
+        if adapter_path and adapter_path.exists()
+        else {"total": 0}
+    )
+    uncovered = uncovered_operations(records, cutoff, window_end)
 
     if args.date:
         # 只保留当天
@@ -377,6 +565,31 @@ def main() -> int:
                         summary.get("by_minute_site", Counter()).most_common(20)
                     ),
                     "peak_minutes_all": dict(summary["by_minute"].most_common(20)),
+                    # 插件侧台账（传输层真相）。键是**新增**的，老消费者不受影响。
+                    "adapter_total": adapter.get("total", 0),
+                    "adapter_first": adapter.get("first", ""),
+                    "adapter_last": adapter.get("last", ""),
+                    "adapter_by_operation": dict(
+                        adapter.get("by_operation", Counter())
+                    ),
+                    "adapter_by_domain": dict(adapter.get("by_domain", Counter())),
+                    "adapter_by_source_kind": dict(
+                        adapter.get("by_source_kind", Counter())
+                    ),
+                    "adapter_inflight": {
+                        str(k): v for k, v in adapter.get("inflight", Counter()).items()
+                    },
+                    "adapter_concurrency_enforced": bool(adapter.get("enforced")),
+                    "adapter_skipped": dict(adapter.get("skipped", Counter())),
+                    "adapter_released": {
+                        "rate_errors": adapter.get("rate_errors", 0),
+                        "fail_open": adapter.get("fail_open", 0),
+                        "overflowed": adapter.get("overflowed", 0),
+                        "gate_fail_open": adapter.get("gate_fail_open", 0),
+                    },
+                    "adapter_unrouted_web": adapter.get("unrouted_web", 0),
+                    # 不经钩子、不受插件治理的调用（`browser:*`）—— 不计入域名密度
+                    "uncovered_operations": dict(uncovered),
                 },
                 ensure_ascii=False,
                 indent=1,
@@ -385,6 +598,7 @@ def main() -> int:
         return 0
 
     print(render(summary))
+    print(render_adapter(adapter, uncovered))
     return 0
 
 
