@@ -64,11 +64,18 @@ def test_every_plugin_command_is_a_known_site_operation():
     )
 
 
-def test_plugin_command_extraction_actually_sees_all_seven():
-    """抽命令的解析本身要有牙：少抽到一条就等于这条守卫失效。"""
+def test_plugin_command_extraction_actually_sees_all_six():
+    """抽命令的解析本身要有牙：少抽到一条就等于这条守卫失效。
+
+    2026-10-13：`xiaohongshu search` 的覆盖已从插件移除（改用官方基线，理由见
+    opencli-adapters/CONTRACT.md §2.7），故 7 → **6** 条。
+    """
     commands = plugin_commands()
-    assert len(commands) == 7, (
-        f"应该抽到 7 条命令，实际 {len(commands)} 条：{sorted(commands)} —— "
+    assert len(commands) == 6, (
+        f"应该抽到 6 条命令，实际 {len(commands)} 条：{sorted(commands)} —— "
         "解析逻辑或插件结构变了"
     )
     assert "article" in commands and commands["article"] == "article.js"
+    assert "search" not in commands, (
+        "search.js 已从插件移除 —— 若它又冒出来，说明覆盖被误加回来了"
+    )
