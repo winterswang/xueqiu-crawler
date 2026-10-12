@@ -21,7 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from analyze_opencli_usage import SITE_OPERATIONS  # noqa: E402
 
-PLUGIN_DIR = Path(__file__).resolve().parent.parent / "opencli-adapters"
+from plugin_source import resolve_plugin_dir  # noqa: E402
+
+PLUGIN_DIR = resolve_plugin_dir()
 
 
 def plugin_commands() -> dict[str, str]:

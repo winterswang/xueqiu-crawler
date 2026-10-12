@@ -20,7 +20,9 @@ import opencli_extractor
 #
 # 读的是**整个插件目录**（入口 + lib/）而不是某一个文件：2026-10-12 把限速器拆成
 # lib/ 之后，常量分散到 policy.js / lockfile.js，只读入口会直接「找不到常量」。
-PLUGIN_DIR = Path(__file__).resolve().parent.parent / "opencli-adapters"
+from plugin_source import resolve_plugin_dir  # noqa: E402
+
+PLUGIN_DIR = resolve_plugin_dir()
 SINGLE_RUN_HEADROOM_SECONDS = 20
 
 

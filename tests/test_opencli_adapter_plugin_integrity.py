@@ -22,7 +22,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-PLUGIN_DIR = Path(__file__).resolve().parent.parent / "opencli-adapters"
+from plugin_source import resolve_plugin_dir  # noqa: E402
+
+PLUGIN_DIR = resolve_plugin_dir()
 ENTRY = PLUGIN_DIR / "rate-limit.js"
 
 _DECL = re.compile(

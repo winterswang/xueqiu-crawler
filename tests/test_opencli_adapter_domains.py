@@ -16,11 +16,12 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
-PLUGIN_DIR = Path(__file__).resolve().parent.parent / "opencli-adapters"
+from plugin_source import resolve_plugin_dir  # noqa: E402
+
+PLUGIN_DIR = resolve_plugin_dir()
 
 _PROBE = """
 import { pathToFileURL } from 'node:url';

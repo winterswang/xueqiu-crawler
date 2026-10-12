@@ -9,7 +9,7 @@ Falls back gracefully when opencli is not available.
 Requirements:
     - opencli installed: npm i -g @jackwener/opencli
     - Chrome extension connected (opencli doctor)
-    - xueqiu-adapters plugin installed (`opencli-adapters/install.sh`)
+    - opencli-adapters plugin installed（独立仓 opencli-adapters 的 install.sh）
 """
 
 import functools
