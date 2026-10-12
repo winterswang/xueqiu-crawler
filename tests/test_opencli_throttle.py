@@ -10,24 +10,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import opencli_extractor
 
-# 插件层限速器（opencli-adapters/rate-limit.js）的「单次可能的最长等待」是
-# max_delay_s + long_pause_max_s —— 它的等待发生在 **opencli 子进程内部**，会被
-# subprocess.run 的墙钟一并计时，所以调用方的 timeout 必须大于「这个等待 + 单次
-# 真实执行」，否则长停一命中就必然被误杀（2026-10-12 实测：30s 上限下 2/18 账号失败）。
+# 插件层限速器的「单次可能的最长等待」是 max_delay_s + long_pause_max_s + 取锁轮询
+# 上限 —— 它的等待发生在 **opencli 子进程内部**，会被 subprocess.run 的墙钟一并计时，
+# 所以调用方的 timeout 必须大于「这个等待 + 单次真实执行」，否则长停一命中就必然被
+# 误杀（2026-10-12 实测：30s 上限下 2/18 账号失败）。
 #
 # 这些数**从插件源码里读**，不照抄 —— 这样插件层把 long_pause/max_delay 调大时，
 # 下面的断言会一起失败（双向守卫），而不是只有「timeout 被改小」才会红。
-PLUGIN_JS = (
-    Path(__file__).resolve().parent.parent / "opencli-adapters" / "rate-limit.js"
-)
+#
+# 读的是**整个插件目录**（入口 + lib/）而不是某一个文件：2026-10-12 把限速器拆成
+# lib/ 之后，常量分散到 policy.js / lockfile.js，只读入口会直接「找不到常量」。
+PLUGIN_DIR = Path(__file__).resolve().parent.parent / "opencli-adapters"
 SINGLE_RUN_HEADROOM_SECONDS = 20
+
+
+def plugin_source() -> str:
+    """把插件所有 .js 拼成一份可搜索的语料（入口 + lib/）."""
+    files = sorted(PLUGIN_DIR.glob("*.js")) + sorted((PLUGIN_DIR / "lib").glob("*.js"))
+    assert files, f"{PLUGIN_DIR} 下没有 .js"
+    return "\n".join(p.read_text(encoding="utf-8") for p in files)
 
 
 def _plugin_policy_js(site: str) -> str:
     """取出 BUILTIN_SITES 里某个站点的策略源码片段（内联对象或它引用的常量）."""
-    src = PLUGIN_JS.read_text(encoding="utf-8")
+    src = plugin_source()
     table = re.search(r"const BUILTIN_SITES = \{(.*?)\n\};", src, re.S)
-    assert table, "找不到 BUILTIN_SITES —— rate-limit.js 结构变了，请同步这个测试"
+    assert table, "找不到 BUILTIN_SITES —— 插件结构变了，请同步这个测试"
     entry = re.search(
         rf"^\s*{re.escape(site)}\s*:\s*(\{{.*?\}}|[A-Za-z_$][\w$]*)\s*,?\s*$",
         table.group(1),
@@ -51,7 +59,7 @@ def _plugin_number(site: str, key: str) -> float:
 
 def _plugin_const_ms(name: str) -> float:
     """读模块级毫秒常量（如 LOCK_WAIT_MS），换成秒."""
-    src = PLUGIN_JS.read_text(encoding="utf-8")
+    src = plugin_source()
     found = re.search(rf"const {re.escape(name)} = ([\d_]+)", src)
     assert found, f"找不到常量 {name}"
     return float(found.group(1).replace("_", "")) / 1000.0
@@ -142,30 +150,42 @@ def test_list_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
 
 
 def test_builtin_sites_declare_web_with_pacing():
-    """通用站 `web` 必须被声明，且带正的基础间隔.
+    """通用站 `web` 必须被声明，带正的基础间隔，且**下限不低于 6 秒**.
 
     回归（2026-10-12）：雪球生产链路的**详情页**走的是 `opencli web article`，
     站点键是 `web`。内置表原先只声明了 xiaohongshu / xueqiu，`policyFor('web')`
     返回 null —— 详情页**连基础的间隔都没有**，而它正是被风控墙拦掉的那类请求。
+
+    下限 6 秒不是审美问题：`scripts/schedule-checks/peak.mjs` 用
+    「6 秒下限 ⇒ 一分钟不可能超过 10 次」（PEAK_IMPOSSIBLE=10）判定「限速器被绕过」。
+    把 `web` 调到 6 秒以下，合法的公告批量下载会被误报成绕过 —— 2026-10-12 差点
+    就这么发了（当时写的是 3–8s）。
     """
     assert _plugin_number("web", "max_delay_s") > 0, "web 的策略没有正的基础间隔"
+    assert _plugin_number("web", "min_delay_s") >= 6, (
+        "web 的下限低于 6 秒 —— 会让 peak.mjs 的「6 秒下限」不变量失效、误报限速器被绕过"
+    )
 
 
-def test_web_calls_to_xueqiu_resolve_to_xueqiu_group():
-    """`web` 调用必须**按目标域名**归到 xueqiu 组（策略与额度都跟着走）.
+def test_known_domains_alias_back_to_their_existing_keys():
+    """`xueqiu.com` 必须映射回**现有的键** `xueqiu`，不能是字符串 `'xueqiu.com'`.
 
-    只把 `web` 整站套上雪球节奏是错的：`xueqiu-monitor` 也走这条命令抓公告页，
-    域名是混的（cninfo / hkexnews / sseinfo），整站套 = 把公告下载拖成每 30 次
-    停 45–75 秒。反过来，不归组又会让打 xueqiu.com 的详情页与 `xueqiu/` 列表调用
-    各算各的窗口，请求密度翻倍 —— 风控墙看的是总量。
+    状态文件名由域名键直接决定 —— 映射成一个新名字会让状态文件换名、**限速排期清零**，
+    下一次调用就以零间隔打出去（这正是按域名重构时最危险的一处）。同时
+    `web/article` 打 xueqiu.com 时靠这条别名与 `xueqiu/` 的列表调用共用同一份额度，
+    否则两者各算各的窗口、实际请求密度翻倍。
     """
-    src = PLUGIN_JS.read_text(encoding="utf-8")
-    rules = re.search(r"const HOST_RULES = \[(.*?)\];", src, re.S)
-    assert rules, "找不到 HOST_RULES —— rate-limit.js 结构变了，请同步这个测试"
-    entry = re.search(r"host:\s*/(.+?)/i\s*,\s*site:\s*'([^']+)'", rules.group(1))
-    assert entry, f"HOST_RULES 里没有可解析的规则：{rules.group(1)[:80]}"
-    assert "xueqiu" in entry.group(1), f"第一条规则匹配的不是雪球：{entry.group(1)}"
-    assert entry.group(2) == "xueqiu", f"雪球没被归到 xueqiu 组：{entry.group(2)}"
+    src = plugin_source()
+    table = re.search(r"CANONICAL_DOMAIN_KEY = \{(.*?)\n\};", src, re.S)
+    assert table, "找不到 CANONICAL_DOMAIN_KEY —— 插件结构变了，请同步这个测试"
+    pairs = dict(re.findall(r"'([^']+)'\s*:\s*'([^']+)'", table.group(1)))
+    assert pairs.get("xueqiu.com") == "xueqiu", (
+        f"xueqiu.com 的别名必须是 xueqiu（状态文件才不换名），实际：{pairs.get('xueqiu.com')!r}"
+    )
+    assert pairs.get("www.xueqiu.com") == "xueqiu"
+    assert pairs.get("xiaohongshu.com") == "xiaohongshu", (
+        "小红书同理：换名会清零它的限速排期"
+    )
 
 
 def test_detail_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
@@ -203,3 +223,30 @@ def test_detail_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     assert captured["timeout"] > (
         _plugin_worst_wait_seconds("xueqiu") + SINGLE_RUN_HEADROOM_SECONDS
     )
+
+
+def test_concurrency_gate_defaults_to_observe_only():
+    """内置策略里**不得**预设 `concurrency` —— 默认必须是「只记录不拦」.
+
+    启用闸门会让排队等待发生在 opencli 子进程内、被调用方 `subprocess.run` 一并计时，
+    最坏墙钟 ≈ 限速 87s + 取锁 2s + 排队预算 20s + 执行 10s ≈ 119s。调用方现在是
+    120s 超时，**必须先把它抬到 ~150s**（`scripts/opencli_extractor.py`、
+    `xueqiu-monitor/src/detail_fetcher.py`）才能开闸。
+
+    这条断言就是防止有人「顺手把 concurrency 调成 1/2」—— 那会把 119s 顶破 120s，
+    表现为调用方超时、账号记失败，而根因藏在插件层。
+    """
+    src = plugin_source()
+    table = re.search(r"const BUILTIN_SITES = \{(.*?)\n\};", src, re.S)
+    assert table, "找不到 BUILTIN_SITES —— 插件结构变了，请同步这个测试"
+    body = table.group(1)
+    # 策略可以内联、也可以引用常量（XUEQIU_PACE），所以两边都查。
+    pace = re.search(r"const XUEQIU_PACE = \{(.*?)\n\};", src, re.S)
+    for label, chunk in (
+        ("BUILTIN_SITES", body),
+        ("XUEQIU_PACE", pace.group(1) if pace else ""),
+    ):
+        assert not re.search(r"\bconcurrency\w*\s*:", chunk), (
+            f"{label} 预设了 concurrency —— 开闸前必须先把调用方超时抬到 ~150s "
+            "（见本测试 docstring），否则排队等待会顶破 120s"
+        )
