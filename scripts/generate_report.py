@@ -196,8 +196,11 @@ def generate_today_report(
         out_file = Path(no_update_path)
         if out_file.exists() and out_file.stat().st_size > 0:
             kept = out_file.read_text(encoding='utf-8')
-            logger.info("今日已有日报 (%s, %d B)，不以「无新增」空壳覆盖",
-                        out_file.name, out_file.stat().st_size)
+            logger.info(
+                "今日已有日报 (%s, %d B)，不以「无新增」空壳覆盖",
+                out_file.name,
+                out_file.stat().st_size,
+            )
             return kept
         report = generate_daily_report([], [], no_update_path)
         logger.info(f"已生成「今日无新增」最小日报: {no_update_path}")
