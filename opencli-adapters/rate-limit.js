@@ -48,64 +48,90 @@ import { acquireInflight, releaseInflight } from './lib/concurrency.js';
 import { acquireSlot } from './lib/ratelimit.js';
 import { appendRecord, callerInfo, pickTarget, stripInternalArgs, truncate } from './lib/requestlog.js';
 
-/** 把钩子 ctx 上挂着的信息 + 结局组装成台账的一行（见 lib/requestlog.js）。 */
-function buildRecord(ctx) {
-  const guard = ctx.__xqGuard || {};
+/** 谁、何时、打哪条命令 —— 与调用方身份（靠继承来的环境变量认，不需要调用方配合）。 */
+function callIdentity(ctx, guard) {
   const finishedAt = Number(ctx.finishedAt) || Date.now();
   const startedAt = Number(guard.startedAt) || Number(ctx.startedAt) || finishedAt;
   const { source, sourceKind } = callerInfo();
+  return {
+    finishedAt,
+    fields: {
+      schema: 2,
+      layer: 'plugin',
+      ts: new Date(finishedAt).toISOString(),
+      started_at: new Date(startedAt).toISOString(),
+      finished_at: new Date(finishedAt).toISOString(),
+      duration_ms: Math.max(0, finishedAt - startedAt),
+      source,
+      source_kind: sourceKind,
+      call_id: process.env.XUEQIU_OPENCLI_CALL_ID || null,
+      // ppid = 调用方进程 pid（opencli 是无 shell 包装的 node 直启脚本），
+      // 可与 `xueqiu-calls.jsonl` 的 pid 对齐。
+      ppid: process.ppid,
+      pid: process.pid,
+      site: guard.site ?? null,
+      name: guard.name ?? null,
+      operation: guard.name ?? null,
+      // opencli 只给 "site/name"、不给 argv；完整参数在 args 里，target 是其中最有辨识度的那个。
+      command: ctx.command ?? null,
+      args: safeArgsJson(guard.args),
+      domain_key: guard.key ?? null,
+      host: guard.host ?? null,
+      domain_via: guard.via ?? null,
+      target: truncate(guard.target || pickTarget(guard.args), 300) || null,
+    },
+  };
+}
+
+function safeArgsJson(args) {
+  try {
+    const visible = stripInternalArgs(args);
+    return visible && Object.keys(visible).length
+      ? truncate(JSON.stringify(visible), 600)
+      : null;
+  } catch {
+    return null; // 循环引用之类
+  }
+}
+
+/** 限速与并发闸的决策 —— 这两块**只有插件层知道**，正是 Python 台账的盲区。 */
+function guardFields(guard) {
   const rate = guard.rate || {};
   const conc = guard.concurrency || {};
-  const err = ctx.error;
   const ms = (seconds) => (seconds == null ? null : Math.round(seconds * 1000));
-  let argsJson = null;
-  try {
-    const visible = stripInternalArgs(guard.args);
-    argsJson = visible && Object.keys(visible).length ? truncate(JSON.stringify(visible), 600) : null;
-  } catch {
-    argsJson = null; // 循环引用之类
-  }
   return {
-    schema: 2,
-    layer: 'plugin',
-    ts: new Date(finishedAt).toISOString(),
-    started_at: new Date(startedAt).toISOString(),
-    finished_at: new Date(finishedAt).toISOString(),
-    duration_ms: Math.max(0, finishedAt - startedAt),
-    // 调用方身份靠**继承来的环境变量**认，不需要调用方配合；手敲时为空。
-    source,
-    source_kind: sourceKind,
-    call_id: process.env.XUEQIU_OPENCLI_CALL_ID || null,
-    // ppid = 调用方进程 pid（opencli 是无 shell 包装的 node 直启脚本），可与
-    // `xueqiu-calls.jsonl` 的 pid 对齐。
-    ppid: process.ppid,
-    pid: process.pid,
-    site: guard.site ?? null,
-    name: guard.name ?? null,
-    operation: guard.name ?? null,
-    // opencli 只给 "site/name"，不给 argv；完整参数在 args 里，target 是其中最有辨识度的那个。
-    command: ctx.command ?? null,
-    args: argsJson,
-    domain_key: guard.key ?? null,
-    host: guard.host ?? null,
-    domain_via: guard.via ?? null,
-    target: truncate(guard.target || pickTarget(guard.args), 300) || null,
     throttled: guard.throttled ?? null,
     skip_reason: guard.skipReason ?? null,
     rate_waited_ms: ms(rate.waited_s),
     rate_reserved_ms: ms(rate.reserved_s),
     long_pause_ms: ms(rate.long_pause_s),
     rate_fail_open: rate.fail_open ?? null,
-    // 并发闸：`concurrency_max` 为 null 表示**观测模式**（只看不拦）。
+    // concurrency_max 为 null = 观测模式（只看不拦）。
     concurrency_max: conc.max ?? null,
     inflight_at_acquire: conc.inflight ?? null,
     acquired_slot: conc.acquired ?? null,
     concurrency_waited_ms: conc.waited_ms ?? null,
+    // overflowed 专指「排队超预算」；拿不到闸门锁是另一回事，单列字段别混。
     overflowed: conc.overflowed ?? null,
+    gate_fail_open: conc.gate_fail_open ?? null,
+  };
+}
+
+/** 结局。err.code 是 opencli 的 CliError 码（如 BLOCKED_WAF），比字符串匹配可靠。 */
+function outcomeFields(ctx) {
+  const err = ctx.error;
+  return {
     ok: !err,
     error_code: err?.code ?? null,
     error: err ? truncate(err.message ?? String(err), 500) : null,
   };
+}
+
+/** 把钩子 ctx 上挂着的信息 + 结局组装成台账的一行（见 lib/requestlog.js）。 */
+function buildRecord(ctx) {
+  const guard = ctx.__xqGuard || {};
+  const { fields } = callIdentity(ctx, guard);
+  return { ...fields, ...guardFields(guard), ...outcomeFields(ctx) };
 }
 
 export function installRateLimit() {
@@ -119,9 +145,9 @@ export function installRateLimit() {
     // 先解析「这次打的是哪个域名」—— 策略、环境变量覆盖、状态额度全部按它算。
     const { key, host, via, degraded } = resolveDomainKey(site, ctx?.args);
     if (degraded) {
-      // 参数里有 http(s) URL 但解析不出 hostname（`https://`、`https://[bad`…）。
-      // 此时会退回站点键那一档（`web` = 6–8s，**没有长停**）—— 让这件事可见，
-      // 否则被风控盯的详情页会静默掉到弱档，而没有任何线索。
+      // `web` 调用没能解析出目标域名（没有 URL，或 URL 解析失败）。此时会退回站点键
+      // 那一档（6–8s，**没有长停**）—— 而 `web article` 正是抓雪球详情页的主通道，
+      // 掉档就意味着被 WAF 盯的那类请求失去保护。让这件事可见，否则零线索。
       log.warn(`rate-limit: web 调用解析不出目标域名（${full}），按其站点档限速`);
     }
 

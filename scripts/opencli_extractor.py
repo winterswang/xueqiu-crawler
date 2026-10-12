@@ -35,6 +35,13 @@ from xueqiu_analyzer.opencli_rate_limiter import acquire_opencli_slot  # noqa: E
 
 logger = logging.getLogger(__name__)
 
+# 让**子进程**（opencli / 插件）也能认出发起方：插件侧的请求台账靠继承来的
+# XUEQIU_CALL_SOURCE 归因调用方，而本模块原来只在父进程里读它（读不到就用自己的
+# 默认值），子进程环境里其实没有这个变量 —— 于是爬虫发出的调用在插件台账里全被记成
+# `source_kind: manual`，看上去像人手敲的（2026-10-12 review 指出）。
+# setdefault：调用方（如 crawl_gateway）若已显式设过，就不要覆盖它。
+os.environ.setdefault("XUEQIU_CALL_SOURCE", "xueqiu-crawler:opencli_extractor")
+
 BROWSER_SESSION_PREFIX = "xq-crawler"
 
 

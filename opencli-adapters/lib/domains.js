@@ -29,7 +29,33 @@ export function urlFromArgs(args) {
 /** 末两段启发式（`a.b.example.com` → `example.com`）。只作为兜底。 */
 function registrableDomain(hostname) {
   const parts = hostname.split('.').filter(Boolean);
-  return parts.length <= 2 ? hostname : parts.slice(-2).join('.');
+  // IP 字面量与单标签主机不能切：`1.2.3.4` 切出来是 `3.4` —— 那会开出一个
+  // `3.4-throttle.json` 的垃圾状态文件，而且额度被凭空拆走。
+  if (parts.length <= 2) return hostname;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return hostname;
+  return parts.slice(-2).join('.');
+}
+
+/**
+ * 把 hostname 或「注册域」映射成规范键；**对两者都要查**。
+ *
+ * 只查完整 hostname 是不够的：`api.xueqiu.com` 不在别名表里，会先落到
+ * 末两段 `xueqiu.com` —— 若不再查一次别名表，这个键就成了新字符串
+ * （另开 `xueqiu.com-throttle.json`，且策略查找落回 `web` 的弱档、**丢掉长停**）。
+ * 那正是「被 WAF 盯的详情页静默掉档」，必须阻止。
+ */
+function canonicalFor(hostname) {
+  const candidates = [hostname];
+  const registrable = registrableDomain(hostname);
+  if (registrable !== hostname) candidates.push(registrable);
+
+  for (const candidate of candidates) {
+    const aliased = CANONICAL_DOMAIN_KEY[candidate];
+    if (aliased) return { key: aliased, matched: candidate };
+    const ruled = DOMAIN_RULES.find((r) => r.re.test(candidate));
+    if (ruled) return { key: ruled.key, matched: candidate };
+  }
+  return { key: registrable, matched: null };
 }
 
 /**
@@ -43,29 +69,27 @@ function registrableDomain(hostname) {
  *                 否则「被 WAF 盯的详情页」会静默掉到弱档
  */
 export function resolveDomainKey(site, args) {
-  const fallback = { key: site, host: '', via: 'site-key', degraded: false };
+  // `web` 没有默认域名（它是通用站，目标在参数里）。任何解析不出目标域名的 web 调用
+  // 都会退回站点键那一档 = 6–8s、**没有长停** —— 而 `web article` 正是抓雪球详情页的
+  // 主通道，掉档就意味着被 WAF 盯的那类请求失去保护。所以 web 退档一律标 degraded，
+  // 让调用方告警；非 web 站退回站点键是正常路径（它们的域名是固定的），不告警。
+  const fallback = (via) => ({ key: site, host: '', via, degraded: site === 'web' });
 
   let hostname = SITE_DEFAULT_DOMAIN[site] ?? '';
   let via = hostname ? 'site' : 'url';
 
   if (!hostname) {
     const url = urlFromArgs(args);
-    if (!url) return fallback;
+    if (!url) return fallback('site-key');
     try {
       hostname = new URL(url).hostname.toLowerCase();
     } catch {
-      // 有 URL 但解析不出 hostname（`https://`、`https://[bad`…）——
-      // 旧实现这里只在「URL 字符串不存在」时告警，于是这一支是静默降档的。
-      return { ...fallback, degraded: true };
+      // 有 URL 但解析不出 hostname（`https://`、`https://[bad`…）。
+      return fallback('url-unparseable');
     }
-    if (!hostname) return { ...fallback, degraded: true };
+    if (!hostname) return fallback('url-unparseable');
   }
 
-  const aliased = CANONICAL_DOMAIN_KEY[hostname];
-  if (aliased) return { key: aliased, host: hostname, via, degraded: false };
-
-  const ruled = DOMAIN_RULES.find((r) => r.re.test(hostname));
-  if (ruled) return { key: ruled.key, host: hostname, via, degraded: false };
-
-  return { key: registrableDomain(hostname), host: hostname, via, degraded: false };
+  const { key } = canonicalFor(hostname);
+  return { key, host: hostname, via, degraded: false };
 }

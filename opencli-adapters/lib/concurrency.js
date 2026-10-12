@@ -88,45 +88,25 @@ function readSlots(dir) {
 }
 
 /**
- * 占一个并发槽。
+ * 在闸门锁保护下清点 + 占位（或报告「已满」）。
  *
- * @returns {Promise<{enforced:boolean, max:number|null, inflight:number|null,
- *                    acquired:boolean, token:string|null, waited_ms:number,
- *                    overflowed:boolean}>}
+ * 单独拆出来是为了让 `acquireInflight` 的等待循环保持可读（仓库规范：函数 < 50 行）。
+ * 返回 `{ gateFailOpen }` / `{ slot, inflight }` / `{ inflight }` 三选一。
  */
-export async function acquireInflight(key, policy, meta = {}) {
-  const max = Math.trunc(Number(policy.concurrency) || 0);
-  const enabled = policy.concurrency_enabled !== false && max > 0;
-  const token = newLockToken();
-  const dir = path.join(inflightRoot(), key);
-  const gate = path.join(dir, '.gate.lock');
-  const startedAt = Date.now();
-  let inflight = null;
-  let slotToken = null;
-  let overflowed = false;
-
+async function reserveOnce({ key, dir, gate, max, enabled, token, startedAt, meta }) {
+  const lockToken = newLockToken();
+  const { fd, failOpen } = await acquireLock(key, gate, lockToken);
+  if (failOpen) return { gateFailOpen: true };
   try {
-    fs.mkdirSync(dir, { recursive: true });
-  } catch (err) {
-    log.warn(`concurrency[${key}]: 建不了槽目录（${err.message}），本轮放行`);
-    return { enforced: enabled, max, inflight: null, acquired: false, token: null, waited_ms: 0, overflowed: false };
-  }
-
-  for (;;) {
-    const lockToken = newLockToken();
-    const { fd, failOpen } = await acquireLock(key, gate, lockToken);
-    if (failOpen) {
-      // 拿不到闸门锁：不阻塞调用，直接放行（与限速器同一套 fail-open 哲学）。
-      return { enforced: enabled, max, inflight, acquired: false, token: null, waited_ms: Date.now() - startedAt, overflowed: true };
-    }
-    let live;
-    try {
-      live = readSlots(dir);
-      if (!enabled || live.length < max) {
-        slotToken = `${token}.slot`;
-        // 观测模式下也要占位：不占就量不出「同时在飞几路」，这正是要先拿到的数据。
-        const body = JSON.stringify({
-          token: slotToken,
+    const live = readSlots(dir);
+    if (!enabled || live.length < max) {
+      const slot = `${token}.slot`;
+      // 观测模式（!enabled）也照常占位：不占就量不出「同时在飞几路」，
+      // 而那正是要先拿到的数据。
+      fs.writeFileSync(
+        path.join(dir, slot),
+        JSON.stringify({
+          token: slot,
           pid: process.pid,
           ppid: process.ppid,
           started_at: startedAt,
@@ -135,35 +115,69 @@ export async function acquireInflight(key, policy, meta = {}) {
           enforced: enabled,
           source: meta.source ?? null,
           command: meta.command ?? null,
-        });
-        fs.writeFileSync(path.join(dir, slotToken), body);
-        inflight = live.length + 1;
-      } else {
-        inflight = live.length;
-      }
-    } finally {
-      releaseLock(fd, gate, lockToken);
+        }),
+      );
+      return { slot, inflight: live.length + 1 };
     }
-
-    if (slotToken) break;
-
-    if (Date.now() - startedAt > waitBudgetMs()) {
-      overflowed = true; // 超预算 → 放行，但留痕（日志里 overflowed: true）
-      if (DEBUG) log.debug(`concurrency[${key}]: 排队超预算，放行（在飞 ${inflight}/${max}）`);
-      break;
-    }
-    await sleep(POLL_MS + Math.random() * POLL_MS);
+    return { inflight: live.length };
+  } finally {
+    releaseLock(fd, gate, lockToken);
   }
+}
 
+/** 统一的返回形状，避免四个 return 各写一份。 */
+function result({ enabled, max, inflight, token, startedAt, overflowed = false, gateFailOpen = false }) {
   return {
     enforced: enabled,
     max: max || null,
     inflight,
-    acquired: Boolean(slotToken),
-    token: slotToken,
+    acquired: Boolean(token),
+    token: token ?? null,
     waited_ms: Date.now() - startedAt,
+    // overflowed 专指「排队超预算」；拿不到闸门（锁/目录坏）是另一回事，
+    // 混在一起会让「观测模式取数」的人把基建故障读成容量信号（review 指出）。
     overflowed,
+    gate_fail_open: gateFailOpen,
   };
+}
+
+/**
+ * 占一个并发槽。
+ *
+ * 超限时有界排队，超预算则放行并记 `overflowed: true`（与限速器同一套 fail-open 哲学）。
+ * 拿不到闸门锁 / 建不了槽目录时立刻放行并记 `gate_fail_open: true`。
+ */
+export async function acquireInflight(key, policy, meta = {}) {
+  const max = Math.trunc(Number(policy.concurrency) || 0);
+  const enabled = policy.concurrency_enabled !== false && max > 0;
+  const token = newLockToken();
+  const dir = path.join(inflightRoot(), key);
+  const gate = path.join(dir, '.gate.lock');
+  const startedAt = Date.now();
+  const base = { enabled, max, startedAt };
+  let inflight = null;
+
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    log.warn(`concurrency[${key}]: 建不了槽目录（${err.message}），本轮放行`);
+    return result({ ...base, inflight: null, token: null, gateFailOpen: true });
+  }
+
+  for (;;) {
+    const attempt = await reserveOnce({ key, dir, gate, max, enabled, token, startedAt, meta });
+    if (attempt.gateFailOpen) {
+      // 拿不到闸门锁：不阻塞调用，直接放行（与限速器同一套 fail-open 哲学）。
+      return result({ ...base, inflight, token: null, gateFailOpen: true });
+    }
+    inflight = attempt.inflight;
+    if (attempt.slot) return result({ ...base, inflight, token: attempt.slot });
+    if (Date.now() - startedAt > waitBudgetMs()) {
+      if (DEBUG) log.debug(`concurrency[${key}]: 排队超预算，放行（在飞 ${inflight}/${max}）`);
+      return result({ ...base, inflight, token: null, overflowed: true });
+    }
+    await sleep(POLL_MS + Math.random() * POLL_MS);
+  }
 }
 
 /** 释放并发槽：只删自己那个（核对 token，避免误删被回收后别人建的同名槽）。 */
