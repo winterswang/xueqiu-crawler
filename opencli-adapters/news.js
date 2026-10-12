@@ -2,6 +2,8 @@ import { cli } from '@jackwener/opencli/registry';
 import { CommandExecutionError } from '@jackwener/opencli/errors';
 import { ArgumentError } from '@jackwener/opencli/errors';
 
+import { normalizeXueqiuSymbol } from './lib/xueqiu-symbol.js';
+
 const SYMBOL_PATTERN = /^(?:[A-Z]{2}\d{5,6}|\d{4,6}|[A-Z]{1,5}(?:\.[A-Z]{1,2})?)$/;
 
 const CLICK_NEWS_TAB_JS = ' (() => {' +
@@ -84,7 +86,9 @@ cli({
         if (!SYMBOL_PATTERN.test(symbol)) {
             throw new ArgumentError('xueqiu news received an invalid symbol: ' + symbol);
         }
-        let normalized = symbol;        if (/^\d{6}$/.test(symbol)) {            const head = symbol[0];            normalized = ('69'.indexOf(head) >= 0 ? 'SH' : ('03802'.indexOf(head) >= 0 ? 'SZ' : 'BJ')) + symbol;        }
+        // 市场前缀归一化抽到 lib/xueqiu-symbol.js —— 原先这里与 stock-notices.js
+        // 各写一份嵌套三元，两边**都**把 8 开头判成 SZ、920 判成 SH（静默抓错页面）。
+        const normalized = normalizeXueqiuSymbol(symbol);
         const limit = Math.max(1, Number(kwargs.limit) || 20);
 
         await page.goto('https://xueqiu.com/S/' + normalized);

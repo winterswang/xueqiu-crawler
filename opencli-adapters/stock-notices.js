@@ -1,6 +1,7 @@
 import { cli } from '@jackwener/opencli/registry';
 import { ArgumentError, EmptyResultError } from '@jackwener/opencli/errors';
 import { fetchXueqiuJson, formatChinaDate } from './utils.js';
+import { normalizeXueqiuSymbol } from './lib/xueqiu-symbol.js';
 
 // Symbol normalization mirroring the packaged comments.js contract.
 const XUEQIU_SYMBOL_PATTERN = /^(?:[A-Z]{2}\d{5,6}|\d{4,6}|[A-Z]{1,5}(?:\.[.-][A-Z]{1,2})?)$/;
@@ -13,8 +14,7 @@ function normalizeSymbolInput(raw) {
         throw new ArgumentError(`xueqiu stock-notices received an invalid symbol: ${symbol}`);
     }
     if (/^\d{6}$/.test(symbol)) {
-        const head = symbol[0];
-        return (('69'.indexOf(head) >= 0) ? 'SH' : (('03802'.indexOf(head) >= 0) ? 'SZ' : 'BJ')) + symbol;
+        return normalizeXueqiuSymbol(symbol);
     }
     if (/^\d{4,5}$/.test(symbol)) {
         return symbol.padStart(5, '0');

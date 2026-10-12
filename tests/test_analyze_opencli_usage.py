@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,8 +19,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from analyze_opencli_usage import (  # noqa: E402
     SITE_OPERATIONS,
     _peak,
+    load_records,
     render,
     summarize,
+    summarize_adapter,
+    uncovered_operations,
 )
 
 BASE = datetime(2026, 10, 5, 13, 0, 0)
@@ -212,3 +216,63 @@ def test_render_separates_probe_misses_from_failures():
     assert "探针未命中 1 次（预期控制流，非失败）" in text
     assert "失败 1 次" in text
     assert "另有探针未命中 1 次" in text
+
+
+def test_adapter_ledger_is_folded_in_without_breaking_old_keys(tmp_path, monkeypatch):
+    """插件台账要能并进来，且**不能**动老键（peak.mjs 等消费者只看老键）。
+
+    这里刻意造了一行带 `Z` 的 UTC 时间戳：插件台账写的是 ISO8601 UTC
+    （`2026-10-12T04:41:28.757Z`），而 Python 台账是本地 naive —— 不归一化就会
+    在比较窗口时抛 `TypeError: can't compare offset-naive and offset-aware`。
+    """
+    adapter = tmp_path / "adapter-calls.jsonl"
+    adapter.write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "layer": "plugin",
+                "ts": "2026-10-12T04:41:28.757Z",
+                "started_at": "2026-10-12T04:41:10.585Z",
+                "domain_key": "xueqiu",
+                "host": "xueqiu.com",
+                "site": "xueqiu",
+                "operation": "user-articles",
+                "source_kind": "monitor",
+                "throttled": True,
+                "rate_waited_ms": 0,
+                "rate_reserved_ms": 10925,
+                "long_pause_ms": 0,
+                "inline_at_acquire": None,
+                "inflight_at_acquire": 2,
+                "concurrency_max": None,
+                "overflowed": False,
+                "gate_fail_open": False,
+                "rate_error": None,
+                "ok": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_adapter(
+        load_records(adapter), datetime.now() - timedelta(days=3650)
+    )
+    assert summary["total"] == 1
+    assert summary["by_domain"]["xueqiu"] == 1
+    assert summary["inflight"][2] == 1
+    assert summary["enforced"] is False, "没配 concurrency 时应报告「观测模式」"
+
+
+def test_uncovered_operations_flags_browser_calls():
+    """`browser:*` 不经钩子、不受插件治理 —— 报告里必须单列，否则会被误算成已覆盖。"""
+    cutoff = datetime.now() - timedelta(days=3650)
+    rows = [
+        {"ts": "2026-10-12T08:00:00", "operation": "browser:open"},
+        {"ts": "2026-10-12T08:00:01", "operation": "browser:extract"},
+        {"ts": "2026-10-12T08:00:02", "operation": "article"},
+    ]
+    counter = uncovered_operations(rows, cutoff)
+    assert counter["browser:open"] == 1
+    assert counter["browser:extract"] == 1
+    assert "article" not in counter, "article 走钩子、是被治理的，不该算作覆盖不到"

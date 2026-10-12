@@ -54,3 +54,5 @@ data/*.bak
 
 # 运行期锁文件（勿提交）
 .cron_running.lock
+# 运行时锁文件：发布幂等用的（publish_daily_report.py），不该入库
+data/.publish.lock
