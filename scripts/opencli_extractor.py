@@ -53,6 +53,24 @@ class WafBlockedError(RuntimeError):
 # scripts/sync_waf_patterns.py 的同源校验）。
 _WAF_BLOCKED_MARKER = "风控验证页"
 
+# opencli 子进程的墙钟上限（秒），列表与详情页共用。
+#
+# 为什么是 120（2026-10-12）：插件层限速器（opencli-adapters/rate-limit.js，
+# 站点 xueqiu）的等待发生在 **opencli 子进程内部**，会被 subprocess.run 的墙钟
+# 一并计时。它的策略是「6–12 秒间隔 + 每 30 次一次 45–75 秒长停」，单次可能的最长
+# 等待即 12 + 75 = 87 秒，再加一次真实执行的余量（列表约 19 秒）。原来的 30/60 秒
+# 上限每命中一次长停就必然被误杀 —— 2026-10-12 实测：列表调用被掐死在 30.0s，
+# 2/18 账号记失败，其中一个账号因此漏掉一篇真文。
+#
+# 前提（改这个数之前先复核）：调用是**串行**的，且该时间窗内没有别的 opencli
+# 调用方。限速状态跨进程共享（~/.opencli/xueqiu-throttle.json），若有并发调用方
+# 各自预留，排队会累加、单次等待可能超过 120 秒。早上 07:30–08:35 窗口实测只有
+# 本爬虫在调用（台账里 0 笔非爬虫来源），所以 120 够用。
+#
+# 同步维护：插件层的 long_pause_min/max_s、max_delay_s 若调大，这里必须一起调大；
+# tests/test_opencli_throttle.py 只钉住「调用方这一侧」的超时，读不到那边。
+OPENCLI_CALL_TIMEOUT_SECONDS = 120
+
 
 def is_available() -> bool:
     """Check if opencli is installed and the Chrome extension is connected."""
@@ -175,13 +193,7 @@ def get_user_articles(user_id: str, count: int = 20) -> list[dict]:
             str(count),
             "-f",
             "json",
-            # 30 → 120（2026-10-12）：插件层限速器（opencli-adapters/rate-limit.js）
-            # 的等待发生在 **opencli 子进程内部**，会被 subprocess.run 的墙钟一并计时。
-            # 它的「每 30 次一次、45–75 秒」长停 > 30 秒，于是每命中一次就必然把
-            # 列表调用掐死在 30.0s、该账号记失败（当天实测 2/18 失败，其中
-            # 4111857140 因此漏掉一篇真文）。上限必须大于
-            # 最大等待(12+75=87s) + 单次真实执行(~20s)，取 120。
-            timeout=120,
+            timeout=OPENCLI_CALL_TIMEOUT_SECONDS,
             check=True,
         )
     except RuntimeError as e:
@@ -279,11 +291,13 @@ def _attempt_via_adapter(url: str) -> dict | None:
     不能把它和普通抓取失败混为一谈，否则调用方会去重试一个需要人工过滑块的状态。
     """
     try:
-        # 60 → 120（2026-10-12）：与列表调用对齐同一个上限，理由同上。
+        # 与列表共用同一个上限（见 OPENCLI_CALL_TIMEOUT_SECONDS）。
         # 详情页当前**未**被插件层限速（策略只声明了 xueqiu，而这条命令的站点键
-        # 是 web），所以暂时安全；一旦补上 web 的覆盖，45–75 秒长停会立刻撞破
-        # 60 秒上限 —— 提前对齐，避免修一个坑掉进另一个。
-        call = _run("web", "article", url, "-f", "json", timeout=120)
+        # 是 web），所以暂时撞不上；一旦补上 web 的覆盖，45–75 秒长停会立刻撞破
+        # 原来的 60 秒上限 —— 提前对齐，避免修一个坑掉进另一个。
+        call = _run(
+            "web", "article", url, "-f", "json", timeout=OPENCLI_CALL_TIMEOUT_SECONDS
+        )
     except (subprocess.TimeoutExpired, OSError) as exc:
         # 这条命令把「导航 + 渲染等待 + 最多 8 个选择器的抽取 + markdown 转换」
         # 压在一次调用里，旧路径是三步各有各的预算（30/10/15 秒）。超时必须

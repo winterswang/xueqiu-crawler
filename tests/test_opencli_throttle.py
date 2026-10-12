@@ -13,6 +13,10 @@ import opencli_extractor
 # max_delay_s(12) + long_pause_max_s(75) = 87 秒。它的等待发生在 **opencli
 # 子进程内部**，会被 subprocess.run 的墙钟一并计时 —— 所以调用方的 timeout 必须
 # 大于「这个等待 + 单次真实执行」，否则长停一命中就必然被误杀。
+#
+# 这两个数是**照抄**插件层的内置策略，不是读出来的：插件层的 long_pause/max_delay
+# 改大时，下面的断言不会自动跟着失败。所以这两个测试只钉住调用方这一侧（把
+# timeout 改小会红），另一侧需要在改 rate-limit.js 时人工同步。
 PLUGIN_THROTTLE_MAX_WAIT_SECONDS = 12 + 75
 SINGLE_RUN_HEADROOM_SECONDS = 20
 
@@ -68,8 +72,8 @@ def test_list_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     回归（2026-10-12）：插件层每 30 次调用一次 45–75 秒长停，而列表调用的
     timeout 只有 30 秒 —— 等待发生在子进程里，于是长停每命中一次就把列表调用
     掐死在 30.0s、该账号记失败（当天 2/18 失败；账号 4111857140 因此漏掉一篇
-    真文）。这条断言就是当时缺的防线：把 timeout 改小、或把插件层的
-    long_pause / max_delay 改大，它会先失败。
+    真文）。这条断言就是当时缺的防线：把调用方的 timeout 改小（例如回退成
+    30/60），它会先失败。插件层那一侧读不到，见上方常量注释。
     """
     captured = {}
 
