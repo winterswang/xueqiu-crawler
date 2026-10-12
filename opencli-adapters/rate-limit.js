@@ -34,7 +34,10 @@
  * {next_at, calls, last_source} —— 与既有 Python 实现同形，便于互读。
  * 归组而非按站点键：`web` 抓的就是 xueqiu.com 的详情页，必须与 `xueqiu/` 共用一个
  * 额度（见 STATE_GROUP）。
- * 调试：`OPENCLI_RATELIMIT_DEBUG=1` 打印每次等待。
+ * 调试：`OPENCLI_RATELIMIT_DEBUG=1 OPENCLI_VERBOSE=1` 打印每次等待。
+ * **两个都要设**：前者打开本模块自己的日志，后者是 opencli logger 的开关
+ * （`log.debug` 直接转调 `verbose`，而 `verbose` 只在 `OPENCLI_VERBOSE` 下才写），
+ * 只设前者不会输出任何东西 —— 2026-10-12 核实。
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -62,36 +65,46 @@ const BUILTIN_SITES = {
   // 15s 固定间隔：2026-10 实测单次真实执行仅 ~3.6s，其余全是排队。
   xiaohongshu: { min_delay_s: 15, max_delay_s: 15 },
   xueqiu: XUEQIU_PACE,
-  // ⚠️ `web` 是**通用**站（article.js 读任意网页正文），雪球生产链路的**详情页**
-  // 正是走 `opencli web article` —— 站点键是 `web`，xueqiu 的策略盖不到它。
+  // `web` 是**通用**站（article.js 读任意网页正文，还有 opencli 自带的 `web read`），
+  // 站点键不携带目标信息。雪球生产链路的**详情页**正是走 `opencli web article`，
+  // 而它的站点键是 `web` —— 所以光给 `web` 一个策略还不够，得**按目标域名**分流：
+  // 打 xueqiu.com 的走 xueqiu 的节奏与额度（见 HOST_RULES），其余按这里的温和节奏。
   //
-  // 2026-10-12：台账里 625 次 `web article` **全部**指向 xueqiu.com，一个非雪球
-  // 调用都没有；而当天早上第二遍爬取被风控墙拦掉的，正是这一类详情页请求。
-  // Python 版的 _should_throttle 原本专门覆盖了 `web article`（注释写着「切过去
-  // 就等于把正文抓取的限速整个拿掉」），限速上移到插件层时漏了这一段。
-  // 这里按雪球同款节奏补回来。
+  // 为什么不能整站按雪球节奏：`xueqiu-monitor` 也用这条命令抓公告页，域名是**混的**
+  // （实测 announcements 表 xueqiu.com 4429 / cninfo.com.cn 1035 / hkexnews.hk 61 /
+  // sseinfo.com 21，见 README）。整站套雪球节奏 = 把这些下载也拖成每 30 次停 45–75 秒。
   //
-  // 将来若真用 `web article` 抓非雪球站点，必须改成按目标域名判定 —— 否则会
-  // 顺手把 cninfo/hkexnews 这类下载也拖成雪球的节奏。
-  web: XUEQIU_PACE,
+  // 3–8s 比 Python 版更宽松（它按**动词**匹配，对所有 `web article` 一律套雪球节奏），
+  // 所以这里是放宽而不是收紧；被 WAF 盯的那部分由 HOST_RULES 单独覆盖。
+  web: { min_delay_s: 3, max_delay_s: 8 },
 };
+
+/**
+ * 目标域名 → 归到哪个站点的策略与额度。
+ *
+ * 为什么需要：`web article` 的站点键是 `web`，而它抓的可能是 xueqiu.com 的详情页
+ * （爬虫/监控的主路径，且**被 WAF 盯的就是这一类**），也可能是 cninfo/hkexnews 的
+ * 公告页。风控看的是「打同一个站点的请求总量」，所以判定与额度都必须落到**域名**上：
+ * 打 xueqiu.com 的与 `xueqiu user-articles` 共用同一个 6–12s 额度与长停计数
+ * （经 STATE_GROUP 落到同一个状态文件），别的域名不跟着一起算。
+ *
+ * 没命中规则的 `web` 调用退回 `web` 自己的温和节奏（不是不限速）—— 宁可慢一点，
+ * 也不要因为「URL 解析不出来」而静默变成完全不限速。
+ */
+const HOST_RULES = [{ host: /(^|\.)xueqiu\.com$/i, site: 'xueqiu' }];
 
 /**
  * 状态归组：把「打同一个站点」的 opencli 站点键并成一个额度。
  *
- * 为什么需要：缓存状态的默认键是 opencli 的**站点键**，而 `web article` 抓的是
- * xueqiu.com 的详情页 —— 它和 `xueqiu user-articles` 打的是同一个站点。各算各的
- * 窗口 = 实际请求密度翻倍（列表刚睡完 6–12 秒，详情页紧接着就能发），而风控墙看的
- * 是**总量**。Python 版原先是共用一个状态文件的，这里对齐那个语义。
+ * 默认键是 opencli 的站点键，而 `xueqiu` 与经 HOST_RULES 归到它的 `web` 调用打的是
+ * 同一个站点，必须共用一个状态文件 —— 各算各的窗口 = 请求密度翻倍，而风控墙看的
+ * 是总量（Python 版原先就是单个状态文件）。
  *
  * 刻意做成代码里的映射、而不写在 BUILDIN_SITES 的 `state_path` 上：用户在
- * `~/.opencli/rate-limits.json` 里覆盖 `sites.web` 时是**整体替换**对象，写在
+ * `~/.opencli/rate-limits.json` 里覆盖 `sites.xueqiu` 时是**整体替换**对象，写在
  * 内置项上的 `state_path` 会随之丢失、又退回各算各的。
  */
-const STATE_GROUP = {
-  xueqiu: 'xueqiu',
-  web: 'xueqiu', // ← `web article` 抓的就是雪球详情页
-};
+const STATE_GROUP = { xueqiu: 'xueqiu' };
 
 /** 站点未覆盖字段的兜底。注意 enabled 的默认值只在站点被声明时才有意义。 */
 const DEFAULT_POLICY = {
@@ -106,12 +119,20 @@ const DEFAULT_POLICY = {
 };
 
 const LOCK_STALE_MS = 60_000; // 持锁只为读改写状态，超过这个时间必然是崩溃残留
-const LOCK_WAIT_MS = 30_000;
+// 等锁的上限，**算在调用方的 subprocess 超时预算里**（它与预留等待是相加的，
+// 见 scripts/opencli_extractor.py 的 OPENCLI_CALL_TIMEOUT_SECONDS）。临界区只是一次
+// 几十 KB 的 JSON 读改写、亚毫秒级，30 秒这种量级纯属照搬「真实锁」的直觉，会把
+// 最坏等待抬到 30+87 ≈ 117 秒、反过来逼调用方把超时抬得更高。2 秒足够跨过
+// 轮询间隔（25–50ms）和一次进程调度；超时就 fail-open 放行。
+const LOCK_WAIT_MS = 2_000;
 const LOCK_POLL_MS = 25;
 
 // 用 envFlagOn 而不是 Boolean(process.env.X)：后者把 `=0` / `=false` 也当成「开」
 // —— 用户设 `OPENCLI_RATELIMIT_DEBUG=0` 想关掉，反而打出全部等待日志
 // （2026-10-12 review）。
+//
+// 注意：光设这个开关是**看不到输出**的，`log.debug` 实际走 opencli logger 的
+// `verbose`，后者只在 `OPENCLI_VERBOSE` 下才写。要调试就两个都设。
 const DEBUG = envFlagOn(['OPENCLI_RATELIMIT_DEBUG']);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -317,7 +338,8 @@ async function acquireSlot(site, source, policy) {
         /* 锁刚被另一方释放，直接重试 */
       }
       if (Date.now() > deadline) {
-        log.warn(`rate-limit[${site}]: 等待状态锁超时，本轮放行（仅记录状态）`);
+        // 文案别再说「仅记录状态」—— 这里既没等到、也没写状态，本次就是**不限速**放行。
+        log.warn(`rate-limit[${site}]: 等待状态锁超时，本次不限速放行`);
         return { enabled: true, waited_s: 0 };
       }
       await sleep(LOCK_POLL_MS + Math.random() * LOCK_POLL_MS);
@@ -374,6 +396,36 @@ function shouldThrottle(site, name, args, policy) {
   return true;
 }
 
+/** 从参数里找目标 URL：通用命令的位置参数名不固定，先看常见的 `url`，再扫字符串值。 */
+function urlFromArgs(args) {
+  if (!args || typeof args !== 'object') return '';
+  if (typeof args.url === 'string' && /^https?:\/\//i.test(args.url)) return args.url;
+  for (const value of Object.values(args)) {
+    if (typeof value === 'string' && /^https?:\/\//i.test(value)) return value;
+  }
+  return '';
+}
+
+/**
+ * 通用命令（`web`）按**目标域名**归到具体站点；非通用命令返回 ''（用站点键本身）。
+ *
+ * 解析不出来时返回 ''、由调用方退回站点键的策略 —— 即「温和限速」而不是「不限速」。
+ * 这一点是刻意的：宁可慢，也不能因为参数形态变了就静默退化成完全不限速。
+ */
+function hostSiteFor(site, args) {
+  if (site !== 'web') return '';
+  const url = urlFromArgs(args);
+  if (!url) return '';
+  let hostname;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    return '';
+  }
+  const rule = HOST_RULES.find((r) => r.host.test(hostname));
+  return rule ? rule.site : '';
+}
+
 function installRateLimit() {
   onBeforeExecute(async (ctx) => {
     const full = String(ctx?.command ?? '');
@@ -381,14 +433,18 @@ function installRateLimit() {
     if (slash <= 0) return; // "__startup__" 或无法解析的形态：放过
     const site = full.slice(0, slash);
     const name = full.slice(slash + 1);
-    const base = policyFor(site);
+    // 策略、环境变量覆盖、状态额度都按**归组后的站点**算 —— 这样打 xueqiu.com 的
+    // `web article` 与 `xueqiu user-articles` 共用一份额度和长停计数，
+    // 且 `XUEQIU_OPENCLI_*` 那套开关对两者一致生效。
+    const target = hostSiteFor(site, ctx?.args) || site;
+    const base = policyFor(target);
     if (!base) return;
-    const policy = applyEnv(site, base);
+    const policy = applyEnv(target, base);
     if (!shouldThrottle(site, name, ctx?.args, policy)) return;
-    await acquireSlot(site, full, policy);
+    await acquireSlot(target, full, policy);
   });
 }
 
 installRateLimit();
 
-export { acquireSlot, installRateLimit, policyFor, applyEnv };
+export { acquireSlot, installRateLimit, policyFor, applyEnv, hostSiteFor };

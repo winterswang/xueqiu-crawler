@@ -49,10 +49,24 @@ def _plugin_number(site: str, key: str) -> float:
     return float(found.group(1))
 
 
+def _plugin_const_ms(name: str) -> float:
+    """读模块级毫秒常量（如 LOCK_WAIT_MS），换成秒."""
+    src = PLUGIN_JS.read_text(encoding="utf-8")
+    found = re.search(rf"const {re.escape(name)} = ([\d_]+)", src)
+    assert found, f"找不到常量 {name}"
+    return float(found.group(1).replace("_", "")) / 1000.0
+
+
 def _plugin_worst_wait_seconds(site: str) -> float:
-    """单次调用在插件层可能被等待的最长时间（只算预留，不含取锁轮询）."""
-    return _plugin_number(site, "max_delay_s") + _plugin_number(
-        site, "long_pause_max_s"
+    """单次调用在插件层可能被等待的最长时间 = 取锁轮询上限 + 预留等待上限.
+
+    取锁那一段与预留等待是**相加**的（先拿到锁才预留、才 sleep），所以不能漏 ——
+    漏了会给出「120 够用」的虚假保证。
+    """
+    return (
+        _plugin_const_ms("LOCK_WAIT_MS")
+        + _plugin_number(site, "max_delay_s")
+        + _plugin_number(site, "long_pause_max_s")
     )
 
 
@@ -127,27 +141,38 @@ def test_list_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     )
 
 
-def test_builtin_sites_declare_web_so_detail_pages_are_throttled():
-    """内置表必须声明 `web`，且它的策略要带长停。
+def test_builtin_sites_declare_web_with_pacing():
+    """通用站 `web` 必须被声明，且带正的基础间隔.
 
-    回归（2026-10-12）：雪球生产链路的**详情页**走的是通用命令
-    `opencli web article`（站点键 `web`）。内置表原先只声明了
-    xiaohongshu / xueqiu，`policyFor('web')` 返回 null —— 详情页**连基础的
-    6–12 秒间隔都没有**，而它正是被风控墙拦掉的那一类请求
-    （台账 625 次 `web article` 全部指向 xueqiu.com）。
-    Python 版原本专门覆盖了这条路径，限速上移到插件层时漏了。
+    回归（2026-10-12）：雪球生产链路的**详情页**走的是 `opencli web article`，
+    站点键是 `web`。内置表原先只声明了 xiaohongshu / xueqiu，`policyFor('web')`
+    返回 null —— 详情页**连基础的间隔都没有**，而它正是被风控墙拦掉的那类请求。
     """
-    policy = _plugin_policy_js("web")
-
-    assert "long_pause_max_s" in policy, f"web 的策略没有长停：{policy[:80]}"
     assert _plugin_number("web", "max_delay_s") > 0, "web 的策略没有正的基础间隔"
+
+
+def test_web_calls_to_xueqiu_resolve_to_xueqiu_group():
+    """`web` 调用必须**按目标域名**归到 xueqiu 组（策略与额度都跟着走）.
+
+    只把 `web` 整站套上雪球节奏是错的：`xueqiu-monitor` 也走这条命令抓公告页，
+    域名是混的（cninfo / hkexnews / sseinfo），整站套 = 把公告下载拖成每 30 次
+    停 45–75 秒。反过来，不归组又会让打 xueqiu.com 的详情页与 `xueqiu/` 列表调用
+    各算各的窗口，请求密度翻倍 —— 风控墙看的是总量。
+    """
+    src = PLUGIN_JS.read_text(encoding="utf-8")
+    rules = re.search(r"const HOST_RULES = \[(.*?)\];", src, re.S)
+    assert rules, "找不到 HOST_RULES —— rate-limit.js 结构变了，请同步这个测试"
+    entry = re.search(r"host:\s*/(.+?)/i\s*,\s*site:\s*'([^']+)'", rules.group(1))
+    assert entry, f"HOST_RULES 里没有可解析的规则：{rules.group(1)[:80]}"
+    assert "xueqiu" in entry.group(1), f"第一条规则匹配的不是雪球：{entry.group(1)}"
+    assert entry.group(2) == "xueqiu", f"雪球没被归到 xueqiu 组：{entry.group(2)}"
 
 
 def test_detail_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     """详情页调用的超时同样要盖住插件层长停。
 
-    详情页走的是 `web article`（站点键 `web`）—— `web` 策略一旦补上（已补），
-    它就会和列表调用一样吃到 45–75 秒长停，所以超时上限必须同样够。
+    详情页走 `web article`，目标域名是 xueqiu.com → 按 HOST_RULES 归到 `xueqiu`
+    那组，因此会吃到和列表调用一样的 6–12s 间隔与 45–75 秒长停：超时上限必须同样够。
     """
     captured = {}
 
@@ -176,5 +201,5 @@ def test_detail_call_timeout_covers_plugin_rate_limit_pause(monkeypatch):
     opencli_extractor.get_article_content("https://xueqiu.com/1/1")
 
     assert captured["timeout"] > (
-        _plugin_worst_wait_seconds("web") + SINGLE_RUN_HEADROOM_SECONDS
+        _plugin_worst_wait_seconds("xueqiu") + SINGLE_RUN_HEADROOM_SECONDS
     )
