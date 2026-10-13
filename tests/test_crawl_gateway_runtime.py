@@ -179,6 +179,58 @@ def test_waf_failures_trip_circuit_and_skip_remaining_tasks(tmp_path, site_confi
     store.close()
 
 
+def test_attempt_duration_lands_in_store_and_detail_waf_is_summed(
+    tmp_path, site_config
+):
+    """① `attempts.duration_ms` 要落库；② 详情级被拦篇数要汇总进 summary。
+
+    2026-10-13 review：`AttemptResult.duration_ms` 有 0 默认值、但从来没人赋值，
+    于是 attempts 表恒为 0，生产/影子两轮的执行耗时无法从 DB 比对；而详情级
+    `blocked_articles` 没透传时，整轮被墙会汇总成 0。
+    """
+    store = GatewayStore(tmp_path / "gateway.sqlite3")
+    # 只留一个后端：失败时不该再去试"下一个后端"（那会多吃一个脚本结果）
+    config = replace(site_config, backend_priority=("opencli",))
+    clock = FakeClock()
+
+    class AdvancingBackend:
+        def __init__(self) -> None:
+            self.results = [
+                AttemptResult(
+                    AttemptStatus.BLOCKED_WAF,
+                    "opencli",
+                    error="waf_content:1",
+                    scope=AttemptScope.DETAIL,
+                    blocked_articles=1,
+                ),
+                AttemptResult(
+                    AttemptStatus.SUCCESS, "opencli", new_articles=2, saved_articles=2
+                ),
+            ]
+
+        def execute(self, task: TaskSpec, backend: str) -> AttemptResult:
+            # 模拟"导航 + 渲染 + 抽取"的真实耗时（限速 sleep 在起点之前，不计入）
+            clock.sleep(2.5)
+            return replace(self.results.pop(0), backend=backend)
+
+    summary = Orchestrator(
+        store=store,
+        site_config=config,
+        backend=AdvancingBackend(),
+        clock=clock,
+        sleep=clock.sleep,
+    ).run(
+        purpose="daily",
+        tasks=[TaskSpec("user_timeline", "1"), TaskSpec("user_timeline", "2")],
+    )
+
+    assert summary["blocked_articles"] == 1
+    assert summary["successful"] == 1
+    assert summary["failed"] == 1
+    assert [a["duration_ms"] for a in store.stats("xueqiu")["attempts"]] == [2500, 2500]
+    store.close()
+
+
 def test_retryable_network_error_backs_off_before_success(tmp_path, site_config):
     store = GatewayStore(tmp_path / "gateway.sqlite3")
     backend = scripted_backend(

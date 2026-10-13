@@ -196,6 +196,10 @@ class XueqiuAdapter:
                 task.resource_id, self._max_articles
             )
         except SiteAccessError as exc:
+            # 列表页都拿不到 = 账号级硬失败。按既定口径**不**计入
+            # `blocked_articles` —— 那是「被拦掉的篇数」，而这次是「账号不可达」，
+            # 混在一起会让「站点对这个账号失效」看起来像「几篇文章被拦」
+            # （口径见 #102 的验收段）。别把它当漏记顺手"修"了。
             return AttemptResult(exc.status, backend, error=str(exc))
 
         known_ids = self._store.known_article_ids(task.resource_id)
@@ -229,19 +233,22 @@ class XueqiuAdapter:
             try:
                 detail = self._client.get_article_content(str(article.get("url", "")))
             except SiteAccessError as exc:
+                # 取正文这一步失败 = 列表已经拿到了，属详情级；只有 BLOCKED_WAF
+                # 是真正的「被拦」。网络/HTTP 这类传输失败仍按账号级，免得半开
+                # 探测时把「发不出去」误判成「站点可达」。
+                is_waf = exc.status is AttemptStatus.BLOCKED_WAF
                 return AttemptResult(
                     exc.status,
                     backend,
                     error=str(exc),
                     saved_articles=len(saved_articles),
-                    # 取正文这一步失败 = 列表已经拿到了，属详情级；只有 BLOCKED_WAF
-                    # 是真正的「被拦」。网络/HTTP 这类传输失败仍按账号级，免得半开
-                    # 探测时把「发不出去」误判成「站点可达」。
-                    scope=(
-                        AttemptScope.DETAIL
-                        if exc.status is AttemptStatus.BLOCKED_WAF
-                        else AttemptScope.ACCOUNT
-                    ),
+                    scope=AttemptScope.DETAIL if is_waf else AttemptScope.ACCOUNT,
+                    # 详情级被拦必须计数：漏掉它时 gateway 写出的
+                    # `.last_crawl_stats.json` 会把「整轮被墙」报成
+                    # `blocked_articles: 0`（2026-10-13 实测：11 个账号被拦、报 0），
+                    # 下游巡检就分不出「安静日」与「被拦日」。口径与下面
+                    # `_is_error_content` 那条分支一致。
+                    blocked_articles=1 if is_waf else 0,
                 )
 
             # 详情标题可能是站点栏目（`雪球-聪明的投资者都在这里`）或列表占位符
