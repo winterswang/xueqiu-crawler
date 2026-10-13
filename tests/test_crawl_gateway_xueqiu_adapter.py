@@ -30,10 +30,12 @@ class FakeClient:
         articles: list[dict],
         details: list[dict] | None = None,
         list_error: Exception | None = None,
+        detail_error: Exception | None = None,
     ) -> None:
         self.articles = articles
         self.details = list(details or [])
         self.list_error = list_error
+        self.detail_error = detail_error
         self.detail_calls: list[str] = []
 
     def list_user_articles(self, user_id: str, count: int) -> list[dict]:
@@ -43,6 +45,8 @@ class FakeClient:
 
     def get_article_content(self, url: str) -> dict:
         self.detail_calls.append(url)
+        if self.detail_error is not None:
+            raise self.detail_error
         if self.details:
             return self.details.pop(0)
         return {"title": "Detail title", "content": "Detail body"}
@@ -219,6 +223,62 @@ def test_adapter_maps_site_access_error_and_skips_disabled_accounts(tmp_path):
     disabled_result = disabled_adapter.execute(TASK, "opencli")
     assert disabled_result.status == AttemptStatus.SKIPPED
     assert disabled_result.error == "account_disabled_or_missing"
+
+
+def test_detail_level_site_access_waf_counts_blocked_articles(tmp_path):
+    """详情级撞风控要计数 —— 否则整轮被墙会报成 `blocked_articles: 0`.
+
+    回归（2026-10-13 实测）：opencli 路径的 `SiteAccessError(BLOCKED_WAF)` 分支
+    没透传 `blocked_articles`，于是当天 11 个账号被墙、`data-gateway` 写出的
+    `.last_crawl_stats.json` 却是 `{"failed": 11, "blocked_articles": 0}` ——
+    巡检分不出「安静日」和「被拦日」。（#102 只覆盖了 nodriver 路径。）
+    """
+    client = FakeClient(
+        [article("1")],
+        detail_error=SiteAccessError(AttemptStatus.BLOCKED_WAF, "opencli blocked"),
+    )
+    adapter = make_adapter(tmp_path, client)
+
+    result = adapter.execute(TASK, "opencli")
+
+    assert result.status == AttemptStatus.BLOCKED_WAF
+    assert result.scope is AttemptScope.DETAIL
+    assert result.blocked_articles == 1
+    assert result.saved_articles == 0
+
+
+def test_account_level_site_access_waf_does_not_count_blocked_articles(tmp_path):
+    """账号级（列表都拿不到）按既定口径**不**计入被拦篇数。
+
+    两个字段口径不同：`blocked_articles` 是「被拦掉的篇数」，账号不可达是另一回事。
+    这条测试把它钉住，免得将来被当成漏记顺手"修"了。
+    """
+    client = FakeClient(
+        [],
+        list_error=SiteAccessError(AttemptStatus.BLOCKED_WAF, "timeline blocked"),
+    )
+    adapter = make_adapter(tmp_path, client)
+
+    result = adapter.execute(TASK, "opencli")
+
+    assert result.status == AttemptStatus.BLOCKED_WAF
+    assert result.scope is AttemptScope.ACCOUNT
+    assert result.blocked_articles == 0
+
+
+def test_network_error_during_detail_is_account_scoped_and_not_counted(tmp_path):
+    """详情传输失败（网络/HTTP）仍按账号级，且不算被拦篇数。"""
+    client = FakeClient(
+        [article("1")],
+        detail_error=SiteAccessError(AttemptStatus.NETWORK_ERROR, "socket closed"),
+    )
+    adapter = make_adapter(tmp_path, client)
+
+    result = adapter.execute(TASK, "opencli")
+
+    assert result.status == AttemptStatus.NETWORK_ERROR
+    assert result.scope is AttemptScope.ACCOUNT
+    assert result.blocked_articles == 0
 
 
 def test_adapter_returns_no_update_for_empty_timeline_and_skips_nodriver(tmp_path):
