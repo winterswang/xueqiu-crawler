@@ -43,9 +43,19 @@ GATEWAY_DB="$SHADOW_DIR/gateway.sqlite3"
 mkdir -p "$PROJECT_DIR/logs"
 cd "$PROJECT_DIR"
 
-# Python 解释器：与 run_daily.sh 同约定（默认 PATH 里的 python3，可用 PYTHON_BIN 覆盖）。
-# 调度器那边用 venv 的解释器：PYTHON_BIN="$PWD/venv/bin/python"。
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+# Python 解释器：显式传 PYTHON_BIN 时用它（生产的 Hermes 任务就是这么传 venv 的）；
+# 否则**自己解析**，优先仓库 venv、退回 PATH 里的 python3。
+# 为什么不像 run_daily.sh 那样只认 `python3`：本脚本由调度器直接执行（script 模式，
+# cwd=项目根），而调度配置里只有一条 command、没有单独传 env 的地方 —— 要是把解释器
+# 写进 command 前缀（PYTHON_BIN=... bash ...），就依赖"宿主一定是经 shell 执行"这个
+# 未文档化的前提。自己解析最稳，也让手工跑与调度跑行为一致。
+if [ -z "${PYTHON_BIN:-}" ]; then
+    if [ -x "$PROJECT_DIR/venv/bin/python" ]; then
+        PYTHON_BIN="$PROJECT_DIR/venv/bin/python"
+    else
+        PYTHON_BIN="python3"
+    fi
+fi
 
 # .env 与 run_daily.sh 同一套来源
 if [ -f "$PROJECT_DIR/.env" ]; then
