@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from crawl_gateway.config import SiteConfig
@@ -178,6 +178,14 @@ class Orchestrator:
                 self._site_config.backend_priority[
                     min(completed_attempts, len(self._site_config.backend_priority) - 1)
                 ],
+            )
+            # 耗时在这里补：`attempt_started_at` 取在限速 sleep **之后**，所以量到的
+            # 是纯执行耗时，不含排队。适配器不自己量（拿不到这个起点），而
+            # `AttemptResult.duration_ms` 的默认 0 会让 attempts 表恒为 0
+            # —— 生产/影子的节奏就没法从 DB 里比对（2026-10-13 review 指出）。
+            executed = replace(
+                executed,
+                duration_ms=int((self._clock() - attempt_started_at) * 1000),
             )
             completed_attempts += 1
             self._record(task_id, executed, attempt_started_at)
