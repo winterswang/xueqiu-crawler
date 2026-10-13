@@ -81,13 +81,18 @@ CRAWL_ENGINE=gateway   # Step 4 后启用，gateway 写 data/
 CRAWL_ENGINE=shadow    # 旧链路照常写 data/；gateway 写 data-gateway/
 ```
 
-shadow 分支执行：
+影子由**独立脚本** `scripts/run_shadow.sh` 在**另一个窗口**执行（调度器每天 09:30）：
 
 ```
-python3 -m crawl_gateway --config config/sites.yaml \
-  --db data-gateway/gateway.sqlite3 run --site xueqiu --purpose daily-shadow \
-  --all-accounts --execute --data-dir data-gateway
+bash scripts/run_shadow.sh
+# ① 基线同步 sync_shadow_baseline.py  ② gateway 抓取  ③ compare_crawl_outputs.py
 ```
+
+**为什么不在 run_daily.sh 里（2026-10-13 实测，勿回退）**：雪球的风控墙是「约 80 次
+页面请求 / 滚动小时」的**额度**，不是冷却时间。生产一遍 64 次刚好过，同一窗口里再打
+第二遍必然踩线 —— 当天生产 64 次全过，影子续打到**第 86 次**被拦，11 个账号全黑、
+对比整轮作废。原来那套「影子挂在 run_daily.sh 的 EXIT trap、只隔 3 分钟」以及
+「延后 10–15 分钟」都跨不过这个额度（它按滚动小时算）。跨窗口才是解。
 
 新增 scripts/compare_crawl_outputs.py：对比两侧当天文章集合、.last_crawl_stats.json 数值、失败分类，输出 diff 报告到 logs/shadow_compare_YYYY-MM-DD.json（退出码 0 无差异 / 1 有差异 / 2 读取错误）。
 
@@ -98,18 +103,20 @@ python3 -m crawl_gateway --config config/sites.yaml \
 1. **影子目录必须与 data/ 对齐已知状态**，两个要求缺一不可：
    - **必须在 legacy 开跑之前对齐**。顺序反了会让整轮对比退化成空转（2026-10-08 实测）：legacy 先跑并写下今天的新文章，之后才做镜像，那些新文章被一并拷给 gateway；gateway 于是认为今天无事可做（`duplicate`/`no_update`、`new_articles=0`），而对比读到的 "gateway 新增" 其实是**被拷进去的 legacy 数据**——文章层会显示完美一致，却什么都没验证。识别特征：两侧 history 文件的 **mtime 完全相同**（`cp -a` 保留时间戳），或 gateway 的 attempt 状态全是 `duplicate`/`no_update`。
    - **必须整体镜像** `data/`（排除 `daily_reports/`；`.last_crawl_stats.json` 由 gateway 自己写）。gateway 的已知集合来自三处：`index.json` + `history/<user>/*.json` + **`<user>/*.md`**；而 `index.json` 是**有损**的（曾因 OOM/SIGKILL 丢失，`scripts/rebuild_index.py` 为此而写），存在文章只在 `.md` 里、不在 index 里。只拷 index+history 会让 gateway 把这些旧文当新文重抓（2026-10-07 实测：4 篇去年/年初的老文被当成当天新文），对比结果全是假差异。
+   - **2026-10-13 改为「按 `crawl_time` 过滤的重复同步」**（`scripts/sync_shadow_baseline.py`，由 `run_shadow.sh` 每轮调用）：只把**今天之前**的索引条目 / 正文 `.md` / `history` 对齐过去，今天的一律不碰。于是「顺序反了」这个失败模式从根上消失 —— 今天的新文永远不会被镜像，两侧必然各自独立发现它们。上面两条教训仍然要留着，它们解释了为什么必须有这一步。
+   - 为什么不能沿用原来那套「只在影子目录不存在时镜像一次」：它本身就是 bug 源。每被风控墙挡掉一天，影子就**永久欠一截账**（10-11/12/13 分别欠 30/33/35 条），下一轮把这些**旧文**当成今天的新文重抓（2026-10-13 实测：影子 62 次详情页 vs 生产 46 次，+25%），对比里出现**假的 `only_in_gateway`**。更糟的是它自我放大：请求越多越容易撞墙、撞墙越多欠账越大。
    - 两者都是**验证装置**的问题，不影响真切换：切到 `CRAWL_ENGINE=gateway` 后 gateway 直接用 `data/` 本身，`.md` 都在，已知集合与 legacy 一致。
    - 另外 `compare_crawl_outputs.py` 现在会在**两侧当天都无新增**时给出 `warnings`（走 stderr，也写进报告的 `warnings` 字段）：那种情况下的「无差异」不能算一次有效验证。
 2. **对比「两侧各自新保存了什么」，不能直接比累计 index**。两侧 index.json 都是累计的，直接比全量集合会把历史差异算进来。因此当天新增一律取自 `history/<user>/<date>.json`（两侧都只在真存下新文章时才写）。另设基线校验：index 扣掉**两侧当天新增 id 的并集**后应一致；用并集而非各侧自己的集合，否则一侧只是漏记当天新文章时会被误报成「影子目录未对齐」。
 3. **逐字段对比排除 `crawl_time` / `filepath`**。这两个字段只反映「何时爬、文件落在哪」，两侧不可能相同，纳入对比全是噪音。实际比对 `title` / `author` / `publish_time`。
 
-已知代价：shadow 模式当天**站点访问量翻倍**（legacy + gateway 各跑一遍全量账号）。对 WAF 保护的站点这是额外风控暴露，也是本步骤要连续跑 3 天的成本。gateway 侧自带频控与熔断兜底。
+已知代价：shadow 模式当天**站点访问量翻倍**（legacy + gateway 各跑一遍全量账号）。对 WAF 保护的站点这是额外风控暴露，也是本步骤要连续跑 3 天的成本。**因此它必须落在不同的滚动小时里**（2026-10-13 起：生产 08:00、影子 09:30）—— 同一窗口里跑两遍不是「多花点时间」，而是必然撞墙（见本节开头）。gateway 侧自带频控与熔断兜底，但那两样按「账号数」计量，看不见这条按请求计的站点额度。
 
 run_daily.sh 的引擎分支行为：
 - 切换/回滚的唯一开关：服务器上 `$PROJECT_DIR/.env` 里的 `CRAWL_ENGINE`。run_daily.sh 读该变量的位置**必须在 source .env 之后**，否则 .env 里写的值会被默认值盖掉、回滚失效（实现时踩到过，已修）。
 - `legacy`（默认）：与现状完全一致。
 - `gateway`：先 `verify` 再 `run`，失败即中止整个流水线——与旧链路爬取失败时的现状行为保持一致（断供窗口最多一个 cron 周期，见风险表）。
-- `shadow`：legacy 照常写 `data/`（生产链路，失败即中止）；gateway 影子运行与对比**只告警不阻断**，保证日报不受影响。未知 `CRAWL_ENGINE` 值在取 cron 锁之前就报错退出，不留锁、不写生产日志。
+- `shadow`：legacy 照常写 `data/`（生产链路，失败即中止）。**影子不在本脚本里** —— 见 `scripts/run_shadow.sh` 与 09:30 的独立调度；它的日志写在 `logs/shadow_daily.log`（不掺进 `cron_daily.log`，那是巡检用来判断生产状态的）。未知 `CRAWL_ENGINE` 值在取 cron 锁之前就报错退出，不留锁、不写生产日志。
 
 ### Step 4：切换生产（G3）
 
