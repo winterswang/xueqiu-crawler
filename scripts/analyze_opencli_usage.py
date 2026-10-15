@@ -65,6 +65,27 @@ ADAPTER_LOG = Path("~/.opencli/adapter-calls.jsonl").expanduser()
 # 无害的本地操作说成风险，反而把真正该看的那个淹掉。
 UNCOVERED_OPERATION_PREFIXES = ("browser:open",)
 
+# 熔断器拦下调用时，会把 `OPENCLI_PROFILE` 指向这个**哨兵 profile 名**，opencli 于是
+# 在 routing 阶段硬失败、一个请求都没发。这个字符串是熔断器专用的：它不会与「daemon
+# 真的没连上」（同样报 BROWSER_CONNECT）混同，也不含「风控」二字。
+#
+# 为什么 Python 台账要靠哨兵而插件台账有显式字段：插件台账由 `lib/requestlog.js`
+# 直接写 `cooldown_active`；Python 台账只收得到 opencli 的错误正文，只能从文本认。
+COOLDOWN_PROFILE_SENTINEL = "__opencli_risk_cooldown__"
+
+
+def _is_cooldown_block(row: dict) -> bool:
+    """这一行是不是被熔断器拦下的（因而**没有发出任何请求**）。
+
+    插件台账有显式字段；Python 台账看错误正文里的哨兵。
+    """
+    if row.get("cooldown_active") is True:
+        return True
+    err = row.get("error")
+    if isinstance(err, dict):
+        err = " ".join(str(v) for v in err.values())
+    return COOLDOWN_PROFILE_SENTINEL in str(err or "")
+
 
 def _adapter_log_path(explicit: str | None) -> Path | None:
     """插件台账路径；显式 `off` 或环境变量 `OPENCLI_ADAPTER_LOG=off` 时返回 None。"""
@@ -161,6 +182,7 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
     by_minute_local: Counter[str] = Counter()
     failures: list[dict] = []
     probe_misses: list[dict] = []
+    cooldown_blocked = 0
 
     for row in rows:
         ts = _parse_ts(row)
@@ -176,6 +198,12 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
         by_source[source] += 1
         by_operation[operation] += 1
         by_minute[minute] += 1
+        if _is_cooldown_block(row):
+            # 熔断器拦下的调用**没发出任何请求**（routing 阶段就失败）—— 既不是站点
+            # 请求、也不是失败。混进去，熔断器一生效就把自己的成绩算成「站点风控恶化」，
+            # 而站点请求分钟峰值正是用来判断这件事的那一列。
+            cooldown_blocked += 1
+            continue
         if operation in SITE_OPERATIONS:
             by_minute_site[minute] += 1
         else:
@@ -213,6 +241,7 @@ def summarize(records: list[dict], cutoff: datetime) -> dict:
         ),
         "failures": failures,
         "probe_misses": probe_misses,
+        "cooldown_blocked": cooldown_blocked,
     }
 
 
@@ -282,8 +311,11 @@ def _cluster_entry(ppid: object, group: list[dict]) -> dict:
         "first": stamps[0].isoformat() if stamps else "",
         "last": stamps[-1].isoformat() if stamps else "",
         "error_codes": Counter(
-            str(r.get("error_code")) for r in group if r.get("error_code")
+            str(r.get("error_code"))
+            for r in group
+            if r.get("error_code") and r.get("cooldown_active") is not True
         ),
+        "cooldown_blocked": sum(1 for r in group if r.get("cooldown_active") is True),
     }
 
 
@@ -391,14 +423,27 @@ def summarize_adapter(
         # 一生效就把自己的成绩算成「站点风控恶化」，把判断带反。
         # （本口径只覆盖插件台账：它有显式的 `cooldown_active`；Python 台账没有这个
         #  标记，只能靠错误文本，容易与「daemon 真的挂了」混同，故不动那边。）
-        "cooldown_blocked": sum(1 for r in rows if r.get("cooldown_active")),
+        # 判 `is True` 而不是取真值：与下面 `ok is False` 同一条纪律，别让字符串
+        # 形态的假值（"false"）被当成"被拦"。
+        "cooldown_blocked": sum(1 for r in rows if r.get("cooldown_active") is True),
         # `ok` 缺失（例如超长行被降级截断成 {schema, ts, layer, truncated}）不等于失败，
         # 显式判 `is False`，否则会把截断的成功行算成失败、还带不出错误码。
         "failed": sum(
-            1 for r in rows if r.get("ok") is False and not r.get("cooldown_active")
+            1
+            for r in rows
+            if r.get("ok") is False and r.get("cooldown_active") is not True
         ),
+        # `error_codes` 是给上面的 `failed` 做明细的 —— 必须用**同一判据**切，
+        # 否则明细合计会大于 failed，同一屏里自相矛盾。
         "error_codes": Counter(
-            str(r.get("error_code")) for r in rows if r.get("error_code")
+            str(r.get("error_code"))
+            for r in rows
+            if r.get("error_code") and r.get("cooldown_active") is not True
+        ),
+        "cooldown_error_codes": Counter(
+            str(r.get("error_code"))
+            for r in rows
+            if r.get("error_code") and r.get("cooldown_active") is True
         ),
         # `web` 调用没能解析出目标域名 = 掉到弱档（6–8s、无长停）。这是「被 WAF 盯的
         # 详情页静默失去保护」的信号，必须能一眼看到。
@@ -460,6 +505,10 @@ def _render_unattributed(adapter: dict, lines: list[str]) -> None:
             lines.append(
                 "     失败: "
                 + "，".join(f"{k} {v}" for k, v in c["error_codes"].most_common())
+            )
+        if c.get("cooldown_blocked"):
+            lines.append(
+                f"     另有 {c['cooldown_blocked']} 次被熔断器拦下（没发请求，不计失败）"
             )
     if singles:
         # 每次调用各起一个 shell 时 ppid 每次不同 → 聚不成进程簇。按域名/命令再聚一次，
@@ -525,9 +574,17 @@ def render_adapter(adapter: dict, uncovered: Counter) -> str:
             )
             lines.append(f"  失败 {adapter['failed']} 次（{codes or '无错误码'}）")
         if adapter.get("cooldown_blocked"):
+            blocked_codes = "  ".join(
+                f"{k} {v}"
+                for k, v in (
+                    adapter.get("cooldown_error_codes") or Counter()
+                ).most_common(3)
+            )
             lines.append(
                 f"  ⛔ 另有 {adapter['cooldown_blocked']} 次被**熔断器**拦下"
-                "（routing 阶段就失败，一个请求都没发）—— 不计入上面的失败与站点请求量"
+                "（routing 阶段就失败、一个请求都没发）"
+                f"（{blocked_codes or '无错误码'}）"
+                " —— **不计入「失败」那行**；但仍计入按域名/来源/命令的调用数"
             )
 
     _render_unattributed(adapter, lines)
@@ -568,6 +625,11 @@ def render(summary: dict, top_minutes: int = 8, sample_failures: int = 8) -> str
     if probe_misses:
         lines.append(
             f"  另有探针未命中 {len(probe_misses)} 次（调用方声明的预期结果，不计入失败）"
+        )
+    if summary.get("cooldown_blocked"):
+        lines.append(
+            f"  ⛔ 其中 {summary['cooldown_blocked']} 次被**熔断器**拦下"
+            "（routing 阶段就失败、一个请求都没发）—— 不计入站点请求与失败"
         )
     lines.append(f"时间范围 {summary['first']} → {summary['last']}")
     lines.append("")
