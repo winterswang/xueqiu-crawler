@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from datetime import date as date_cls
@@ -37,7 +38,12 @@ from pathlib import Path
 
 # 参与逐字段对比的字段。刻意排除 crawl_time / filepath / file_path：
 # 它们只反映「什么时候爬的」「文件落在哪」，两侧不可能相同，比了全是噪音。
-COMPARED_FIELDS = ("title", "author", "publish_time")
+#
+# `publish_time` 于 2026-10-15 移出：它是**相对时间字符串**（`crawler_nodriver.py`
+# 取自 `item['time']`，形如「7小时前」），而影子与生产相隔约 1.5 小时跑，同一篇的
+# 标签**必然不同**——实测 `412328459` legacy 「7小时前」 vs gateway 「9小时前」。
+# 留着它只会每天固定报一条「1 处字段不一致」，把将来真正的差异淹掉。
+COMPARED_FIELDS = ("title", "author")
 # .last_crawl_stats.json 的 5 个兼容字段
 STATS_FIELDS = ("date", "total_users", "successful", "failed", "new_articles")
 
@@ -78,6 +84,101 @@ def daily_article_ids(data_dir: Path, day: str) -> dict[str, set[str]]:
     return result
 
 
+# 正文归一：抹掉三类**必然不同**的内容后再比，其余任何差异都算真差异。
+#   ① `发布时间：` 后面的相对标签（「3分钟前」）—— 两侧相隔约 1.5h 跑，同一篇必然不同；
+#   ② `*爬取时间：…*` 整行 —— 抓取时刻；
+#   ③ 点赞 / 评论 / 转发 / 讨论 / 赞 等**实时计数** —— 期间有人点了赞就会变
+#      （实测 20 篇里 4 篇只因计数漂移而不同：115→117、273→275、157→158、203→205）。
+# ⚠️ 归一规则若因正文格式变化而失配，只会**多报**差异（安全方向），不会漏报。
+_PUBLISH_TIME_RE = re.compile(r"(发布时间：)\S*")
+_COUNTER_RES = (
+    re.compile(r"(点赞：)\d+"),
+    re.compile(r"(评论：)\d+"),
+    re.compile(r"(转发 )\d+"),
+    re.compile(r"(讨论 )\d+"),
+    re.compile(r"(赞 )\d+"),
+)
+
+
+def _normalize_body(text: str) -> str:
+    """正文归一（见上方三类说明），供两侧逐字对比。"""
+    kept: list[str] = []
+    for line in text.splitlines():
+        if "*爬取时间：" in line:
+            continue
+        line = _PUBLISH_TIME_RE.sub(r"\g<1>N", line)
+        for pattern in _COUNTER_RES:
+            line = pattern.sub(r"\g<1>N", line)
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def compare_bodies(
+    legacy_dir: Path,
+    gateway_dir: Path,
+    pairs: list[tuple[str, str]],
+) -> list[dict]:
+    """逐篇对比当天新增文章的正文（`<data>/<user>/<article_id>.md`）。
+
+    为什么必须比正文：`COMPARED_FIELDS` 只看 index 里的元数据，**抓到的正文一个字都
+    没验**——而正文才是抓取的产出（日报与分析都吃它）。2026-10-15 实测：那两天
+    20 篇的正文其实逐字一致，但**这一点是人工比出来的**；不改这里，正经的正文回归
+    （某篇抓成空/截断）在影子里会照样报绿，门是瞎的。
+    """
+    mismatches: list[dict] = []
+    for user_id, article_id in pairs:
+        legacy_path = legacy_dir / user_id / f"{article_id}.md"
+        gateway_path = gateway_dir / user_id / f"{article_id}.md"
+        legacy_exists = legacy_path.exists()
+        gateway_exists = gateway_path.exists()
+        if not legacy_exists and not gateway_exists:
+            # 两侧都没正文文件 ⇒ 它们在这一点上**一致**，不算差异。
+            # （副作用：两侧同时漏存正文也看不出来 —— 但影子比的是「两个爬虫彼此」，
+            #  不是「有没有抓到东西」，后者由 stats/attempt 状态回答。）
+            continue
+        if not legacy_exists or not gateway_exists:
+            mismatches.append(
+                {
+                    "user_id": user_id,
+                    "article_id": article_id,
+                    "reason": "一侧没有正文文件",
+                    "legacy_exists": legacy_exists,
+                    "gateway_exists": gateway_exists,
+                }
+            )
+            continue
+        legacy_text = _normalize_body(
+            legacy_path.read_text(encoding="utf-8", errors="replace")
+        )
+        gateway_text = _normalize_body(
+            gateway_path.read_text(encoding="utf-8", errors="replace")
+        )
+        if legacy_text != gateway_text:
+            first_diff = next(
+                (
+                    (index, a, b)
+                    for index, (a, b) in enumerate(
+                        zip(legacy_text.splitlines(), gateway_text.splitlines())
+                    )
+                    if a != b
+                ),
+                None,
+            )
+            mismatches.append(
+                {
+                    "user_id": user_id,
+                    "article_id": article_id,
+                    "reason": "正文不一致（已归一发布相对时间/爬取时刻/实时计数）",
+                    "legacy_chars": len(legacy_text),
+                    "gateway_chars": len(gateway_text),
+                    "first_diff_line": first_diff[0] + 1 if first_diff else None,
+                    "legacy_line": first_diff[1][:200] if first_diff else None,
+                    "gateway_line": first_diff[2][:200] if first_diff else None,
+                }
+            )
+    return mismatches
+
+
 def compare_stats(legacy_dir: Path, gateway_dir: Path) -> tuple[dict, list[str]]:
     legacy = stats_snapshot(legacy_dir)
     gateway = stats_snapshot(gateway_dir)
@@ -106,6 +207,7 @@ def compare_articles(
     only_in_legacy: list[dict] = []
     only_in_gateway: list[dict] = []
     field_mismatches: list[dict] = []
+    shared_pairs: list[tuple[str, str]] = []
     differences: list[str] = []
 
     seen_users = set(legacy_new) | set(gateway_new)
@@ -117,6 +219,7 @@ def compare_articles(
         for article_id in sorted(gateway_ids - legacy_ids):
             only_in_gateway.append({"user_id": user_id, "article_id": article_id})
         for article_id in sorted(legacy_ids & gateway_ids):
+            shared_pairs.append((user_id, article_id))
             key = f"{user_id}_{article_id}"
             legacy_record = legacy_records.get(key, {})
             gateway_record = gateway_records.get(key, {})
@@ -138,6 +241,10 @@ def compare_articles(
         differences.append(f"仅 gateway 抓到 {len(only_in_gateway)} 篇当天文章")
     if field_mismatches:
         differences.append(f"{len(field_mismatches)} 处文章字段不一致")
+
+    body_mismatches = compare_bodies(legacy_dir, gateway_dir, shared_pairs)
+    if body_mismatches:
+        differences.append(f"{len(body_mismatches)} 篇正文不一致（已归一三类必然差异）")
 
     # 基线校验：index 扣掉「两侧当天新增的并集」后应完全一致，否则影子目录未与
     # data/ 对齐。必须用并集而不是各侧自己的当天集合——否则一侧只是漏记了当天的
@@ -166,6 +273,8 @@ def compare_articles(
             "only_in_legacy": only_in_legacy,
             "only_in_gateway": only_in_gateway,
             "field_mismatches": field_mismatches,
+            "body_mismatches": body_mismatches,
+            "bodies_compared": len(shared_pairs),
             "baseline_only_in_legacy": baseline_only_legacy[:20],
             "baseline_only_in_gateway": baseline_only_gateway[:20],
         },

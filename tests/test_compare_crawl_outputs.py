@@ -338,3 +338,119 @@ def test_gateway_attempt_statuses_are_scoped_to_the_day(tmp_path):
         "success": 2,
         "blocked_waf": 1,
     }
+
+
+# ---------- 正文比对（2026-10-15 补：此前**根本没比正文**）----------
+#
+# `COMPARED_FIELDS` 只看 index 里的元数据，抓到的正文一个字都没验 —— 而正文才是
+# 抓取的产出。这两天 20 篇正文其实逐字一致，但那是**人工比出来的**；不补这一层，
+# 将来某篇抓成空/截断，影子会照样报绿。
+
+
+def write_body(data_dir: Path, user_id: str, article_id: str, text: str) -> None:
+    path = data_dir / user_id
+    path.mkdir(parents=True, exist_ok=True)
+    (path / f"{article_id}.md").write_text(text, encoding="utf-8")
+
+
+BODY = """# 标题
+
+> 作者：张三 | 发布时间：3分钟前
+> 原文链接：https://xueqiu.com/u1/new1
+
+正文第一段。
+
+> 昨天 14:09 · 转发 4 · 讨论 57 · 赞 116
+
+*爬取时间：2026-10-07 08:13:54*
+"""
+
+
+def test_identical_bodies_report_no_difference(tmp_path):
+    """两侧正文里的**必然不同**的三处（相对发布时间、爬取时刻、实时计数）不该算差异。"""
+    legacy, gateway = aligned_pair(tmp_path)
+    write_body(legacy, "u1", "new1", BODY)
+    write_body(
+        gateway,
+        "u1",
+        "new1",
+        BODY.replace("发布时间：3分钟前", "发布时间：2小时前")
+        .replace("讨论 57", "讨论 56")
+        .replace("赞 116", "赞 118")
+        .replace("2026-10-07 08:13:54", "2026-10-07 09:43:05"),
+    )
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["articles"]["bodies_compared"] == 1
+    assert report["articles"]["body_mismatches"] == []
+    assert report["differences"] == []
+    assert report["ok"] is True
+
+
+def test_differing_body_content_is_reported(tmp_path):
+    """正文真的不一样时必须报出来 —— 这是这一层存在的唯一理由。"""
+    legacy, gateway = aligned_pair(tmp_path)
+    write_body(legacy, "u1", "new1", BODY)
+    write_body(gateway, "u1", "new1", BODY.replace("正文第一段。", ""))
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    mismatches = report["articles"]["body_mismatches"]
+    assert len(mismatches) == 1
+    assert mismatches[0]["article_id"] == "new1"
+    assert mismatches[0]["legacy_chars"] > mismatches[0]["gateway_chars"]
+    assert any("正文不一致" in d for d in report["differences"])
+    assert report["ok"] is False
+
+
+def test_body_present_on_only_one_side_is_reported(tmp_path):
+    legacy, gateway = aligned_pair(tmp_path)
+    write_body(legacy, "u1", "new1", BODY)
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["articles"]["body_mismatches"] == [
+        {
+            "user_id": "u1",
+            "article_id": "new1",
+            "reason": "一侧没有正文文件",
+            "legacy_exists": True,
+            "gateway_exists": False,
+        }
+    ]
+    assert report["ok"] is False
+
+
+def test_bodies_absent_on_both_sides_are_not_a_difference(tmp_path):
+    """两侧都没正文文件 = 在这一点上一致（既有夹具就是这种形态，不能因此报差异）。"""
+    legacy, gateway = aligned_pair(tmp_path)
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["articles"]["bodies_compared"] == 1
+    assert report["articles"]["body_mismatches"] == []
+    assert report["ok"] is True
+
+
+def test_relative_publish_time_is_no_longer_compared_in_index(tmp_path):
+    """`publish_time` 是相对时间字符串，两侧相隔 1.5h 跑必然不同 —— 已移出比较字段。"""
+    from scripts.compare_crawl_outputs import COMPARED_FIELDS
+
+    assert "publish_time" not in COMPARED_FIELDS
+
+    legacy, gateway = aligned_pair(tmp_path)
+    write_index(
+        gateway,
+        dict(
+            [
+                record("u1", "old1"),
+                record("u1", "new1", publish_time="2026-10-07 09:30"),
+            ]
+        ),
+    )
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["articles"]["field_mismatches"] == []
+    assert report["ok"] is True
