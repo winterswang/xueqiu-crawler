@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from collections import Counter  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -28,6 +29,7 @@ from analyze_opencli_usage import (  # noqa: E402
     _unattributed_clusters,
     load_records,
     render,
+    render_adapter,
     summarize,
     summarize_adapter,
     uncovered_operations,
@@ -456,3 +458,176 @@ def test_same_ppid_far_apart_splits_into_two_clusters():
     assert leftover == []
     assert len(clusters) == 2, "相隔一天的同一 pid 被并成了一簇"
     assert {c["count"] for c in clusters} == {7}
+
+
+def test_cooldown_blocked_calls_are_not_counted_as_failures():
+    """被熔断器拦下的调用**没发出任何请求**，不该算失败。
+
+    否则熔断器一生效，它自己的成绩就被算成「站点风控恶化」—— 判断被带反。
+    判据用插件台账的显式字段 `cooldown_active`（Python 台账没有这个标记）。
+    """
+    rows = [
+        # 被熔断拦下：ok=False 但一个请求都没发
+        {
+            "ppid": 1,
+            "started_at": "2026-10-15T02:00:00.000Z",
+            "ts": "2026-10-15T02:00:00.000Z",
+            "source_kind": "monitor",
+            "operation": "news",
+            "domain_key": "xueqiu",
+            "ok": False,
+            "cooldown_active": True,
+            "error_code": "BROWSER_CONNECT",
+        },
+        # 真失败
+        {
+            "ppid": 2,
+            "started_at": "2026-10-15T02:01:00.000Z",
+            "ts": "2026-10-15T02:01:00.000Z",
+            "source_kind": "monitor",
+            "operation": "news",
+            "domain_key": "xueqiu",
+            "ok": False,
+            "error_code": "COMMAND_EXEC",
+        },
+    ]
+
+    summary = summarize_adapter(rows, datetime(2026, 1, 1))
+
+    assert summary["cooldown_blocked"] == 1
+    assert summary["failed"] == 1, "被熔断拦下的那次不该算进失败"
+    assert summary["total"] == 2, "但它确实发生过，总数不变"
+
+
+def test_cooldown_blocked_shows_up_in_the_report():
+    rows = [
+        {
+            "ppid": 1,
+            "started_at": "2026-10-15T02:00:00.000Z",
+            "ts": "2026-10-15T02:00:00.000Z",
+            "source_kind": "monitor",
+            "operation": "news",
+            "domain_key": "xueqiu",
+            "ok": False,
+            "cooldown_active": True,
+            "error_code": "BROWSER_CONNECT",
+        }
+    ]
+    summary = summarize_adapter(rows, datetime(2026, 1, 1))
+
+    text = render_adapter(summary, Counter())
+
+    assert "被**熔断器**拦下" in text
+
+
+def test_explicit_false_cooldown_row_still_counts_as_failure():
+    """反方向：`cooldown_active: false`（插件对**每一行**都写这个字段）必须是**真失败**。
+
+    此前的对照组用的是「缺键」而不是「显式 false」，恰好绕开了最容易写错的那半：
+    把真值判断写成 `"cooldown_active" in r`（有键就当被拦）也能全绿，而真实台账里
+    727 行有该字段、其中 726 行是 false —— 那会把失败几乎清零。
+    """
+    rows = [
+        {
+            "ppid": 1,
+            "started_at": "2026-10-15T02:00:00.000Z",
+            "ts": "2026-10-15T02:00:00.000Z",
+            "source_kind": "monitor",
+            "operation": "news",
+            "domain_key": "xueqiu",
+            "ok": False,
+            "cooldown_active": False,  # 显式 false：正常失败
+            "error_code": "COMMAND_EXEC",
+        }
+    ]
+
+    summary = summarize_adapter(rows, datetime(2026, 1, 1))
+
+    assert summary["cooldown_blocked"] == 0
+    assert summary["failed"] == 1
+
+
+def test_error_codes_detail_never_exceeds_failed():
+    """`error_codes` 是给 `failed` 做明细的 —— 明细合计不能大于 failed。
+
+    被拦行原本会同时进两边，渲染出「失败 2 次（BROWSER_CONNECT 4 …）」这种自相矛盾的
+    括注，并在同一屏里与 ⛔ 行打架。
+    """
+
+    def row(ok, code, cooldown=None):
+        r = {
+            "ppid": 1,
+            "started_at": "2026-10-15T02:00:00.000Z",
+            "ts": "2026-10-15T02:00:00.000Z",
+            "source_kind": "monitor",
+            "operation": "news",
+            "domain_key": "xueqiu",
+            "ok": ok,
+            "error_code": code,
+        }
+        if cooldown is not None:
+            r["cooldown_active"] = cooldown
+        return r
+
+    rows = [
+        row(False, "BROWSER_CONNECT", True),
+        row(False, "BROWSER_CONNECT", True),
+        row(False, "BROWSER_CONNECT", False),
+        row(False, "TIMEOUT", False),
+    ]
+
+    summary = summarize_adapter(rows, datetime(2026, 1, 1))
+
+    assert summary["failed"] == 2
+    assert sum(summary["error_codes"].values()) == 2, "明细合计必须等于 failed"
+    assert summary["cooldown_blocked"] == 2
+    assert sum(summary["cooldown_error_codes"].values()) == 2
+    # 只有**没被拦**的那条该进明细（计数 1），被拦的两条不该进来
+    assert summary["error_codes"]["BROWSER_CONNECT"] == 1
+
+
+def test_cluster_does_not_call_cooldown_blocks_failures():
+    """「管理外流量」簇里也不能把被拦的算成失败。"""
+    from analyze_opencli_usage import _unattributed_clusters
+
+    rows = [
+        {
+            "ppid": 9,
+            "started_at": f"2026-10-15T02:0{i}:00.000Z",
+            "ts": f"2026-10-15T02:0{i}:00.000Z",
+            "source_kind": "manual",
+            "domain_key": "xueqiu",
+            "operation": "whoami",
+            "ok": False,
+            "cooldown_active": True,
+            "error_code": "BROWSER_CONNECT",
+        }
+        for i in range(5)
+    ]
+
+    clusters, _ = _unattributed_clusters(rows)
+
+    assert clusters[0]["cooldown_blocked"] == 5
+    assert clusters[0]["error_codes"] == Counter()
+
+
+def test_python_ledger_cooldown_blocks_are_excluded_by_the_profile_sentinel():
+    """Python 台账没有 `cooldown_active` 字段，但错误正文里有**哨兵 profile 名**。
+
+    这个哨兵是熔断器专用的（`__opencli_risk_cooldown__`），不会与「daemon 真的没连上」
+    混同 —— 所以它是精确判据，而不是注释里担心的「只能靠文本猜」。
+    """
+    blocked = dict(_record(0, 1, "news", ok=False))
+    blocked["error"] = {
+        "code": "BROWSER_CONNECT",
+        "message": 'Browser profile "__opencli_risk_cooldown__" is not connected',
+    }
+    real_fail = dict(_record(0, 2, "news", ok=False))
+    real_fail["error"] = {"code": "BROWSER_CONNECT", "message": "daemon unreachable"}
+
+    summary = summarize([blocked, real_fail], BASE - timedelta(hours=1))
+
+    assert summary["cooldown_blocked"] == 1
+    assert summary["failed"] == 1, "只有真正那条该算失败"
+    assert summary["site_total"] == 1, "被拦的那次没发请求，不该算站点请求"
+    assert summary["total"] == 2, "但它确实发生过"
