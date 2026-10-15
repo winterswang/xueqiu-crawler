@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # 任何开头 500 字里出现 405 的正常文章都会被误判成错误页并重试。
 from scripts.waf_bridge import looks_like_waf_content  # noqa: E402
 from xueqiu_analyzer.opencli_call_logger import record_opencli_call  # noqa: E402
+from xueqiu_analyzer.opencli_cooldown import in_cooldown  # noqa: E402
 from xueqiu_analyzer.opencli_rate_limiter import acquire_opencli_slot  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -243,8 +244,24 @@ def get_article_content(
     旧直连路径对超过约 2 万字的文章是**截断**的（信封里的 next_start_char 从没被续读）；
     适配器一次返回全文。短文两路逐字相同。
     """
+    # 0 秒预检，必须放在**最前面**：插件对 `--help` 那类探测在冷却检查**之前**就早退
+    # （`lib/policy.js` 的 shouldThrottle → `rate-limit.js` 的冷却分支在其后），所以
+    # 适配器可用性探针（`is_article_available()` 走 `web article --help`）在冷却期照样
+    # 成功、命令会走适配器分支 —— 单靠下面回退分支里的判断根本拦不到主通道，
+    # 每次调用还要白等约 45 秒的 daemon 超时 ×(max_retries+1)。
+    if in_cooldown():
+        logger.warning("xueqiu 处于熔断冷却，跳过正文抓取（一个请求都没发）")
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "waf_detected": False,
+            "cooldown": True,
+        }
+
     result = {"url": url, "title": "", "content": ""}
     waf_detected = False
+    cooldown = False
     use_adapter = is_article_available()
 
     for attempt in range(max_retries + 1):
@@ -252,11 +269,23 @@ def get_article_content(
             logger.warning(f"Retry {attempt}/{max_retries} for {url[-30:]}")
             time.sleep(3)
 
-        attempt_result = (
-            _attempt_via_adapter(url)
-            if use_adapter
-            else _attempt_via_browser(url, session_name)
-        )
+        if use_adapter:
+            attempt_result = _attempt_via_adapter(url)
+        elif in_cooldown():
+            # 熔断器正封着这个站点。而这一支的 `_attempt_via_browser` 走的是
+            # `opencli browser …` —— **不经插件钩子、不限速**。站点正因为被打才开的
+            # 冷却，回退回去等于继续打它，正是熔断器要停止的事。
+            # ⚠️ 每轮都判：冷却是**可能在本轮重试途中才开**的（第一次尝试撞了风控）。
+            logger.warning(
+                "xueqiu 处于熔断冷却，跳过 legacy 浏览器回退（该通道不限速）"
+            )
+            # ⚠️ **不置 `waf_detected`**：冷却期我们一个请求都没发，把它记成
+            # 「站点拦了我们」会污染 `blocked_articles`（它的用途是让巡检区分
+            # 「安静日」与「被拦日」）。另用一个标记，口径与 #110 一致。
+            cooldown = True
+            break
+        else:
+            attempt_result = _attempt_via_browser(url, session_name)
         if attempt_result is None:  # 本轮失败，值得再试
             continue
 
@@ -292,7 +321,7 @@ def get_article_content(
         waf_detected = False
         break
 
-    return {**result, "waf_detected": waf_detected}
+    return {**result, "waf_detected": waf_detected, "cooldown": cooldown}
 
 
 def _clean_title(raw: str) -> str:

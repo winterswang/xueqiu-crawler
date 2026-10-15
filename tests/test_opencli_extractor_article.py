@@ -275,3 +275,79 @@ def test_is_article_available_survives_missing_opencli(monkeypatch):
         assert scripts.opencli_extractor.is_article_available() is False
     finally:
         scripts.opencli_extractor.is_article_available.cache_clear()
+
+
+def test_cooldown_skips_the_legacy_browser_fallback(monkeypatch):
+    """熔断冷却期内**不走** legacy 浏览器回退。
+
+    适配器不可用时才会走 `_attempt_via_browser`（`opencli browser …`），而那条通道
+    **不经插件钩子、不限速**。站点正因为被打才开的冷却，回退回去等于继续打它 ——
+    正是熔断器要停止的事。
+    """
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "is_article_available", lambda: False
+    )
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "in_cooldown", lambda *_a, **_k: True
+    )
+    called = []
+    monkeypatch.setattr(
+        scripts.opencli_extractor,
+        "_attempt_via_browser",
+        lambda *a, **k: called.append(1),
+    )
+
+    out = scripts.opencli_extractor.get_article_content("https://xueqiu.com/1/2")
+
+    assert called == [], "冷却期内绝不能走 legacy 浏览器序列"
+    assert out["cooldown"] is True, "要能区分「我们停手」与「站点拦了我们」"
+    assert out["waf_detected"] is False, "冷却期没发请求，不该计进 blocked_articles"
+    assert out["content"] == ""
+
+
+def test_not_in_cooldown_keeps_the_legacy_fallback(monkeypatch):
+    """没冷却时行为不变 —— 这条判断只该在熔断期生效。"""
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "is_article_available", lambda: False
+    )
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "in_cooldown", lambda *_a, **_k: False
+    )
+    called = []
+    monkeypatch.setattr(
+        scripts.opencli_extractor,
+        "_attempt_via_browser",
+        lambda *a, **k: (
+            called.append(1),
+            {"title": "t", "content": "x" * 200, "waf_detected": False},
+        )[1],
+    )
+
+    out = scripts.opencli_extractor.get_article_content("https://xueqiu.com/1/2")
+
+    assert called, "没冷却时该照旧回退"
+    assert out["title"] == "t"
+
+
+def test_zero_second_precheck_runs_before_the_adapter(monkeypatch):
+    """0 秒预检必须挡在**适配器调用之前**。
+
+    插件的 `shouldThrottle` 对 `--help` 在冷却检查**之前**早退，所以 `web article --help`
+    探测在冷却期照样成功 → `is_article_available()` 为真 → 命令会走适配器分支，
+    每次白等约 45 秒 ×(max_retries+1)。回退分支里的守卫拦不到这条主通道。
+    """
+    monkeypatch.setattr(scripts.opencli_extractor, "is_article_available", lambda: True)
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "in_cooldown", lambda *_a, **_k: True
+    )
+    calls = []
+    monkeypatch.setattr(
+        scripts.opencli_extractor,
+        "_attempt_via_adapter",
+        lambda *a, **k: calls.append(1),
+    )
+
+    out = scripts.opencli_extractor.get_article_content("https://xueqiu.com/1/2")
+
+    assert calls == [], "冷却期不该调用适配器（那次调用注定被拦、还要白等 45 秒）"
+    assert out["cooldown"] is True
