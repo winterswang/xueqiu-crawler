@@ -338,3 +338,185 @@ def test_gateway_attempt_statuses_are_scoped_to_the_day(tmp_path):
         "success": 2,
         "blocked_waf": 1,
     }
+
+
+# ---------- 正文比对（2026-10-15 补：此前**根本没比正文**）----------
+#
+# `COMPARED_FIELDS` 只看 index 里的元数据，抓到的正文一个字都没验 —— 而正文才是
+# 抓取的产出。这两天 20 篇正文其实逐字一致，但那是**人工比出来的**；不补这一层，
+# 将来某篇抓成空/截断，影子会照样报绿。
+
+
+def write_body(data_dir: Path, user_id: str, article_id: str, text: str) -> None:
+    path = data_dir / user_id
+    path.mkdir(parents=True, exist_ok=True)
+    (path / f"{article_id}.md").write_text(text, encoding="utf-8")
+
+
+BODY = """# 标题
+
+> 作者：张三 | 发布时间：3分钟前
+> 原文链接：https://xueqiu.com/u1/new1
+
+正文第一段。
+
+> 昨天 14:09 · 转发 4 · 讨论 57 · 赞 116
+
+*爬取时间：2026-10-07 08:13:54*
+"""
+
+
+def test_identical_bodies_report_no_difference(tmp_path):
+    """两侧正文里的**必然不同**的三处（相对发布时间、爬取时刻、实时计数）不该算差异。"""
+    legacy, gateway = aligned_pair(tmp_path)
+    write_body(legacy, "u1", "new1", BODY)
+    write_body(
+        gateway,
+        "u1",
+        "new1",
+        BODY.replace("发布时间：3分钟前", "发布时间：2小时前")
+        .replace("讨论 57", "讨论 56")
+        .replace("赞 116", "赞 118")
+        .replace("2026-10-07 08:13:54", "2026-10-07 09:43:05"),
+    )
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["articles"]["bodies_compared"] == 1
+    assert report["articles"]["body_mismatches"] == []
+    assert report["differences"] == []
+    assert report["ok"] is True
+
+
+def test_differing_body_content_is_reported(tmp_path):
+    """正文真的不一样时必须报出来 —— 这是这一层存在的唯一理由。"""
+    legacy, gateway = aligned_pair(tmp_path)
+    write_body(legacy, "u1", "new1", BODY)
+    write_body(gateway, "u1", "new1", BODY.replace("正文第一段。", ""))
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    mismatches = report["articles"]["body_mismatches"]
+    assert len(mismatches) == 1
+    assert mismatches[0]["article_id"] == "new1"
+    assert mismatches[0]["legacy_chars"] > mismatches[0]["gateway_chars"]
+    assert any("正文不一致" in d for d in report["differences"])
+    assert report["ok"] is False
+
+
+def test_body_present_on_only_one_side_is_reported(tmp_path):
+    legacy, gateway = aligned_pair(tmp_path)
+    write_body(legacy, "u1", "new1", BODY)
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["articles"]["body_mismatches"] == [
+        {
+            "user_id": "u1",
+            "article_id": "new1",
+            "reason": "一侧没有正文文件",
+            "legacy_exists": True,
+            "gateway_exists": False,
+        }
+    ]
+    assert report["ok"] is False
+
+
+def test_bodies_absent_on_both_sides_are_not_a_difference(tmp_path):
+    """两侧都没正文文件 = 在这一点上一致（既有夹具就是这种形态，不能因此报差异）。
+
+    但**覆盖计数必须诚实**：这一对是配上了（`body_pairs`），却一个字节都没读
+    （`bodies_compared` 必须是 0）—— 把配对数当覆盖就是在虚报。
+    """
+    legacy, gateway = aligned_pair(tmp_path)
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["articles"]["body_pairs"] == 1
+    assert report["articles"]["bodies_compared"] == 0
+    assert report["articles"]["body_mismatches"] == []
+    assert report["ok"] is True
+
+
+def test_relative_publish_time_is_no_longer_compared_in_index(tmp_path):
+    """`publish_time` 是相对时间字符串，两侧相隔 1.5h 跑必然不同 —— 已移出比较字段。"""
+    from scripts.compare_crawl_outputs import COMPARED_FIELDS
+
+    assert "publish_time" not in COMPARED_FIELDS
+
+    legacy, gateway = aligned_pair(tmp_path)
+    write_index(
+        gateway,
+        dict(
+            [
+                record("u1", "old1"),
+                record("u1", "new1", publish_time="2026-10-07 09:30"),
+            ]
+        ),
+    )
+
+    report = build_report(legacy_dir=legacy, gateway_dir=gateway, day=DAY)
+
+    assert report["articles"]["field_mismatches"] == []
+    assert report["ok"] is True
+
+
+# ---------- 归一规则本身（此前一条都没测，HIGH/MEDIUM 缺陷就是这么漏过去的）----------
+
+
+def test_normalize_body_separates_unknown_from_having_a_time():
+    """「解析失败」与「拿到了时间」必须可分 —— 这是这个字段唯一稳定的信号。
+
+    两侧写正文的默认值都是 `未知`，解析一挂就落这里；而 `scripts/analyzer.py` 正好有
+    `if not article.get('publish_time')` 的数据质量断言。此前一律抹成 `N`，把两者
+    变得一模一样 —— 本门最该抓的回归之一反而被抹掉。
+    """
+    from scripts.compare_crawl_outputs import _normalize_body, _normalize_publish_time
+
+    assert _normalize_publish_time("") == "UNKNOWN"
+    assert _normalize_publish_time("未知") == "UNKNOWN"
+    assert _normalize_publish_time("3分钟前") == "TIME"
+    assert _normalize_publish_time("10-08 16:30") == "TIME"
+
+    unknown = _normalize_body("> 作者：X | 发布时间：未知\n\n正文")
+    known = _normalize_body("> 作者：X | 发布时间：3分钟前\n\n正文")
+    assert unknown != known, "解析失败与正常值被抹成了同一个值"
+
+
+def test_normalize_body_treats_relative_and_absolute_as_equivalent():
+    """相对标签与绝对时间**不比具体值**：雪球按「什么时候看」切档，两侧跑的时刻不同。
+
+    实测 2026-10-08：同一篇 legacy 记 `5小时前`、gateway 记 `10-08 10:50`，一天 4 次。
+    保留具体值就是每天报假红 —— 这道门要用来决定切不切生产，假红等于废掉它。
+    代价（已知）：绝对时间之间的漂移（`10-08` vs `10-09`）这一层不再比较。
+    """
+    from scripts.compare_crawl_outputs import _normalize_body
+
+    assert _normalize_body("> 作者：X | 发布时间：3分钟前\n") == _normalize_body(
+        "> 作者：X | 发布时间：10-08 16:30\n"
+    )
+
+
+def test_normalize_body_ignores_missing_repost_segment():
+    """`转发` 段在转发数为 0 时**雪球根本不渲染**（实测 59 条计数行里只有 40 条带它）。
+
+    所以归一必须把「段不存在」与「段存在」抹成同一形态，否则影子窗口内被转发一次
+    就会报一条假差异。
+    """
+    from scripts.compare_crawl_outputs import _normalize_body
+
+    with_repost = _normalize_body(
+        "> 08-20 20:52 · 转发 6 [· 讨论 3](/u/1#comment) · 赞 9\n"
+    )
+    without = _normalize_body("> 08-20 20:52 [· 讨论 3](/u/1#comment) · 赞 9\n")
+    assert with_repost == without
+
+
+def test_normalize_body_does_not_touch_body_text(tmp_path):
+    """归一只能打在元数据行上 —— 正文里正常出现的「赞 100 次」不能被改。"""
+    from scripts.compare_crawl_outputs import _normalize_body
+
+    body_line = "这只票我点了赞 100 次也不够，请转发 3 次支持一下。"
+    assert body_line in _normalize_body(
+        f"> 作者：X | 发布时间：3分钟前\n\n{body_line}\n"
+    )
