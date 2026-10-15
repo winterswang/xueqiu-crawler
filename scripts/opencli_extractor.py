@@ -244,8 +244,24 @@ def get_article_content(
     旧直连路径对超过约 2 万字的文章是**截断**的（信封里的 next_start_char 从没被续读）；
     适配器一次返回全文。短文两路逐字相同。
     """
+    # 0 秒预检，必须放在**最前面**：插件对 `--help` 那类探测在冷却检查**之前**就早退
+    # （`lib/policy.js` 的 shouldThrottle → `rate-limit.js` 的冷却分支在其后），所以
+    # 适配器可用性探针（`is_article_available()` 走 `web article --help`）在冷却期照样
+    # 成功、命令会走适配器分支 —— 单靠下面回退分支里的判断根本拦不到主通道，
+    # 每次调用还要白等约 45 秒的 daemon 超时 ×(max_retries+1)。
+    if in_cooldown():
+        logger.warning("xueqiu 处于熔断冷却，跳过正文抓取（一个请求都没发）")
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "waf_detected": False,
+            "cooldown": True,
+        }
+
     result = {"url": url, "title": "", "content": ""}
     waf_detected = False
+    cooldown = False
     use_adapter = is_article_available()
 
     for attempt in range(max_retries + 1):
@@ -263,9 +279,10 @@ def get_article_content(
             logger.warning(
                 "xueqiu 处于熔断冷却，跳过 legacy 浏览器回退（该通道不限速）"
             )
-            # 与上面的 BLOCKED_WAF 分支同语义：这是「站点在拦我们」，不是「没取到」。
-            # 置真后调用方不会把它当成可重试的空结果。
-            waf_detected = True
+            # ⚠️ **不置 `waf_detected`**：冷却期我们一个请求都没发，把它记成
+            # 「站点拦了我们」会污染 `blocked_articles`（它的用途是让巡检区分
+            # 「安静日」与「被拦日」）。另用一个标记，口径与 #110 一致。
+            cooldown = True
             break
         else:
             attempt_result = _attempt_via_browser(url, session_name)
@@ -304,7 +321,7 @@ def get_article_content(
         waf_detected = False
         break
 
-    return {**result, "waf_detected": waf_detected}
+    return {**result, "waf_detected": waf_detected, "cooldown": cooldown}
 
 
 def _clean_title(raw: str) -> str:
