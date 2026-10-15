@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # 任何开头 500 字里出现 405 的正常文章都会被误判成错误页并重试。
 from scripts.waf_bridge import looks_like_waf_content  # noqa: E402
 from xueqiu_analyzer.opencli_call_logger import record_opencli_call  # noqa: E402
+from xueqiu_analyzer.opencli_cooldown import in_cooldown  # noqa: E402
 from xueqiu_analyzer.opencli_rate_limiter import acquire_opencli_slot  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -252,11 +253,22 @@ def get_article_content(
             logger.warning(f"Retry {attempt}/{max_retries} for {url[-30:]}")
             time.sleep(3)
 
-        attempt_result = (
-            _attempt_via_adapter(url)
-            if use_adapter
-            else _attempt_via_browser(url, session_name)
-        )
+        if use_adapter:
+            attempt_result = _attempt_via_adapter(url)
+        elif in_cooldown():
+            # 熔断器正封着这个站点。而这一支的 `_attempt_via_browser` 走的是
+            # `opencli browser …` —— **不经插件钩子、不限速**。站点正因为被打才开的
+            # 冷却，回退回去等于继续打它，正是熔断器要停止的事。
+            # ⚠️ 每轮都判：冷却是**可能在本轮重试途中才开**的（第一次尝试撞了风控）。
+            logger.warning(
+                "xueqiu 处于熔断冷却，跳过 legacy 浏览器回退（该通道不限速）"
+            )
+            # 与上面的 BLOCKED_WAF 分支同语义：这是「站点在拦我们」，不是「没取到」。
+            # 置真后调用方不会把它当成可重试的空结果。
+            waf_detected = True
+            break
+        else:
+            attempt_result = _attempt_via_browser(url, session_name)
         if attempt_result is None:  # 本轮失败，值得再试
             continue
 

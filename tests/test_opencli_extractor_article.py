@@ -275,3 +275,54 @@ def test_is_article_available_survives_missing_opencli(monkeypatch):
         assert scripts.opencli_extractor.is_article_available() is False
     finally:
         scripts.opencli_extractor.is_article_available.cache_clear()
+
+
+def test_cooldown_skips_the_legacy_browser_fallback(monkeypatch):
+    """熔断冷却期内**不走** legacy 浏览器回退。
+
+    适配器不可用时才会走 `_attempt_via_browser`（`opencli browser …`），而那条通道
+    **不经插件钩子、不限速**。站点正因为被打才开的冷却，回退回去等于继续打它 ——
+    正是熔断器要停止的事。
+    """
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "is_article_available", lambda: False
+    )
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "in_cooldown", lambda *_a, **_k: True
+    )
+    called = []
+    monkeypatch.setattr(
+        scripts.opencli_extractor,
+        "_attempt_via_browser",
+        lambda *a, **k: called.append(1),
+    )
+
+    out = scripts.opencli_extractor.get_article_content("https://xueqiu.com/1/2")
+
+    assert called == [], "冷却期内绝不能走 legacy 浏览器序列"
+    assert out["waf_detected"] is True, "这是「站点在拦我们」，不是「没取到」"
+    assert out["content"] == ""
+
+
+def test_not_in_cooldown_keeps_the_legacy_fallback(monkeypatch):
+    """没冷却时行为不变 —— 这条判断只该在熔断期生效。"""
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "is_article_available", lambda: False
+    )
+    monkeypatch.setattr(
+        scripts.opencli_extractor, "in_cooldown", lambda *_a, **_k: False
+    )
+    called = []
+    monkeypatch.setattr(
+        scripts.opencli_extractor,
+        "_attempt_via_browser",
+        lambda *a, **k: (
+            called.append(1),
+            {"title": "t", "content": "x" * 200, "waf_detected": False},
+        )[1],
+    )
+
+    out = scripts.opencli_extractor.get_article_content("https://xueqiu.com/1/2")
+
+    assert called, "没冷却时该照旧回退"
+    assert out["title"] == "t"
