@@ -85,30 +85,66 @@ def daily_article_ids(data_dir: Path, day: str) -> dict[str, set[str]]:
 
 
 # 正文归一：抹掉三类**必然不同**的内容后再比，其余任何差异都算真差异。
-#   ① `发布时间：` 后面的相对标签（「3分钟前」）—— 两侧相隔约 1.5h 跑，同一篇必然不同；
-#   ② `*爬取时间：…*` 整行 —— 抓取时刻；
-#   ③ 点赞 / 评论 / 转发 / 讨论 / 赞 等**实时计数** —— 期间有人点了赞就会变
-#      （实测 20 篇里 4 篇只因计数漂移而不同：115→117、273→275、157→158、203→205）。
-# ⚠️ 归一规则若因正文格式变化而失配，只会**多报**差异（安全方向），不会漏报。
-_PUBLISH_TIME_RE = re.compile(r"(发布时间：)\S*")
-_COUNTER_RES = (
-    re.compile(r"(点赞：)\d+"),
-    re.compile(r"(评论：)\d+"),
-    re.compile(r"(转发 )\d+"),
-    re.compile(r"(讨论 )\d+"),
-    re.compile(r"(赞 )\d+"),
+#
+# ⚠️ 归一**只作用于元数据行**（以 `>` 开头、或 `*爬取时间：…*`）。此前是全文替换，
+# 正文里正常出现的「这只票我点了赞 100 次」会被改成「点了赞 N 次」—— 虽然当前语料
+# 没被误伤（2559 篇逐行核过），但那是运气，锚到行首才是结构上的保证。
+#
+# 三类：
+#   ① `发布时间：` —— **分三档**，不能一律抹掉（见 `_normalize_publish_time`）
+#   ② `*爬取时间：…*` 整行 —— 抓取时刻
+#   ③ 点赞 / 评论 / 转发 / 讨论 / 赞 等**实时计数** —— 随抓取时刻漂移；且「转发为 0
+#      时雪球根本不渲染该段」（实测 59 条计数行里只有 40 条带 `转发 N`），所以按
+#      **整段抹掉**而不是把数字换成 N：段的有无必须一视同仁。
+_METADATA_PREFIX = ">"
+_CRAWL_TIME_MARK = "爬取时间："
+_PUBLISH_TIME_RE = re.compile(r"(发布时间：)(.*)$")
+_MULTI_SPACE_RE = re.compile(r"\s{2,}")
+_COUNTER_SEGMENT_RES = (
+    re.compile(r"·\s*转发\s*\d+"),
+    re.compile(r"·\s*讨论\s*\d+"),
+    re.compile(r"·\s*赞\s*\d+"),
+    re.compile(r"点赞：\s*\d+"),
+    re.compile(r"评论：\s*\d+"),
 )
+
+
+def _normalize_publish_time(value: str) -> str:
+    """`发布时间：` 的取值 → 可比形态：`UNKNOWN`（解析失败）或 `TIME`（拿到了时间）。
+
+    为什么**不**保留具体时间：雪球渲染的是「相对标签 ↔ 绝对时间」二选一，而切档
+    取决于**你什么时候看**。两侧相隔 1.5h（甚至更久）跑，同一篇完全可能一侧
+    `5小时前`、另一侧 `10-08 10:50` —— 实测 2026-10-08 一天就出现 4 次。保留具体值
+    只会让门每天报假红，而假红会让这道门失去意义（它是要用来决定切不切生产的）。
+
+    真正稳定可比的信号是**「有没有拿到时间」**：两侧写正文的默认值都是 `未知`
+    （`crawler_nodriver.py` / `crawl_gateway/adapters/xueqiu.py`），解析一挂就落这里。
+    所以 `UNKNOWN` 与 `TIME` 必须可分 —— 此前一律抹成 `N`，把「解析失败」和
+    「正常值」变得一模一样，而 `scripts/analyzer.py` 正好有
+    `if not article.get('publish_time')` 的数据质量断言。
+
+    代价（已知，接受）：绝对时间之间的漂移（`10-08` vs `10-09`）这一层不再比较。
+    """
+    text = value.strip()
+    return "UNKNOWN" if not text or text == "未知" else "TIME"
 
 
 def _normalize_body(text: str) -> str:
     """正文归一（见上方三类说明），供两侧逐字对比。"""
     kept: list[str] = []
     for line in text.splitlines():
-        if "*爬取时间：" in line:
-            continue
-        line = _PUBLISH_TIME_RE.sub(r"\g<1>N", line)
-        for pattern in _COUNTER_RES:
-            line = pattern.sub(r"\g<1>N", line)
+        stripped = line.lstrip()
+        if stripped.startswith("*") and _CRAWL_TIME_MARK in stripped:
+            continue  # 抓取时刻，必然不同
+        if stripped.startswith(_METADATA_PREFIX):
+            line = _PUBLISH_TIME_RE.sub(
+                lambda m: m.group(1) + _normalize_publish_time(m.group(2)), line
+            )
+            for pattern in _COUNTER_SEGMENT_RES:
+                line = pattern.sub("", line)
+            # 抹掉计数段后留下的多余空白也要归一，否则「有转发段」与「无转发段」
+            # 会只差一两个空格而判为不等。
+            line = _MULTI_SPACE_RE.sub(" ", line).rstrip()
         kept.append(line)
     return "\n".join(kept).strip()
 
@@ -117,15 +153,20 @@ def compare_bodies(
     legacy_dir: Path,
     gateway_dir: Path,
     pairs: list[tuple[str, str]],
-) -> list[dict]:
+) -> tuple[list[dict], int]:
     """逐篇对比当天新增文章的正文（`<data>/<user>/<article_id>.md`）。
 
     为什么必须比正文：`COMPARED_FIELDS` 只看 index 里的元数据，**抓到的正文一个字都
     没验**——而正文才是抓取的产出（日报与分析都吃它）。2026-10-15 实测：那两天
     20 篇的正文其实逐字一致，但**这一点是人工比出来的**；不改这里，正经的正文回归
     （某篇抓成空/截断）在影子里会照样报绿，门是瞎的。
+
+    返回 `(不一致清单, 真的读了两侧字节的篇数)`。第二个数**不等于**配对数：两侧都没
+    正文文件时这一对会被跳过，一个字节都没读 —— 报告若拿配对数当「比过 N 篇」，
+    就是在虚报覆盖（恰是这条 warning 机制想防的「空转伪装成有效验证」）。
     """
     mismatches: list[dict] = []
+    compared = 0
     for user_id, article_id in pairs:
         legacy_path = legacy_dir / user_id / f"{article_id}.md"
         gateway_path = gateway_dir / user_id / f"{article_id}.md"
@@ -147,12 +188,24 @@ def compare_bodies(
                 }
             )
             continue
-        legacy_text = _normalize_body(
-            legacy_path.read_text(encoding="utf-8", errors="replace")
-        )
-        gateway_text = _normalize_body(
-            gateway_path.read_text(encoding="utf-8", errors="replace")
-        )
+        # 读失败（权限 / EIO / exists 与 read 之间被删）要记成一条**有 reason 的差异**，
+        # 不能让异常冒到 main()：那会让退出码变成 1，被 run_shadow.sh 读成「两侧有差异」
+        # 并指向一个**根本没落盘**的 JSON，把故障伪装成业务结论。
+        try:
+            legacy_raw = legacy_path.read_text(encoding="utf-8", errors="replace")
+            gateway_raw = gateway_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            mismatches.append(
+                {
+                    "user_id": user_id,
+                    "article_id": article_id,
+                    "reason": f"正文读取失败：{exc.__class__.__name__}: {exc}",
+                }
+            )
+            continue
+        compared += 1
+        legacy_text = _normalize_body(legacy_raw)
+        gateway_text = _normalize_body(gateway_raw)
         if legacy_text != gateway_text:
             first_diff = next(
                 (
@@ -176,7 +229,7 @@ def compare_bodies(
                     "gateway_line": first_diff[2][:200] if first_diff else None,
                 }
             )
-    return mismatches
+    return mismatches, compared
 
 
 def compare_stats(legacy_dir: Path, gateway_dir: Path) -> tuple[dict, list[str]]:
@@ -242,7 +295,9 @@ def compare_articles(
     if field_mismatches:
         differences.append(f"{len(field_mismatches)} 处文章字段不一致")
 
-    body_mismatches = compare_bodies(legacy_dir, gateway_dir, shared_pairs)
+    body_mismatches, bodies_compared = compare_bodies(
+        legacy_dir, gateway_dir, shared_pairs
+    )
     if body_mismatches:
         differences.append(f"{len(body_mismatches)} 篇正文不一致（已归一三类必然差异）")
 
@@ -274,7 +329,10 @@ def compare_articles(
             "only_in_gateway": only_in_gateway,
             "field_mismatches": field_mismatches,
             "body_mismatches": body_mismatches,
-            "bodies_compared": len(shared_pairs),
+            # 配对篇数 vs **真的读了两侧字节**的篇数 —— 两者可以差很多，别把前者
+            # 当成覆盖（两侧都没落正文时，配对数照样涨而一个字节都没读）。
+            "body_pairs": len(shared_pairs),
+            "bodies_compared": bodies_compared,
             "baseline_only_in_legacy": baseline_only_legacy[:20],
             "baseline_only_in_gateway": baseline_only_gateway[:20],
         },
