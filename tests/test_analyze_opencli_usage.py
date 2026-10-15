@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from collections import Counter  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
@@ -28,6 +29,7 @@ from analyze_opencli_usage import (  # noqa: E402
     _unattributed_clusters,
     load_records,
     render,
+    render_adapter,
     summarize,
     summarize_adapter,
     uncovered_operations,
@@ -456,3 +458,63 @@ def test_same_ppid_far_apart_splits_into_two_clusters():
     assert leftover == []
     assert len(clusters) == 2, "相隔一天的同一 pid 被并成了一簇"
     assert {c["count"] for c in clusters} == {7}
+
+
+def test_cooldown_blocked_calls_are_not_counted_as_failures():
+    """被熔断器拦下的调用**没发出任何请求**，不该算失败。
+
+    否则熔断器一生效，它自己的成绩就被算成「站点风控恶化」—— 判断被带反。
+    判据用插件台账的显式字段 `cooldown_active`（Python 台账没有这个标记）。
+    """
+    rows = [
+        # 被熔断拦下：ok=False 但一个请求都没发
+        {
+            "ppid": 1,
+            "started_at": "2026-10-15T02:00:00.000Z",
+            "ts": "2026-10-15T02:00:00.000Z",
+            "source_kind": "monitor",
+            "operation": "news",
+            "domain_key": "xueqiu",
+            "ok": False,
+            "cooldown_active": True,
+            "error_code": "BROWSER_CONNECT",
+        },
+        # 真失败
+        {
+            "ppid": 2,
+            "started_at": "2026-10-15T02:01:00.000Z",
+            "ts": "2026-10-15T02:01:00.000Z",
+            "source_kind": "monitor",
+            "operation": "news",
+            "domain_key": "xueqiu",
+            "ok": False,
+            "error_code": "COMMAND_EXEC",
+        },
+    ]
+
+    summary = summarize_adapter(rows, datetime(2026, 1, 1))
+
+    assert summary["cooldown_blocked"] == 1
+    assert summary["failed"] == 1, "被熔断拦下的那次不该算进失败"
+    assert summary["total"] == 2, "但它确实发生过，总数不变"
+
+
+def test_cooldown_blocked_shows_up_in_the_report():
+    rows = [
+        {
+            "ppid": 1,
+            "started_at": "2026-10-15T02:00:00.000Z",
+            "ts": "2026-10-15T02:00:00.000Z",
+            "source_kind": "monitor",
+            "operation": "news",
+            "domain_key": "xueqiu",
+            "ok": False,
+            "cooldown_active": True,
+            "error_code": "BROWSER_CONNECT",
+        }
+    ]
+    summary = summarize_adapter(rows, datetime(2026, 1, 1))
+
+    text = render_adapter(summary, Counter())
+
+    assert "被**熔断器**拦下" in text

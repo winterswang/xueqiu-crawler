@@ -386,9 +386,17 @@ def summarize_adapter(
         "rate_errors": sum(1 for r in rows if r.get("rate_error")),
         "overflowed": sum(1 for r in rows if r.get("overflowed")),
         "gate_fail_open": sum(1 for r in rows if r.get("gate_fail_open")),
+        # 被**熔断器**拦下的调用（`cooldown_active`）**没有发出任何请求** —— 它在
+        # routing 阶段就硬失败了。所以它既不算失败、也不该计进站点请求量，否则熔断器
+        # 一生效就把自己的成绩算成「站点风控恶化」，把判断带反。
+        # （本口径只覆盖插件台账：它有显式的 `cooldown_active`；Python 台账没有这个
+        #  标记，只能靠错误文本，容易与「daemon 真的挂了」混同，故不动那边。）
+        "cooldown_blocked": sum(1 for r in rows if r.get("cooldown_active")),
         # `ok` 缺失（例如超长行被降级截断成 {schema, ts, layer, truncated}）不等于失败，
         # 显式判 `is False`，否则会把截断的成功行算成失败、还带不出错误码。
-        "failed": sum(1 for r in rows if r.get("ok") is False),
+        "failed": sum(
+            1 for r in rows if r.get("ok") is False and not r.get("cooldown_active")
+        ),
         "error_codes": Counter(
             str(r.get("error_code")) for r in rows if r.get("error_code")
         ),
@@ -516,6 +524,11 @@ def render_adapter(adapter: dict, uncovered: Counter) -> str:
                 f"{k} {v}" for k, v in adapter["error_codes"].most_common(4)
             )
             lines.append(f"  失败 {adapter['failed']} 次（{codes or '无错误码'}）")
+        if adapter.get("cooldown_blocked"):
+            lines.append(
+                f"  ⛔ 另有 {adapter['cooldown_blocked']} 次被**熔断器**拦下"
+                "（routing 阶段就失败，一个请求都没发）—— 不计入上面的失败与站点请求量"
+            )
 
     _render_unattributed(adapter, lines)
 
@@ -742,6 +755,7 @@ def main() -> int:
                     "peak_minutes_all": dict(summary["by_minute"].most_common(20)),
                     # 插件侧台账（传输层真相）。键是**新增**的，老消费者不受影响。
                     "adapter_total": adapter.get("total", 0),
+                    "adapter_cooldown_blocked": adapter.get("cooldown_blocked", 0),
                     "adapter_first": adapter.get("first", ""),
                     "adapter_last": adapter.get("last", ""),
                     "adapter_by_operation": dict(
