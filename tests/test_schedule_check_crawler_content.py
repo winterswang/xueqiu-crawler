@@ -112,3 +112,32 @@ def test_missing_body_file_is_not_double_reported(tmp_path):
     code, out = _run(root)
 
     assert "正文是空的" not in out
+
+
+def test_body_line_mentioning_crawl_time_is_not_stripped(tmp_path):
+    """剥头部必须**锚定行首**：正文里提到「爬取时间：」的整行不能被删掉。
+
+    「正则打在全文上」正是影子的归一层刚被 review 抓出来的那类坑。
+    """
+    long_line = "正文里提到爬取时间：这个词的句子不该被删掉，" * 8
+    root = _fixture(
+        tmp_path,
+        {"a1": f"# 标题\n\n> 作者：张三 | 发布时间：3分钟前\n\n{long_line}\n"},
+    )
+
+    code, out = _run(root)
+
+    assert code == 2, f"该篇正文足够长，不该被报空：{out}"
+    assert "正文是空的" not in out
+
+
+def test_title_line_only_strips_the_first_heading(tmp_path):
+    """只丢首行的 `# 标题`，正文自带的 `#` 小标题要留着。"""
+    body = "\n".join(["# 小标题 " + "x" * 30] * 4)
+    root = _fixture(
+        tmp_path, {"a1": f"# 标题\n\n> 作者：张三 | 发布时间：3分钟前\n\n{body}\n"}
+    )
+
+    code, out = _run(root)
+
+    assert code == 2, f"小标题算正文，不该被剥成空：{out}"

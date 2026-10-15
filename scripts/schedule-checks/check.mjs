@@ -34,9 +34,26 @@ const dayOf = (d) => d.toLocaleDateString('sv-SE');
 // 正文里剥掉头部元数据，只留正文本身，用来判「抓到了没」。
 // 头部（作者/发布时间/原文链接/爬取时间/标题）占了 ~150 字符，不剥掉的话
 // 「正文是空的」和「正文正常」在长度上几乎分不出来。
-const BODY_META = /^>?\s*作者：|^原文链接：|爬取时间：|^#|^$/;
+//
+// ⚠️ 必须**锚定在行首**：不带 `^` 的 `爬取时间：` 会把正文里出现该字样的整行删掉 ——
+// 「正则打在全文上」这类坑刚在影子的归一层踩过一次（那边被 review 抓出来）。
+const METADATA_LINE = /^(?:>|\*爬取时间：)/;
 // 实测正常正文最短 150 字符（2026-10-08–15 全量样本），空抽取≈0 —— 取 100 留余量。
 const MIN_BODY_CHARS = 100;
+
+/** 一篇 `.md` 里属于「正文」的部分（剥掉头部元数据与标题行）。 */
+function bodyText(raw) {
+  const lines = raw.split('\n');
+  // 只丢**首行**的 `# 标题`，不在正文里全局丢 `#` 开头的行（正文可能自带小标题）。
+  if (lines.length > 0 && lines[0].trimStart().startsWith('#')) lines.shift();
+  return lines
+    .filter((line) => {
+      const t = line.trim();
+      return t !== '' && !METADATA_LINE.test(line.trimStart());
+    })
+    .join('\n')
+    .trim();
+}
 
 function emptyBodies() {
   const found = [];
@@ -56,11 +73,7 @@ function emptyBodies() {
       if (!row || !row.article_id) continue;
       const md = join(CRAWLER, 'data', user, `${row.article_id}.md`);
       if (!existsSync(md)) continue; // 缺文件由「今天没抓够」那条覆盖，这里只管内容空
-      const body = readFileSync(md, 'utf8')
-        .split('\n')
-        .filter((line) => !BODY_META.test(line.trim()))
-        .join('\n')
-        .trim();
+      const body = bodyText(readFileSync(md, 'utf8'));
       if (body.length < MIN_BODY_CHARS) {
         found.push(`${user}/${row.article_id}（正文 ${body.length} 字符）`);
       }
