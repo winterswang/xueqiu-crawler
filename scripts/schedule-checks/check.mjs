@@ -14,7 +14,7 @@
 // hermes 各任务本来就会推飞书卡片，所以这里不重复报「任务跑没跑」，
 // 只查卡片不会告诉你的具体信号 —— 也就是这轮改动的落点。
 
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -30,6 +30,57 @@ const problems = [];
 let complete = true;
 const today = now.toLocaleDateString('sv-SE');
 const dayOf = (d) => d.toLocaleDateString('sv-SE');
+
+// 正文里剥掉头部元数据，只留正文本身，用来判「抓到了没」。
+// 头部（作者/发布时间/原文链接/爬取时间/标题）占了 ~150 字符，不剥掉的话
+// 「正文是空的」和「正文正常」在长度上几乎分不出来。
+//
+// ⚠️ 必须**锚定在行首**：不带 `^` 的 `爬取时间：` 会把正文里出现该字样的整行删掉 ——
+// 「正则打在全文上」这类坑刚在影子的归一层踩过一次（那边被 review 抓出来）。
+const METADATA_LINE = /^(?:>|\*爬取时间：)/;
+// 实测正常正文最短 150 字符（2026-10-08–15 全量样本），空抽取≈0 —— 取 100 留余量。
+const MIN_BODY_CHARS = 100;
+
+/** 一篇 `.md` 里属于「正文」的部分（剥掉头部元数据与标题行）。 */
+function bodyText(raw) {
+  const lines = raw.split('\n');
+  // 只丢**首行**的 `# 标题`，不在正文里全局丢 `#` 开头的行（正文可能自带小标题）。
+  if (lines.length > 0 && lines[0].trimStart().startsWith('#')) lines.shift();
+  return lines
+    .filter((line) => {
+      const t = line.trim();
+      return t !== '' && !METADATA_LINE.test(line.trimStart());
+    })
+    .join('\n')
+    .trim();
+}
+
+function emptyBodies() {
+  const found = [];
+  const historyDir = join(CRAWLER, 'data/history');
+  if (!existsSync(historyDir)) return found;
+  for (const user of readdirSync(historyDir)) {
+    const p = join(historyDir, user, `${today}.json`);
+    if (!existsSync(p)) continue;
+    let rows;
+    try {
+      rows = JSON.parse(readFileSync(p, 'utf8'));
+    } catch {
+      continue; // 坏 JSON 不是内容问题，别在这里报
+    }
+    rows = Array.isArray(rows) ? rows : rows.articles || Object.values(rows);
+    for (const row of rows) {
+      if (!row || !row.article_id) continue;
+      const md = join(CRAWLER, 'data', user, `${row.article_id}.md`);
+      if (!existsSync(md)) continue; // 缺文件由「今天没抓够」那条覆盖，这里只管内容空
+      const body = bodyText(readFileSync(md, 'utf8'));
+      if (body.length < MIN_BODY_CHARS) {
+        found.push(`${user}/${row.article_id}（正文 ${body.length} 字符）`);
+      }
+    }
+  }
+  return found;
+}
 
 // crawler：今天的日报有没有产出。
 // #54 修的「无新增也产出最小日报」落在这里：以前 0 新增 return ""，
@@ -50,6 +101,17 @@ function checkCrawler() {
   const reportPath = join(CRAWLER, `data/daily_reports/${today}.md`);
   if (!existsSync(reportPath)) {
     problems.push(`今天没有日报文件：${reportPath} —— 查 generate_report 的「无新增」分支`);
+  }
+
+  // 内容断言：stats 说成功 ≠ 真抓到了东西。
+  // 这是本项目反复发作的一类静默失败 —— 风控页/抽取失效时正文为空，而 stats 仍报
+  // successful=18、failed=0，日报也照样产出（只剩标题），下游全绿。
+  // 「错误结果与正常结果长得一样」才是最贵的，所以这里不看 stats，直接看产物本身。
+  const empty = emptyBodies();
+  if (empty.length > 0) {
+    problems.push(
+      `今天有 ${empty.length} 篇正文是空的（stats 不会报这个）：${empty.slice(0, 5).join('，')}`,
+    );
   }
 }
 
