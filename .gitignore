@@ -50,6 +50,7 @@ config/xueqiu_cookies.json
 # Local runtime artifacts
 DAILY_LOG.md
 data/*.db
+data/*.sqlite3
 data/*.bak
 
 # 运行期锁文件（勿提交）
