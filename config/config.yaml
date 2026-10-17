@@ -22,9 +22,8 @@ hot_posts:
   enabled: true
   limit: 60               # 抓取条数上限（--limit）；热门榜当天供给多少取多少
   scrolls: 5              # 滚动加载页数（--scrolls，每次约 +8-10 条，适配器上限 5）
-  include_overnight: true   # true=T-1 全天 + 今晨（条目标「今晨」）；热门榜是实时榜，
-                            # T-1 白天帖子次日早晨已跌出榜（10-17 实测严格口径 0 候选）
-  max_age_hours: 48       # 超龄条目直接丢弃（新鲜度兜底）
+  window_hours: 24         # 滚动时间窗（小时）：只收「抓取时刻往前 N 小时」内发布的帖，
+                           # 几点跑窗口自动跟到几点；跨零点发布的条目标「今晨」
   top_n: 10               # 进日报的条数
   freshness_half_life_hours: 36  # 新鲜度半衰期（小时）
   repeat_decay: 0.9       # 命中昨日 top10 的连击降权系数

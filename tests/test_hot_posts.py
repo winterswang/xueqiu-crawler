@@ -56,25 +56,25 @@ def test_parse_created_at_garbage_returns_none():
 # ── T-1 窗口过滤 ──────────────────────────────────────────────────────
 
 
-def test_filter_window_strict_t1():
+def test_filter_window_rolling_24h():
     items = [
-        make_item(1, "2026-10-16T00:01:00+08:00"),  # T-1 凌晨 → 留
-        make_item(2, "2026-10-16T23:59:00+08:00"),  # T-1 深夜 → 留
-        make_item(3, "2026-10-17T03:00:00+08:00"),  # 今晨 → 严格口径下弃
-        make_item(4, "2026-10-15T12:00:00+08:00"),  # T-2 → 弃
+        make_item(1, "2026-10-16T09:00:00+08:00"),  # 23h 前 → 留
+        make_item(2, "2026-10-17T03:00:00+08:00"),  # 5h 前 → 留
+        make_item(3, "2026-10-16T07:00:00+08:00"),  # 25h 前 → 弃（窗外）
+        make_item(4, "2026-10-15T12:00:00+08:00"),  # 更早 → 弃
         make_item(5, "8小时前"),  # 解析失败 → 弃
     ]
-    kept, dropped = hp.filter_window(items, NOW, CFG_STRICT)
+    kept, dropped = hp.filter_window(items, NOW, CFG)
     assert [it["status_id"] for it in kept] == ["1", "2"]
-    assert dropped == {"no_time": 1, "out_of_window": 2, "too_old": 0}
+    assert dropped == {"no_time": 1, "out_of_window": 2}
 
 
-def test_filter_window_include_overnight():
+def test_filter_window_tags_overnight():
     items = [
         make_item(1, "2026-10-16T12:00:00+08:00"),
         make_item(2, "2026-10-17T03:00:00+08:00"),
     ]
-    kept, _ = hp.filter_window(items, NOW, CFG)  # 默认口径已含今晨
+    kept, _ = hp.filter_window(items, NOW, CFG)  # 两条都在最近 24h 内
     by_id = {it["status_id"]: it for it in kept}
     assert by_id["1"]["is_overnight"] is False
     assert by_id["2"]["is_overnight"] is True
@@ -185,11 +185,12 @@ def test_select_top_orders_by_score():
 def test_load_top_doc_roundtrip(tmp_path):
     doc = {
         "generated_at": NOW.isoformat(),
-        "include_overnight": False,
         "window": {
             "start": "2026-10-16T00:00:00+08:00",
             "end": "2026-10-17T00:00:00+08:00",
-            "start_date": "2026-10-16",
+            "hours": 24,
+            "start_label": "10-16 00:00",
+            "end_label": "10-17 00:00",
         },
         "candidates": 2,
         "items": [
@@ -222,8 +223,11 @@ def test_load_top_doc_roundtrip(tmp_path):
 
 def test_build_report_section_renders_tags_and_overnight():
     doc = {
-        "include_overnight": True,
-        "window": {"start_date": "2026-10-16"},
+        "window": {
+            "hours": 24,
+            "start_label": "10-16 08:00",
+            "end_label": "10-17 08:00",
+        },
         "candidates": 23,
         "items": [
             {
@@ -245,6 +249,8 @@ def test_build_report_section_renders_tags_and_overnight():
     lines = hp.build_report_section(doc)
     text = "\n".join(lines)
     assert "## 🔥 全网热贴 Top 10" in text
-    assert "2026-10-16" in text and "今晨" in text
+    assert "最近 24h" in text
+    assert "10-16 08:00 → 10-17 08:00" in text
+    assert "今晨" in text
     assert "烽煙縱橫" in text and "SH601318" in text
     assert "https://xueqiu.com/1/2" in text

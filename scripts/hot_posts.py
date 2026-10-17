@@ -2,10 +2,9 @@
 """全网热门贴抓取 + 打分 —— 早报「🔥 全网热贴 Top 10」数据源.
 
 数据源：opencli xueqiu hot（DOM 适配器，opencli-adapters#8/#9，依赖登录态）。
-口径：T-1 全天 00:00-24:00（Asia/Shanghai）；hot_posts.include_overnight=true
-时扩展到 [T-1 00:00, 报告时刻]，跨零点条目在报告里标「今晨」。**默认 true**：
-热门榜是实时榜，T-1 白天的帖子到次日早晨基本已跌出榜单（2026-10-17 实测
-严格 T-1 口径 0 候选），隔夜 + 今晨才是热门榜在早报时刻真实能供给的内容。
+口径：**滚动窗口**——只收「抓取时刻往前 window_hours 小时」内发布的帖子
+（默认 24h，Asia/Shanghai）。不按日历日切：几点跑窗口就自动跟到几点，
+早报 8 点跑即「昨早 8 点 → 现在」。跨过零点发布的条目在报告里标「今晨」。
 
 打分（0-100，权重见 config.yaml hot_posts.weights）：
   rank        雪球「热门」榜位次（站点 smart 排序的置信度）
@@ -56,8 +55,7 @@ DEFAULT_CONFIG = {
     'enabled': True,
     'limit': 60,
     'scrolls': 5,
-    'include_overnight': True,
-    'max_age_hours': 48,
+    'window_hours': 24,
     'top_n': 10,
     'freshness_half_life_hours': 36.0,
     'repeat_decay': 0.9,
@@ -222,32 +220,26 @@ def parse_created_at(value) -> datetime | None:
 
 
 def filter_window(items: list[dict], now: datetime, cfg: dict):
-    """T-1 窗口过滤。返回 (kept, dropped_counts)；解析失败的条目直接丢弃。"""
-    day_start = (now - timedelta(days=1)).replace(
-        hour=0,
-        minute=0,
-        second=0,
-        microsecond=0,
-    )
-    day_end = day_start + timedelta(days=1)
-    upper = now if cfg['include_overnight'] else day_end
-    oldest = now - timedelta(hours=cfg['max_age_hours'])
+    """滚动窗口过滤 [now - window_hours, now]。
+
+    返回 (kept, dropped_counts)；解析失败的条目直接丢弃。kept 条目带
+    _created（aware datetime）与 is_overnight（跨零点发布 → 报告标「今晨」）。
+    """
+    window_start = now - timedelta(hours=float(cfg['window_hours']))
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     kept: list[dict] = []
-    dropped = {'no_time': 0, 'out_of_window': 0, 'too_old': 0}
+    dropped = {'no_time': 0, 'out_of_window': 0}
     for item in items:
         created = parse_created_at(item.get('created_at'))
         if created is None:
             dropped['no_time'] += 1
             continue
-        if created < oldest:
-            dropped['too_old'] += 1
-            continue
-        if not (day_start <= created < upper):
+        if not (window_start <= created <= now):
             dropped['out_of_window'] += 1
             continue
         out = dict(item)
         out['_created'] = created
-        out['is_overnight'] = created >= day_end
+        out['is_overnight'] = created >= midnight
         kept.append(out)
     return kept, dropped
 
@@ -403,10 +395,11 @@ def build_report_section(doc: dict) -> list[str]:
     """把 top 文档渲染成日报 markdown 行（插在「文章详情」之前）。"""
     window = doc.get('window') or {}
     lines = ['---', '', '## 🔥 全网热贴 Top 10', '']
-    scope = f"雪球「热门」榜 · 窗口 {window.get('start_date', '')}（T-1）"
-    if doc.get('include_overnight'):
-        scope += ' + 今晨'
-    scope += f" · 候选 {doc.get('candidates', 0)} 条 → 前 {len(doc.get('items') or [])}"
+    scope = (
+        f"雪球「热门」榜 · 最近 {window.get('hours', 24)}h"
+        f"（{window.get('start_label', '')} → {window.get('end_label', '')}）"
+        f" · 候选 {doc.get('candidates', 0)} 条 → 前 {len(doc.get('items') or [])}"
+    )
     lines.append(f"> {scope}")
     lines.append('')
     for i, item in enumerate(doc.get('items') or [], 1):
@@ -484,7 +477,7 @@ def main(argv: list[str] | None = None) -> int:
             candidates.append(item)
         stats['candidates'] = len(candidates)
         if not candidates:
-            raise RuntimeError('T-1 窗口过滤后 0 条候选')
+            raise RuntimeError('滚动窗口过滤后 0 条候选')
 
         watchlist_codes = fetch_watchlist_codes(data_dir, now)
         followed_ids = load_followed_author_ids()
@@ -498,23 +491,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         top_items = select_top(scored, int(cfg['top_n']))
 
-        day_start = (now - timedelta(days=1)).replace(
-            hour=0,
-            minute=0,
-            second=0,
-            microsecond=0,
-        )
+        window_hours = float(cfg['window_hours'])
+        window_start = now - timedelta(hours=window_hours)
         doc = {
             'generated_at': now.isoformat(),
-            'include_overnight': bool(cfg['include_overnight']),
             'window': {
-                'start': day_start.isoformat(),
-                'end': (
-                    now.isoformat()
-                    if cfg['include_overnight']
-                    else (day_start + timedelta(days=1)).isoformat()
-                ),
-                'start_date': day_start.strftime('%Y-%m-%d'),
+                'start': window_start.isoformat(),
+                'end': now.isoformat(),
+                'hours': int(window_hours),
+                'start_label': window_start.strftime('%m-%d %H:%M'),
+                'end_label': now.strftime('%m-%d %H:%M'),
             },
             'candidates': len(candidates),
             'items': top_items,
