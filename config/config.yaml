@@ -16,6 +16,26 @@ storage:
   output_dir: data/         # 输出目录
   format: markdown          # 存储格式
 
+# 全网热门贴（早报「🔥 全网热贴 Top 10」段，scripts/hot_posts.py）
+# 数据源：opencli xueqiu hot（DOM 适配器，opencli-adapters#8/#9）
+hot_posts:
+  enabled: true
+  limit: 30               # 抓取条数上限（--limit）
+  scrolls: 3              # 滚动加载页数（--scrolls，每次约 +8-10 条，上限 5）
+  include_overnight: true   # true=T-1 全天 + 今晨（条目标「今晨」）；热门榜是实时榜，
+                            # T-1 白天帖子次日早晨已跌出榜（10-17 实测严格口径 0 候选）
+  max_age_hours: 48       # 超龄条目直接丢弃（新鲜度兜底）
+  top_n: 10               # 进日报的条数
+  freshness_half_life_hours: 36  # 新鲜度半衰期（小时）
+  repeat_decay: 0.9       # 命中昨日 top10 的连击降权系数
+  weights:                # 打分权重（和为 100）
+    rank: 30              # 雪球热门榜位次
+    freshness: 20         # 新鲜度
+    engagement: 20        # 互动热度（赞+2评+3转，log 归一）
+    watchlist: 15         # 正文命中自选股
+    followed: 10          # 作者在关注列表（accounts.yaml）
+    depth: 5              # 内容深度（长文加分）
+
 # AI 分析配置
 analysis:
   provider: "minimax"           # 默认 provider: minimax / aliyun

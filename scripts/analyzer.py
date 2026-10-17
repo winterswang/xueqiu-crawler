@@ -1227,6 +1227,7 @@ def generate_daily_report(
     output_path: str = None,
     crawl_stats: dict = None,
     model_name: str = None,
+    hot_posts_section: List[str] = None,
 ) -> str:
     """
     生成每日投研分析报告 v2 - 市场分组 + 操作参考
@@ -1234,6 +1235,8 @@ def generate_daily_report(
     Args:
         crawl_stats: 可选，爬取统计（含覆盖率信息）
         model_name: 可选，LLM 模型名（写进报告署名）。不传则走唯一解析入口
+        hot_posts_section: 可选，「全网热贴 Top 10」markdown 行（scripts/hot_posts.py
+            产出）。为 None 时日报不含该段 —— 抓取失败自动降级，不阻塞主流程。
     """
     if not model_name:
         model_name = resolve_model()  # 唯一来源见 scripts/llm_config.py
@@ -1417,6 +1420,12 @@ def generate_daily_report(
             '、'.join(list(stat['topics'])[:3]) if stat['topics'] else '综合资讯'
         )
         lines.append(f"- **{author}**{media_tag}（{stat['count']}篇）：{topics_str}")
+
+    lines.append("")
+
+    # 全网热贴段（scripts/hot_posts.py 产出，失败时为 None，日报自动降级）
+    if hot_posts_section:
+        lines.extend(hot_posts_section)
 
     lines.append("")
 
