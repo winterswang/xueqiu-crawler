@@ -54,8 +54,8 @@ os.environ.setdefault('XUEQIU_CALL_SOURCE', 'xueqiu-crawler:hot_posts')
 
 DEFAULT_CONFIG = {
     'enabled': True,
-    'limit': 30,
-    'scrolls': 3,
+    'limit': 60,
+    'scrolls': 5,
     'include_overnight': True,
     'max_age_hours': 48,
     'top_n': 10,
