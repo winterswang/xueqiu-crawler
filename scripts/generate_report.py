@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from logging_utils import get_logger, log_execution_summary
 from analyzer import ArticleAnalyzer, generate_daily_report
+from hot_posts import build_report_section, load_top_doc
 
 # 风控页判定统一走 xueqiu_analyzer.waf（唯一实现，见 scripts/waf_bridge.py）
 from waf_bridge import is_error_page
@@ -260,12 +261,31 @@ def generate_today_report(
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"读取爬取统计失败: {e}")
 
+    # 「全网热贴 Top 10」段：hot_posts.py 先行落盘 hot_top10.json，这里只读盘装配。
+    # 读不到 / 解析失败都降级为 None（日报无热门段）—— 热贴只是增量内容供给，
+    # 绝不允许它阻塞主报告。
+    hot_section = None
+    try:
+        top_doc = load_top_doc(data_dir)
+        if top_doc:
+            hot_section = build_report_section(top_doc)
+            logger.info(
+                "热门贴段: %d 条（窗口 %s）",
+                len(top_doc.get('items') or []),
+                (top_doc.get('window') or {}).get('start_date', '?'),
+            )
+        else:
+            logger.info("热门贴段: 无可用数据，日报不含该段")
+    except Exception as e:
+        logger.warning(f"热门贴段装配失败（日报降级为无热门段）: {e}")
+
     report = generate_daily_report(
         articles,
         results,
         output_path,
         crawl_stats=crawl_stats,
         model_name=analyzer.model_name,
+        hot_posts_section=hot_section,
     )
 
     # 输出统计

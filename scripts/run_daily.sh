@@ -184,6 +184,12 @@ fi
 
 # === 分析 + 发布阶段（--crawl-only 时跳过） ===
 if [ "$MODE" != "crawl-only" ]; then
+    # 2.5 抓取首页热门贴 + 打分（产出 data/hot_posts/{今天}/hot_top10.json）。
+    # 失败不影响主流程：generate_report 读不到就自动降级为无热门段的日报。
+    echo "[2.5/6] 抓取首页热门贴..." >> "$LOG_FILE"
+    $PYTHON_BIN scripts/hot_posts.py >> "$LOG_FILE" 2>&1 \
+        || echo "热门贴抓取失败（不影响主流程，日报无热门段）" >> "$LOG_FILE"
+
     # 3. 生成分析报告（MINIMAX_API_KEY 从 .env 或环境变量读取）
     echo "[3/6] 生成分析报告..." >> "$LOG_FILE"
     $PYTHON_BIN scripts/generate_report.py --limit 50 >> "$LOG_FILE" 2>&1
