@@ -187,6 +187,36 @@ def test_score_items_depth_uses_fulltext_length():
     assert depth["3"] == pytest.approx(CFG["weights"]["depth"] * 0.25)
 
 
+def test_looks_like_pnl_showoff():
+    # 晒收益 / 晒亏损：命中
+    assert hp.looks_like_pnl_showoff("前前后后在股市里，赚了差不多300万")
+    assert hp.looks_like_pnl_showoff("今年回撤170万，啥也不说了看实盘")
+    assert hp.looks_like_pnl_showoff("账户翻了3倍")
+    # 纯持仓记录：不碰（用户要保留这类）
+    assert not hp.looks_like_pnl_showoff("招商银行：持股22300股，不变，每股成本36.075")
+    # 公司业绩分析：不碰
+    assert not hp.looks_like_pnl_showoff("台积电三季度营收467.2亿美元、同比增长41.2%")
+
+
+def test_score_items_penalizes_pnl_showoff():
+    plain = "行业分析" * 800
+    pnl = "前前后后在股市里，赚了差不多300万。" + "行业分析" * 790
+    items = _windowed(
+        [
+            make_item(1, "2026-10-16T20:00:00+08:00", content=plain),
+            make_item(2, "2026-10-16T20:00:00+08:00", content=pnl),
+        ]
+    )
+
+    scored = hp.score_items(items, [], set(), CFG, NOW, set())
+    by_id = {s["status_id"]: s for s in scored}
+
+    assert by_id["2"]["is_pnl_showoff"] is True
+    assert by_id["1"]["is_pnl_showoff"] is False
+    assert by_id["2"]["breakdown"]["pnl_showoff"] == -CFG["penalties"]["pnl_showoff"]
+    assert by_id["2"]["score"] < by_id["1"]["score"]
+
+
 def test_depth_score_thresholds():
     thresholds = {"deep": 3000, "medium": 1500, "short": 800}
     assert hp._depth_score(5000, thresholds) == 1.0
