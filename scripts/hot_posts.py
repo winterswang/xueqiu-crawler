@@ -465,8 +465,9 @@ def _user_id_from_url(url: str) -> str:
 def hot_item_to_article(item: dict, rank: int) -> dict | None:
     """单条热贴 → analyzer 可消费的 article dict；无效条目返回 None。
 
-    `content` 先是首页摘要（`content_source='excerpt'`），由 generate_report.py
-    在融合后尝试抓全文并改成 `'full'`。`rank` 是 Top N 列表里的 1 起序号。
+    `content` 默认用首页摘要（`content_source='excerpt'`）；若条目已被
+    `enrich_items_with_fulltext` 补过全文（01:00 的 prepare job），直接用全文和
+    真实标题。`rank` 是 Top N 列表里的 1 起序号。
     """
     status_id = str(item.get('status_id') or '').strip()
     text = (item.get('text') or '').strip()
@@ -475,16 +476,18 @@ def hot_item_to_article(item: dict, rank: int) -> dict | None:
 
     author = item.get('author') or '雪球用户'
     url = item.get('url') or ''
+    full_text = str(item.get('content') or '').strip()
+    content = full_text or text
     return {
         'article_id': status_id,
         'user_id': str(item.get('author_id') or '').strip() or _user_id_from_url(url),
-        'title': derive_hot_title(text, author),
+        'title': item.get('title') or derive_hot_title(text, author),
         'author': author,
         'publish_time': item.get('created_at') or '',
-        'content': text,
+        'content': content,
         'filepath': '',
         'source': 'hot',
-        'content_source': 'excerpt',
+        'content_source': 'full' if full_text else 'excerpt',
         'url': url,
         'hot': {
             'rank': rank,
@@ -552,10 +555,126 @@ def merge_hot_items(
         # 用更长的摘要换掉它 —— 否则「有全文」反而让这条被判成无效文章。
         if len(hot_article['content']) > len(existing.get('content') or ''):
             existing['content'] = hot_article['content']
-            existing['content_source'] = 'excerpt'
+            # 用热榜侧的真实来源：01:00 prepare job 抓过全文就是 'full'，
+            # 只有摘要时才是 'excerpt' —— 不能一律标成摘要，否则 LLM 会
+            # 被「这是页面摘要，不要臆造」的提示误导，明明有全文却写「摘要未提供」。
+            existing['content_source'] = hot_article['content_source']
         stats['merged'] += 1
 
     return merged, stats
+
+
+# 全文抓取的总时间预算：正常 10 条约 1-2 分钟，这里只兜住「每条都卡到超时」
+# 这种最坏情况，超时就停手、剩余条目保留摘要，绝不让任务无限期挂住。
+HOT_FULLTEXT_BUDGET_SECONDS = 300.0
+
+
+def _apply_fulltext_result(item: dict, result: dict) -> bool:
+    """把一次抓取结果写回 item；返回是否真的用上了全文。"""
+    content = (result.get('content') or '').strip()
+    if not content:
+        return False
+    # 详情页只渲染出一部分时，「全文」可能比首页摘要还短，
+    # 换过去反而会把这条从可分析打成无效文章。
+    if len(content) <= len(str(item.get('text') or '')):
+        return False
+
+    from title_guard import resolve_title
+
+    item['content'] = content
+    item['content_source'] = 'full'
+    # 详情页没渲染出标题时 document.title 会回落成站点栏目名，必须先过
+    # title_guard；不可用就保留热榜摘要派生的标题。
+    fallback = derive_hot_title(item.get('text') or '', item.get('author') or '')
+    title = resolve_title(result.get('title') or '', fallback)
+    if title:
+        item['title'] = title
+    return True
+
+
+def enrich_items_with_fulltext(
+    items: list[dict],
+    log=None,
+    budget_seconds: float = HOT_FULLTEXT_BUDGET_SECONDS,
+    fetch=None,
+) -> dict:
+    """给热榜条目补抓全文，写回 `item['content']` / `['title']` / `['content_source']`。
+
+    正常由 01:00 的 prepare job（`hot_posts.py --fetch-fulltext`）调用，抓好的
+    正文随 hot_top10.json 一起落盘，08:00 的日报生成只读文件、一个页面请求都不发。
+
+    - 已有 `content` 的条目跳过（幂等，重跑不会重复抓）。
+    - 撞 WAF / 熔断冷却 → **立刻停手**，剩余条目保留首页摘要。绝不重试放大。
+    - `fetch` 可注入（测试用），默认走 `opencli_extractor.get_article_content`。
+
+    Returns:
+        `{attempted, fetched, skipped}` 统计。
+    """
+    log = log or logger  # 参数名用 log，避免遮蔽模块级 logger
+    stats = {'attempted': 0, 'fetched': 0, 'skipped': 0}
+    targets = [
+        item
+        for item in items or []
+        if isinstance(item, dict) and item.get('url') and not item.get('content')
+    ]
+    if not targets:
+        return stats
+
+    if fetch is None:
+        # 局部导入：纯离线场景（无 opencli）不被拖累，测试也能直接 monkeypatch。
+        from opencli_extractor import get_article_content
+
+        def fetch(url):  # noqa: ANN001 - 局部适配，参数只有 url
+            # max_retries=0：一次被拦就是一次请求。重试会把单条放大成 2-3 次导航。
+            return get_article_content(url, max_retries=0)
+
+    deadline = time.monotonic() + budget_seconds
+    for idx, item in enumerate(targets, 1):
+        if time.monotonic() > deadline:
+            log.warning(
+                '热榜正文抓取: 超出 %.0f 秒预算，剩余 %d 条用首页摘要',
+                budget_seconds,
+                len(targets) - idx + 1,
+            )
+            break
+        stats['attempted'] += 1
+        try:
+            result = fetch(item['url'])
+        except (OSError, RuntimeError, ValueError, ImportError) as exc:
+            # opencli 不在 PATH、子进程超时、适配器崩掉。后面的条目大概率同样
+            # 失败，直接停手走摘要兜底。编程错误（KeyError/AttributeError）不吞。
+            log.warning(
+                '热榜正文抓取: %s 抓取异常（%s），剩余条目用首页摘要',
+                item.get('status_id'),
+                exc,
+            )
+            break
+
+        if result.get('cooldown') or result.get('waf_detected'):
+            reason = '熔断冷却' if result.get('cooldown') else 'WAF 拦截'
+            log.warning(
+                '热榜正文抓取: %s，停止后续抓取，剩余 %d 条用首页摘要',
+                reason,
+                len(targets) - idx,
+            )
+            break
+
+        if _apply_fulltext_result(item, result):
+            stats['fetched'] += 1
+        else:
+            log.info(
+                '热榜正文抓取: %s 未用上全文（空正文或比摘要短），保留摘要',
+                item.get('status_id'),
+            )
+            stats['skipped'] += 1
+
+    log.info(
+        '热榜正文抓取: %d/%d 条拿到全文（%d 条保留摘要）',
+        stats['fetched'],
+        stats['attempted'],
+        stats['skipped'],
+    )
+    return stats
 
 
 def _write_json(path: Path, data) -> None:
@@ -570,6 +689,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='抓取并打分雪球首页热门贴')
     parser.add_argument('--data-dir', default='data')
     parser.add_argument('--config', default=None, help='config.yaml 路径')
+    parser.add_argument(
+        '--fetch-fulltext',
+        action='store_true',
+        help='给 top_n 条目抓正文再落盘（01:00 的 prepare job 用）。'
+        '不加则只存首页摘要，08:00 由日报按摘要分析。',
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
@@ -618,6 +743,12 @@ def main(argv: list[str] | None = None) -> int:
             prev_top_ids,
         )
         top_items = select_top(scored, int(cfg['top_n']))
+
+        # 全文抓取只在 01:00 的 prepare job 里做（--fetch-fulltext）：那一轮页面
+        # 请求很少，不会和 08:00 的爬取挤在同一个滚动小时额度里。结果直接写进
+        # hot_top10.json，08:00 的日报生成只读文件、零请求。
+        if args.fetch_fulltext:
+            stats['fulltext'] = enrich_items_with_fulltext(top_items)
 
         window_hours = float(cfg['window_hours'])
         window_start = now - timedelta(hours=window_hours)

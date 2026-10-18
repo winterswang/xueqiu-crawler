@@ -115,6 +115,39 @@ function checkCrawler() {
   }
 }
 
+// 热榜贴：01:00 的 prepare job 负责抓列表 + 全文，08:00 的日报只读文件。
+// 这条断言的意义和「正文是空的」一样 —— 01:00 失败时日报会**静默**少一块
+// （降级为纯自选账号文章），没有任何下游报错。
+function checkHotPosts() {
+  // hot_posts.py 按 Asia/Shanghai 取日期，这里必须用同一时区。
+  const hotDay = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+  const p = join(CRAWLER, `data/hot_posts/${hotDay}/hot_top10.json`);
+  if (!existsSync(p)) {
+    problems.push(`今天没有热榜数据：${p} —— 01:00 的 prepare job 没跑成？`);
+    return;
+  }
+  let doc;
+  try {
+    doc = JSON.parse(readFileSync(p, 'utf8'));
+  } catch (err) {
+    problems.push(`热榜文件损坏：${err.message}`);
+    return;
+  }
+  const items = Array.isArray(doc.items) ? doc.items : [];
+  if (items.length === 0) {
+    problems.push('热榜 top10.json 里没有条目');
+    return;
+  }
+  const withFull = items.filter((it) => it && it.content_source === 'full').length;
+  if (withFull === 0) {
+    problems.push(
+      `热榜 ${items.length} 条全是首页摘要（正文没抓到），日报分析质量会打折`,
+    );
+  } else if (withFull * 2 < items.length) {
+    problems.push(`热榜只有 ${withFull}/${items.length} 条拿到全文`);
+  }
+}
+
 // monitor 健康检查。
 // #46 的落点：source_failures 按「最近一轮 pipeline」窗口算；ok 分支的 detail
 // 里必须带「窗口 ….」时间。注意 warn 分支的文案（N 次失败 → …）本来就没有
@@ -141,6 +174,7 @@ function checkHealth() {
 // 全天汇总：逐个核对所有定时任务的产物。
 function checkEod() {
   checkCrawler();
+  checkHotPosts();
   // 六个 pipeline 日志由 13:00 / 14:00–18:00 六条 cron 各自 tee **覆盖**写入，
   // 所以「今天更新过 + 有 [SUMMARY]」= 今天跑完了。
   for (const name of ['pipeline.log', 'pipeline-g1.log', 'pipeline-g2.log',
@@ -164,8 +198,10 @@ function checkEod() {
   }
 }
 
-if (mode === 'morning') checkCrawler();
-else if (mode === 'health') checkHealth();
+if (mode === 'morning') {
+  checkCrawler();
+  checkHotPosts();
+} else if (mode === 'health') checkHealth();
 else checkEod();
 
 if (complete) process.stdout.write('CINDY_PRECHECK_OK\n');

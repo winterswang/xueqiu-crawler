@@ -184,13 +184,23 @@ fi
 
 # === 分析 + 发布阶段（--crawl-only 时跳过） ===
 if [ "$MODE" != "crawl-only" ]; then
-    # 2.5 抓取首页热门贴 + 打分（产出 data/hot_posts/{今天}/hot_top10.json）。
-    # 必须在 generate_report 之前跑：后者读这份 json，把热榜贴按 ID 去重合并进
-    # 自选账号文章，走同一套 LLM 分析（融合，不再单独成段）。
-    # 失败不影响主流程：generate_report 读不到就自动降级为纯自选账号文章的日报。
-    echo "[2.5/6] 抓取首页热门贴..." >> "$LOG_FILE"
-    $PYTHON_BIN scripts/hot_posts.py >> "$LOG_FILE" 2>&1 \
-        || echo "热门贴抓取失败（不影响主流程，日报只含自选账号文章）" >> "$LOG_FILE"
+    # 2.5 首页热门贴：正常由 01:00 的 prepare job（hermes: xueqiu-hot-posts-prepare）
+    # 提前抓好并落盘 data/hot_posts/{今天}/hot_top10.json（**含全文**）。
+    # 拆开的原因：抓全文会多出约 10 次页面请求，而 08:00 这一轮爬取已占 ~64 次，
+    # 站点额度是每滚动小时 75-85 次 —— 叠在一起就贴墙。01:00 单独跑只有 ~13 次。
+    #
+    # 这里只做兜底：当日文件不存在才现场补抓（且**不抓全文**，避免把请求叠回
+    # 08:00）；失败不影响主流程，日报降级为纯自选账号文章。
+    # 日期必须和 hot_posts.py 的时区一致（它写的是 Asia/Shanghai 的日期），
+    # 否则在非 CST 主机上会去检查「昨天」那份文件。
+    HOT_DOC="data/hot_posts/$(TZ=Asia/Shanghai date +%Y-%m-%d)/hot_top10.json"
+    if [ -f "$HOT_DOC" ]; then
+        echo "[2.5/6] 热榜已由 01:00 job 准备，跳过抓取" >> "$LOG_FILE"
+    else
+        echo "[2.5/6] 热榜缺失，兜底抓取（仅列表，不抓全文）..." >> "$LOG_FILE"
+        $PYTHON_BIN scripts/hot_posts.py >> "$LOG_FILE" 2>&1 \
+            || echo "热榜兜底抓取失败（不影响主流程，日报只含自选账号文章）" >> "$LOG_FILE"
+    fi
 
     # 3. 生成分析报告（MINIMAX_API_KEY 从 .env 或环境变量读取）
     echo "[3/6] 生成分析报告..." >> "$LOG_FILE"

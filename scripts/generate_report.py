@@ -7,7 +7,6 @@
 
 import sys
 import json
-import time
 import yaml
 from datetime import datetime
 from pathlib import Path
@@ -23,13 +22,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from logging_utils import get_logger, log_execution_summary
 from analyzer import ArticleAnalyzer, generate_daily_report
-from hot_posts import load_top_doc, merge_hot_items
+from hot_posts import enrich_items_with_fulltext, load_top_doc, merge_hot_items
 
 # 风控页判定统一走 xueqiu_analyzer.waf（唯一实现，见 scripts/waf_bridge.py）
 from waf_bridge import is_error_page
 
 # 标题可用性：站点栏目标题 / 列表占位符不算标题（见 scripts/title_guard.py）
-from title_guard import is_usable_title, resolve_title
+from title_guard import is_usable_title
 
 
 def _extract_article_body(md_text: str) -> str:
@@ -158,106 +157,13 @@ def get_today_articles(data_dir: str = 'data') -> list:
     return filtered
 
 
-# 热榜正文抓取的总时间预算：正常 10 条约 1-2 分钟，这里只兜住「每条都卡到超时」
-# 这种最坏情况，超时就停手、剩余条目用首页摘要兜底，绝不让日报无限期挂住。
-HOT_FULLTEXT_BUDGET_SECONDS = 300.0
-
-
-def _fetch_hot_fulltext(articles: list[dict], cfg: dict, logger) -> None:
-    """给热榜独有条目补抓全文（原地修改 articles）。
-
-    - 撞 WAF / 处于熔断冷却 → **立刻停手**，剩余条目保留摘要。绝不重试放大：
-      站点正因为被打才开的冷却，继续打只会把一轮小抓取变成风控事件。
-    - `hot_posts.fetch_fulltext=false` 可一键关掉，把当轮页面请求数降回纯爬取水平。
-    """
-    hot_cfg = (cfg or {}).get('hot_posts') or {}
-    if hot_cfg.get('fetch_fulltext', True) is False:
-        logger.info(
-            '热门贴正文抓取: 已关闭（hot_posts.fetch_fulltext=false），用首页摘要'
-        )
-        return
-
-    # 所有热榜条目初始都是 excerpt；已经抓到全文的（content_source='full'）和
-    # 没有任何 URL 的跳过。`both` 回落到摘要时也要补抓，所以不按 source 筛。
-    targets = [
-        a for a in articles if a.get('content_source') == 'excerpt' and a.get('url')
-    ]
-    if not targets:
-        return
-
-    # 局部导入：opencli_extractor 导入期会读 XUEQIU_CALL_SOURCE 等环境，放到这里
-    # 可以保证测试 monkeypatch 生效，也避免纯离线场景（无 opencli）被拖累。
-    from opencli_extractor import get_article_content
-
-    deadline = time.monotonic() + HOT_FULLTEXT_BUDGET_SECONDS
-    fetched = 0
-    for idx, article in enumerate(targets, 1):
-        if time.monotonic() > deadline:
-            logger.warning(
-                '热门贴正文抓取: 超出 %.0f 秒预算，剩余 %d 条用首页摘要',
-                HOT_FULLTEXT_BUDGET_SECONDS,
-                len(targets) - idx + 1,
-            )
-            break
-        try:
-            # max_retries=0：一次被拦就是一次请求。重试会把单条放大成 2-3 次导航，
-            # 而这一轮已经是「爬取 64 次 + 热榜 10 次」贴着站点小时额度在跑。
-            result = get_article_content(article['url'], max_retries=0)
-        except (OSError, RuntimeError, ValueError, ImportError) as exc:
-            # opencli 不在 PATH（FileNotFoundError）、subprocess 超时（OSError 子类）、
-            # 适配器崩掉（RuntimeError）都会从这里冒出来。后面的条目大概率同样
-            # 失败，直接停手走摘要兜底。编程错误（KeyError/AttributeError）不吞。
-            logger.warning(
-                '热门贴正文抓取: %s 抓取异常（%s），剩余条目用首页摘要',
-                article.get('article_id'),
-                exc,
-            )
-            break
-        # get_article_content 自带熔断冷却预检（冷却期一个请求都不发、立即返回）
-        # 与 WAF 确定性信号识别，这里只负责「撞到就停手」。
-        if result.get('cooldown') or result.get('waf_detected'):
-            reason = '熔断冷却' if result.get('cooldown') else 'WAF 拦截'
-            logger.warning(
-                '热门贴正文抓取: %s，停止后续抓取，剩余 %d 条用首页摘要',
-                reason,
-                len(targets) - idx,
-            )
-            break
-
-        content = (result.get('content') or '').strip()
-        if not content:
-            logger.warning(
-                '热门贴正文抓取: %s 未取到正文，用首页摘要', article.get('article_id')
-            )
-            continue
-
-        if len(content) <= len(article.get('content') or ''):
-            # 详情页只渲染出一部分正文时，抓到的「全文」可能比首页摘要还短，
-            # 换过去反而会把这条从可分析打成无效文章。
-            logger.info(
-                '热门贴正文抓取: %s 正文(%d 字)比摘要还短，保留摘要',
-                article.get('article_id'),
-                len(content),
-            )
-            continue
-
-        article['content'] = content
-        article['content_source'] = 'full'
-        # 详情页没渲染出标题时 document.title 会回落成站点栏目名，必须先过
-        # title_guard；不可用就保留热榜摘要派生的标题。
-        title = resolve_title(result.get('title') or '', article.get('title') or '')
-        if title:
-            article['title'] = title
-        fetched += 1
-
-    logger.info('热门贴正文抓取: %d/%d 条拿到全文', fetched, len(targets))
-
-
 def _merge_hot_posts(
     data_dir: str, articles: list[dict], cfg: dict
 ) -> tuple[list[dict], dict]:
-    """读当日热榜，按文章 ID 合并进 articles，并给独有条目抓全文。
+    """读当日热榜，按文章 ID 合并进 articles。
 
+    全文默认由 01:00 的 prepare job 抓好写进 hot_top10.json；这里只在
+    `hot_posts.fetch_fulltext=true`（兜底开关）时补抓缺失的那几条。
     热榜只是增量内容供给：读不到就原样返回，日报降级为纯自选账号文章。
     """
     logger = get_logger()
@@ -266,6 +172,30 @@ def _merge_hot_posts(
     if not isinstance(items, list) or not items:
         logger.info('热门贴融合: 无热榜数据，日报只含自选账号文章')
         return articles, {}
+
+    # 01:00 的 prepare job 正常会把 content 一起写好。缺失时才考虑补抓，
+    # 且**跳过与今日已爬文章重合的条目** —— 合并后它们用已爬到的正文，
+    # 再去抓一次纯属白烧滚动小时的额度。
+    today_ids = {str(a.get('article_id') or '').strip() for a in articles}
+    missing_items = [
+        item
+        for item in items
+        if isinstance(item, dict)
+        and not item.get('content')
+        and str(item.get('status_id') or '').strip() not in today_ids
+    ]
+    if missing_items:
+        if ((cfg or {}).get('hot_posts') or {}).get('fetch_fulltext'):
+            logger.info(
+                '热榜: %d 条缺全文，按 fetch_fulltext=true 现场补抓',
+                len(missing_items),
+            )
+            enrich_items_with_fulltext(missing_items, logger)
+        else:
+            logger.info(
+                '热榜: %d 条没有全文（01:00 prepare job 未抓到），按首页摘要分析',
+                len(missing_items),
+            )
 
     # 「昨天爬过、仍落在 24h 窗口内」的帖子已由 hot_posts.py 在 select_top 之前
     # 剔除（见 load_prior_status_ids），这里只做今日重合条目的合并。
@@ -281,7 +211,6 @@ def _merge_hot_posts(
         logger.info(
             '热门贴融合: 本轮无 ID 重合（若长期为 0，检查 status_id/article_id 口径）'
         )
-    _fetch_hot_fulltext(merged, cfg, logger)
     return merged, stats
 
 
