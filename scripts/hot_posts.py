@@ -40,6 +40,9 @@ from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+# 同目录的 title_guard / opencli_extractor 也要能 import —— 被 tests 以
+# `scripts.hot_posts` 形式导入时，脚本目录不会自动进 sys.path。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import yaml  # noqa: E402
 from xueqiu_analyzer.opencli_call_logger import record_opencli_call  # noqa: E402
@@ -62,6 +65,14 @@ DEFAULT_CONFIG = {
     'top_n': 10,
     'freshness_half_life_hours': 36.0,
     'repeat_decay': 0.9,
+    'prefetch_max': 50,
+    # 抓全文的时间预算。实测约 11 秒/条（限速 + 单次导航），50 条约 9 分钟；
+    # 01:00 没人抢额度，给足 15 分钟，避免「排在后面的条目拿不到全文」
+    # 导致同一批候选里有的按全文、有的按摘要评分（不可比）。
+    'fulltext_budget_seconds': 900.0,
+    # 内容深度分档（按**全文**字数）。全文实测 504-6922、中位 1235，
+    # 旧的 500/200 是按摘要（≤300 字）设计的，用在全文上会 10 条全满分。
+    'depth_chars': {'deep': 3000, 'medium': 1500, 'short': 800},
     'weights': {
         'rank': 30,
         'freshness': 20,
@@ -309,6 +320,20 @@ def _engagement_raw(item: dict) -> int:
     )
 
 
+def _depth_score(text_len: int, thresholds: dict) -> float:
+    """内容深度分档：长文加分、短贴降权（阈值见 config 的 hot_posts.depth_chars）。"""
+    deep = int(thresholds.get('deep', 3000))
+    medium = int(thresholds.get('medium', 1500))
+    short = int(thresholds.get('short', 800))
+    if text_len > deep:
+        return 1.0
+    if text_len > medium:
+        return 0.75
+    if text_len > short:
+        return 0.5
+    return 0.25
+
+
 def score_items(
     items: list[dict],
     watchlist_codes: list[str],
@@ -321,6 +346,7 @@ def score_items(
     watchlist = set(watchlist_codes)
     half_life = float(cfg['freshness_half_life_hours'])
     weights = cfg['weights']
+    depth_chars = cfg.get('depth_chars') or DEFAULT_CONFIG['depth_chars']
     total_n = max(1, len(items))
 
     engagement_raws = [_engagement_raw(item) for item in items]
@@ -342,14 +368,16 @@ def score_items(
             if eng_denom > 0
             else 0.0
         )
-        symbols = extract_symbols(item.get('text', ''))
+        # 有全文就用全文。摘要只有 133-179 字，自选股命中率和内容深度都测不准：
+        # 实测今天 top10 里就有 2 条的自选股只出现在全文（NVDA/SKHY、SH600900）。
+        body = item.get('content') or item.get('text', '')
+        symbols = extract_symbols(body)
         hits = [s for s in symbols if s in watchlist]
         watchlist_score = 1.0 if hits else 0.0
         is_followed = str(item.get('author_id', '')) in followed_ids
-        text_len = len(item.get('text', ''))
-        depth = 1.0 if text_len > 500 else (0.6 if text_len > 200 else 0.2)
+        depth = _depth_score(len(body), depth_chars)
         # 回复贴（「回复@xxx」开头）对早报读者是残缺上下文，不管多长都按短贴降权
-        if (item.get('text') or '').lstrip().startswith('回复@'):
+        if (body or '').lstrip().startswith('回复@'):
             depth = min(depth, 0.2)
 
         breakdown = {
@@ -564,9 +592,10 @@ def merge_hot_items(
     return merged, stats
 
 
-# 全文抓取的总时间预算：正常 10 条约 1-2 分钟，这里只兜住「每条都卡到超时」
-# 这种最坏情况，超时就停手、剩余条目保留摘要，绝不让任务无限期挂住。
-HOT_FULLTEXT_BUDGET_SECONDS = 300.0
+# 全文抓取的总时间预算。实测约 11 秒/条（限速 + 单次导航），50 条约 9 分钟；
+# 01:00 没人抢额度，给足 15 分钟。预算截断会让排在后面的条目按摘要评分，
+# 与拿到全文的条目不可比 —— 所以宁可给宽。
+HOT_FULLTEXT_BUDGET_SECONDS = 900.0
 
 
 def _apply_fulltext_result(item: dict, result: dict) -> bool:
@@ -677,6 +706,23 @@ def enrich_items_with_fulltext(
     return stats
 
 
+def _candidate_summary(item: dict) -> dict:
+    """候选池复盘用：留下名次依据，不存正文（体积大）和原始 DOM 摘要。"""
+    return {
+        'status_id': item.get('status_id'),
+        'author': item.get('author'),
+        'title': item.get('title') or '',
+        'url': item.get('url'),
+        'created_at': item.get('created_at'),
+        'score': item.get('score'),
+        'breakdown': item.get('breakdown'),
+        'content_source': item.get('content_source', 'excerpt'),
+        'content_len': len(item.get('content') or item.get('text') or ''),
+        'symbols_hit': item.get('symbols_hit') or [],
+        'followed': item.get('followed'),
+    }
+
+
 def _write_json(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -732,6 +778,23 @@ def main(argv: list[str] | None = None) -> int:
         if not candidates:
             raise RuntimeError('滚动窗口过滤后 0 条候选')
 
+        # 全文抓取只在 01:00 的 prepare job 里做（--fetch-fulltext）：那一轮页面
+        # 请求很少，不会和 08:00 的爬取挤在同一个滚动小时额度里。结果直接写进
+        # hot_top10.json，08:00 的日报生成只读文件、零请求。
+        #
+        # **必须在打分之前抓**：排序里的「自选股命中」(15 分) 和「内容深度」
+        # (5 分) 都要看全文。摘要只有 133-179 字，拿它排出来的名次会明显偏
+        # —— 实测 2026-10-18 的 top10 里就有 2 条自选股只出现在全文里。
+        if args.fetch_fulltext:
+            prefetch_max = int(cfg.get('prefetch_max') or 0)
+            targets = candidates[:prefetch_max] if prefetch_max > 0 else candidates
+            stats['fulltext'] = enrich_items_with_fulltext(
+                targets,
+                budget_seconds=float(
+                    cfg.get('fulltext_budget_seconds', HOT_FULLTEXT_BUDGET_SECONDS)
+                ),
+            )
+
         watchlist_codes = fetch_watchlist_codes(data_dir, now)
         followed_ids = load_followed_author_ids()
         scored = score_items(
@@ -743,12 +806,6 @@ def main(argv: list[str] | None = None) -> int:
             prev_top_ids,
         )
         top_items = select_top(scored, int(cfg['top_n']))
-
-        # 全文抓取只在 01:00 的 prepare job 里做（--fetch-fulltext）：那一轮页面
-        # 请求很少，不会和 08:00 的爬取挤在同一个滚动小时额度里。结果直接写进
-        # hot_top10.json，08:00 的日报生成只读文件、零请求。
-        if args.fetch_fulltext:
-            stats['fulltext'] = enrich_items_with_fulltext(top_items)
 
         window_hours = float(cfg['window_hours'])
         window_start = now - timedelta(hours=window_hours)
@@ -765,6 +822,18 @@ def main(argv: list[str] | None = None) -> int:
             'items': top_items,
         }
         _write_json(out_dir / 'hot_top10.json', doc)
+        # 全部候选的名次依据：回答「第 12 名为什么没进榜」不用重跑一遍。
+        _write_json(
+            out_dir / 'hot_candidates.json',
+            {
+                'generated_at': now.isoformat(),
+                'candidates': len(scored),
+                'items': [
+                    _candidate_summary(item)
+                    for item in sorted(scored, key=lambda x: -x['score'])
+                ],
+            },
+        )
         stats.update(
             ok=True,
             top_n=len(top_items),

@@ -150,6 +150,51 @@ def test_score_items_reply_post_gets_depth_penalty():
     )
 
 
+def test_score_items_uses_fulltext_for_watchlist():
+    """摘要里没有自选股、全文里有的，必须给分 —— 实测今天 top10 里有 2 条这种情况。"""
+    items = _windowed(
+        [
+            make_item(
+                1,
+                "2026-10-16T20:00:00+08:00",
+                text="聊聊行情" + "摘要" * 60,
+                content="正文详述 $英伟达(NVDA)$ " + "全文" * 500,
+            ),
+        ]
+    )
+
+    scored = hp.score_items(items, ["NVDA"], set(), CFG, NOW, set())
+
+    assert scored[0]["symbols_hit"] == ["NVDA"]
+    assert scored[0]["breakdown"]["watchlist"] == CFG["weights"]["watchlist"]
+
+
+def test_score_items_depth_uses_fulltext_length():
+    """深度分档按全文长度（摘要永远够不到高档位）。"""
+    items = _windowed(
+        [
+            make_item(1, "2026-10-16T20:00:00+08:00", content="字" * 4000),
+            make_item(2, "2026-10-16T20:00:00+08:00", content="字" * 1000),
+            make_item(3, "2026-10-16T20:00:00+08:00", content="字" * 200),
+        ]
+    )
+
+    scored = hp.score_items(items, [], set(), CFG, NOW, set())
+    depth = {s["status_id"]: s["breakdown"]["depth"] for s in scored}
+
+    assert depth["1"] == pytest.approx(CFG["weights"]["depth"] * 1.0)
+    assert depth["2"] == pytest.approx(CFG["weights"]["depth"] * 0.5)
+    assert depth["3"] == pytest.approx(CFG["weights"]["depth"] * 0.25)
+
+
+def test_depth_score_thresholds():
+    thresholds = {"deep": 3000, "medium": 1500, "short": 800}
+    assert hp._depth_score(5000, thresholds) == 1.0
+    assert hp._depth_score(2000, thresholds) == 0.75
+    assert hp._depth_score(1000, thresholds) == 0.5
+    assert hp._depth_score(100, thresholds) == 0.25
+
+
 def test_score_items_repeat_decay():
     items = _windowed(
         [
