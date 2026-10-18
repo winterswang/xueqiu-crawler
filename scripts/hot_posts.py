@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""全网热门贴抓取 + 打分 —— 早报「🔥 全网热贴 Top 10」数据源.
+"""全网热门贴抓取 + 打分 —— 早报融合分析的热贴数据源.
+
+产出 data/hot_posts/<date>/hot_top10.json，由 generate_report.py 读入后与自选账号
+文章按文章 ID 去重合并，走同一套 LLM 分析与优先级分桶（不再单独成段）。
 
 数据源：opencli xueqiu hot（DOM 适配器，opencli-adapters#8/#9，依赖登录态）。
 口径：**滚动窗口**——只收「抓取时刻往前 window_hours 小时」内发布的帖子
@@ -16,7 +19,7 @@
 连续霸榜降权：命中昨日 top10 的条目总分 × repeat_decay。
 
 失败契约：任何一步失败都落盘 data/.last_hot_stats.json（ok=false）并以非 0
-退出 —— run_daily.sh 里 `|| echo` 兜底，日报无热门段继续出，绝不阻塞主流程
+退出 —— run_daily.sh 里 `|| echo` 兜底，日报降级为纯自选账号文章，绝不阻塞主流程
 （同 sync_raw_articles_to_ima.py 的模式）。20:30 巡检可读该 stats 文件断言。
 """
 
@@ -256,19 +259,26 @@ def extract_symbols(text: str) -> list[str]:
     return symbols
 
 
-def load_known_status_ids(data_dir: Path) -> set[str]:
-    """index.json 里已爬文章 id —— 与「必读文章」去重用。"""
+def load_prior_status_ids(data_dir: Path, today: str) -> set[str]:
+    """index.json 里**今天之前**已爬过的文章 id。
+
+    这些帖子不该进今天的候选池：`get_today_articles` 只收 crawl_time 是今天的
+    条目，所以它们不会出现在 articles 里去重，只会被当成「热榜独有」重复分析
+    一遍。必须在 select_top **之前**剔除，否则它们白占 top_n 名额，
+    排名更靠后的新贴反而进不来。
+    """
     path = data_dir / 'index.json'
     try:
         index = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return set()
     ids: set[str] = set()
     for key, info in (index.get('articles') or {}).items():
-        if isinstance(info, dict):
-            ids.add(str(info.get('article_id') or key))
-        else:
-            ids.add(str(key))
+        if not isinstance(info, dict):
+            continue
+        if str(info.get('crawl_time') or '').startswith(today):
+            continue  # 今天爬的，留给日报侧按 ID 合并（要挂 🔥 标记）
+        ids.add(str(info.get('article_id') or key).strip())
     return ids
 
 
@@ -371,6 +381,28 @@ def score_items(
     return scored
 
 
+def filter_candidates(
+    items: list[dict], prior_ids: set[str] | None = None
+) -> list[dict]:
+    """候选池过滤：去掉今天之前爬过的、以及摘要过短的帖子。
+
+    必须在 `score_items` / `select_top` **之前**做 —— 否则这些条目会白占
+    `top_n` 名额，排名更靠后的合格新贴反而进不了日报。
+    """
+    prior = prior_ids or set()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in items:
+        status_id = str(item.get('status_id', ''))
+        if not status_id or status_id in seen or status_id in prior:
+            continue
+        if len(str(item.get('text') or '').strip()) < HOT_MIN_TEXT_CHARS:
+            continue
+        seen.add(status_id)
+        out.append(item)
+    return out
+
+
 def select_top(scored: list[dict], top_n: int) -> list[dict]:
     return sorted(scored, key=lambda item: -item['score'])[:top_n]
 
@@ -378,50 +410,152 @@ def select_top(scored: list[dict], top_n: int) -> list[dict]:
 def load_top_doc(
     data_dir: Path | str = 'data', report_date: str | None = None
 ) -> dict | None:
-    """读当天已落盘的 hot_top10.json（generate_report 装配日报段用）。
+    """读当天已落盘的 hot_top10.json（generate_report 融合进日报用）。
 
-    没有 / 损坏都返回 None —— 调用方按「无热门段」降级，不抛异常。
+    没有 / 损坏都返回 None —— 调用方按「无热榜数据」降级，不抛异常。
     """
     date_str = report_date or datetime.now(TZ).strftime('%Y-%m-%d')
     path = Path(data_dir) / 'hot_posts' / date_str / 'hot_top10.json'
     try:
         doc = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     return doc if isinstance(doc, dict) and doc.get('items') else None
 
 
-def build_report_section(doc: dict) -> list[str]:
-    """把 top 文档渲染成日报 markdown 行（插在「文章详情」之前）。"""
-    window = doc.get('window') or {}
-    lines = ['---', '', '## 🔥 全网热贴 Top 10', '']
-    scope = (
-        f"雪球「热门」榜 · 最近 {window.get('hours', 24)}h"
-        f"（{window.get('start_label', '')} → {window.get('end_label', '')}）"
-        f" · 候选 {doc.get('candidates', 0)} 条 → 前 {len(doc.get('items') or [])}"
-    )
-    lines.append(f"> {scope}")
-    lines.append('')
-    for i, item in enumerate(doc.get('items') or [], 1):
-        full_text = item.get('text') or ''
-        excerpt = full_text.replace('\n', ' ')[:80]
-        ellipsis = '…' if len(full_text) > 80 else ''
-        tags = []
-        if item.get('is_overnight'):
-            tags.append('今晨')
-        if item.get('followed'):
-            tags.append('关注作者')
-        if item.get('symbols_hit'):
-            tags.append('⭐' + '/'.join(item['symbols_hit'][:3]))
-        tag_str = f" ｜ {' · '.join(tags)}" if tags else ''
-        lines.append(
-            f"{i}. **{item.get('author', '未知')}**：{excerpt}{ellipsis}"
-            f"（👍{item.get('likes', 0)} 💬{item.get('comments', 0)}"
-            f" 🔁{item.get('forwards', 0)} · {item.get('score', 0)}分）{tag_str}"
-        )
-        lines.append(f"   <{item.get('url', '')}>")
-        lines.append('')
-    return lines
+_REPLY_PREFIX_RE = re.compile(r'^回复@[^:：]+[:：]\s*')
+_URL_USER_RE = re.compile(r'xueqiu\.com/(\d+)/')
+
+# 摘要短于此长度就丢——与 analyzer.check_article_quality 对热贴/摘要的 80 字门槛
+# 对齐：否则 40-79 字的帖子会白占一个 top_n 名额，然后作为「无效文章」进日报。
+HOT_MIN_TEXT_CHARS = 80
+HOT_TITLE_MAX_CHARS = 40
+
+
+def _as_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _as_float(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def derive_hot_title(text: str, author: str = '') -> str:
+    """从热榜摘要派生一个可读标题：折叠空白 → 去「回复@xxx:」前缀 → 截 40 字。"""
+    flat = re.sub(r'\s+', ' ', text or '').strip()
+    flat = _REPLY_PREFIX_RE.sub('', flat).strip()
+    if len(flat) > HOT_TITLE_MAX_CHARS:
+        flat = flat[:HOT_TITLE_MAX_CHARS] + '…'
+    if len(flat) < 3:
+        return f"{author or '雪球用户'}的热门贴"
+    return flat
+
+
+def _user_id_from_url(url: str) -> str:
+    match = _URL_USER_RE.search(url or '')
+    return match.group(1) if match else ''
+
+
+def hot_item_to_article(item: dict, rank: int) -> dict | None:
+    """单条热贴 → analyzer 可消费的 article dict；无效条目返回 None。
+
+    `content` 先是首页摘要（`content_source='excerpt'`），由 generate_report.py
+    在融合后尝试抓全文并改成 `'full'`。`rank` 是 Top N 列表里的 1 起序号。
+    """
+    status_id = str(item.get('status_id') or '').strip()
+    text = (item.get('text') or '').strip()
+    if not status_id or len(text) < HOT_MIN_TEXT_CHARS:
+        return None
+
+    author = item.get('author') or '雪球用户'
+    url = item.get('url') or ''
+    return {
+        'article_id': status_id,
+        'user_id': str(item.get('author_id') or '').strip() or _user_id_from_url(url),
+        'title': derive_hot_title(text, author),
+        'author': author,
+        'publish_time': item.get('created_at') or '',
+        'content': text,
+        'filepath': '',
+        'source': 'hot',
+        'content_source': 'excerpt',
+        'url': url,
+        'hot': {
+            'rank': rank,
+            'site_rank': item.get('rank'),
+            'score': round(_as_float(item.get('score')), 1),
+            'likes': _as_int(item.get('likes')),
+            'comments': _as_int(item.get('comments')),
+            'forwards': _as_int(item.get('forwards')),
+            'is_overnight': bool(item.get('is_overnight')),
+            'followed': bool(item.get('followed')),
+            'symbols_hit': list(item.get('symbols_hit') or []),
+        },
+    }
+
+
+def merge_hot_items(
+    articles: list[dict], hot_items: list[dict]
+) -> tuple[list[dict], dict]:
+    """把热榜条目按 `article_id == status_id` 合并进 articles。
+
+    重合条目只挂 `hot` 元数据（保留已爬到的全文，`source` 改 `both`），
+    热榜独有条目追加在末尾。返回 `(merged, stats)`，
+    `stats = {hot_total, merged, hot_only, skipped}`。
+    """
+    stats = {'hot_total': 0, 'merged': 0, 'hot_only': 0, 'skipped': 0}
+    merged = list(articles)
+    by_id: dict[str, dict] = {}
+    for article in merged:
+        key = str(article.get('article_id') or '').strip()
+        if key:
+            by_id[key] = article
+
+    seen: set[str] = set()
+    for rank, item in enumerate(hot_items or [], 1):
+        stats['hot_total'] += 1
+        if not isinstance(item, dict):
+            stats['skipped'] += 1
+            continue
+        status_id = str(item.get('status_id') or '').strip()
+        if not status_id or status_id in seen:
+            stats['skipped'] += 1
+            continue
+        seen.add(status_id)
+
+        hot_article = hot_item_to_article(item, rank)
+        if hot_article is None:
+            stats['skipped'] += 1
+            continue
+
+        existing = by_id.get(status_id)
+        if existing is None:
+            merged.append(hot_article)
+            by_id[status_id] = hot_article
+            stats['hot_only'] += 1
+            continue
+
+        if existing.get('hot'):
+            stats['skipped'] += 1
+            continue
+        existing['source'] = 'both'
+        existing['hot'] = hot_article['hot']
+        existing.setdefault('content_source', 'full')
+        existing.setdefault('url', hot_article['url'])
+        # 已爬正文可能比热榜摘要还短（详情页只渲染出一部分、纯图片帖），这时
+        # 用更长的摘要换掉它 —— 否则「有全文」反而让这条被判成无效文章。
+        if len(hot_article['content']) > len(existing.get('content') or ''):
+            existing['content'] = hot_article['content']
+            existing['content_source'] = 'excerpt'
+        stats['merged'] += 1
+
+    return merged, stats
 
 
 def _write_json(path: Path, data) -> None:
@@ -463,18 +597,12 @@ def main(argv: list[str] | None = None) -> int:
             {'fetched': raw_items, 'kept': kept, 'dropped': dropped},
         )
 
-        known_ids = load_known_status_ids(data_dir)
+        # 只剔除「今天之前已爬过」的帖子：它们不在今日 articles 里，留着只会被
+        # 当成热榜独有重复分析。今天爬过的必须保留 —— 日报侧要按 ID 合并并挂
+        # 🔥 热度标记。两个过滤都放在 select_top **之前**，免得短贴/旧贴白占名额。
+        prior_ids = load_prior_status_ids(data_dir, now.strftime('%Y-%m-%d'))
         prev_top_ids = load_prev_top_status_ids(data_dir, now)
-        seen: set[str] = set()
-        candidates: list[dict] = []
-        for item in kept:
-            status_id = str(item.get('status_id', ''))
-            if not status_id or status_id in seen:
-                continue
-            seen.add(status_id)
-            if status_id in known_ids:
-                continue
-            candidates.append(item)
+        candidates = filter_candidates(kept, prior_ids)
         stats['candidates'] = len(candidates)
         if not candidates:
             raise RuntimeError('滚动窗口过滤后 0 条候选')
@@ -522,7 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:
         stats['error'] = str(exc)[:300]
-        logger.warning('热门贴环节失败（日报将无热门段）: %s', exc)
+        logger.warning('热门贴环节失败（日报降级为纯自选账号文章）: %s', exc)
         return 1
     finally:
         stats['elapsed_ms'] = int((time.time() - started) * 1000)

@@ -1,9 +1,10 @@
-"""hot_posts 的窗口过滤 / 打分 / 日报段装配 —— 纯函数单测，不碰网络。
+"""hot_posts 的窗口过滤 / 打分 / 融合映射 —— 纯函数单测，不碰网络。
 
-背景：2026-10-17 早报新增「🔥 全网热贴 Top 10」（opencli-adapters#8 的
-DOM 适配器供数）。抓取本身在 scripts/hot_posts.py 里走 opencli 子进程，
-这里只测纯逻辑：T-1 窗口口径、$股票$ 提取、打分权重与霸榜降权、
-日报段渲染。适配器字段契约见 opencli-adapters CONTRACT。
+背景：2026-10-17 早报新增热榜贴（opencli-adapters#8 的 DOM 适配器供数），
+2026-10-18 起不再单独成段，而是按文章 ID 去重合并进自选账号文章、走同一套
+LLM 分析。抓取本身在 scripts/hot_posts.py 里走 opencli 子进程，这里只测纯逻辑：
+T-1 窗口口径、$股票$ 提取、打分权重与霸榜降权、热贴 → article 映射与合并。
+适配器字段契约见 opencli-adapters CONTRACT。
 """
 
 from __future__ import annotations
@@ -179,7 +180,7 @@ def test_select_top_orders_by_score():
     assert [s["status_id"] for s in top] == ["b", "c"]
 
 
-# ── 落盘 / 读取 / 日报段 ──────────────────────────────────────────────
+# ── 落盘 / 读取 ───────────────────────────────────────────────────────
 
 
 def test_load_top_doc_roundtrip(tmp_path):
@@ -221,36 +222,175 @@ def test_load_top_doc_roundtrip(tmp_path):
     assert hp.load_top_doc(tmp_path, report_date="1999-01-01") is None
 
 
-def test_build_report_section_renders_tags_and_overnight():
-    doc = {
-        "window": {
-            "hours": 24,
-            "start_label": "10-16 08:00",
-            "end_label": "10-17 08:00",
-        },
-        "candidates": 23,
-        "items": [
-            {
-                "status_id": "1",
-                "author": "烽煙縱橫",
-                "text": "科技深度调整的原因\n最近科技股又是一波下跌",
-                "url": "https://xueqiu.com/1/2",
-                "likes": 165,
-                "comments": 143,
-                "forwards": 3,
-                "score": 71.3,
-                "is_overnight": True,
-                "followed": False,
-                "symbols_hit": ["SH601318"],
-                "breakdown": {},
-            }
-        ],
+# ── 热贴 → article 映射 / 与自有文章去重合并 ────────────────────────────
+
+
+def test_derive_hot_title_collapses_whitespace_and_truncates():
+    title = hp.derive_hot_title("科技深度调整的原因\n\n  最近科技股  又是一波下跌")
+    assert "\n" not in title
+    assert "  " not in title
+    long_title = hp.derive_hot_title("字" * 100)
+    assert len(long_title) == hp.HOT_TITLE_MAX_CHARS + 1
+    assert long_title.endswith("…")
+
+
+def test_derive_hot_title_strips_reply_prefix():
+    assert not hp.derive_hot_title("回复@某人: 我看好这只票").startswith("回复@")
+    assert "我看好这只票" in hp.derive_hot_title("回复@某人: 我看好这只票")
+
+
+def test_derive_hot_title_falls_back_for_blank_text():
+    assert hp.derive_hot_title("", "张三") == "张三的热门贴"
+
+
+def test_hot_item_to_article_maps_all_fields():
+    item = make_item(
+        "412750388",
+        "2026-10-17T23:41:00+08:00",
+        author="股海行道",
+        author_id="2740510444",
+        text="这波牛市教会我一个道理，" + "反复复盘才发现" * 20,
+        likes=59,
+        comments=49,
+        forwards=0,
+        score=76.03,
+        is_overnight=True,
+        followed=True,
+        symbols_hit=["SH601899"],
+    )
+    article = hp.hot_item_to_article(item, 3)
+
+    assert article is not None
+    assert article["article_id"] == "412750388"
+    assert article["user_id"] == "2740510444"
+    assert article["source"] == "hot"
+    assert article["content_source"] == "excerpt"
+    assert article["content"] == item["text"]
+    assert article["publish_time"] == "2026-10-17T23:41:00+08:00"
+    assert article["url"] == "https://xueqiu.com/111/412750388"
+    assert article["hot"] == {
+        "rank": 3,
+        "site_rank": None,
+        "score": 76.0,
+        "likes": 59,
+        "comments": 49,
+        "forwards": 0,
+        "is_overnight": True,
+        "followed": True,
+        "symbols_hit": ["SH601899"],
     }
-    lines = hp.build_report_section(doc)
-    text = "\n".join(lines)
-    assert "## 🔥 全网热贴 Top 10" in text
-    assert "最近 24h" in text
-    assert "10-16 08:00 → 10-17 08:00" in text
-    assert "今晨" in text
-    assert "烽煙縱橫" in text and "SH601318" in text
-    assert "https://xueqiu.com/1/2" in text
+
+
+def test_hot_item_to_article_parses_user_id_from_url():
+    item = make_item("7", "2026-10-17T10:00:00+08:00", author_id="")
+    item["url"] = "https://xueqiu.com/9508203182/7"
+    assert hp.hot_item_to_article(item, 1)["user_id"] == "9508203182"
+
+
+def test_hot_item_to_article_rejects_blank_status_or_short_text():
+    short = make_item("1", "2026-10-17T10:00:00+08:00", text="太短了" * 3)
+    assert hp.hot_item_to_article(short, 1) is None
+    no_id = make_item("", "2026-10-17T10:00:00+08:00")
+    assert hp.hot_item_to_article(no_id, 1) is None
+
+
+def test_merge_hot_items_merges_by_article_id_and_keeps_fulltext():
+    full_text = "全文" * 500
+    articles = [
+        {"article_id": "123", "title": "自有标题", "content": full_text},
+        {"article_id": "456", "title": "另一篇", "content": full_text},
+    ]
+    hot_items = [make_item("123", "2026-10-17T10:00:00+08:00", text="摘要" * 60)]
+
+    merged, stats = hp.merge_hot_items(articles, hot_items)
+
+    assert len(merged) == 2
+    assert merged[0]["source"] == "both"
+    assert merged[0]["content"] == full_text  # 摘要绝不覆盖已爬到的全文
+    assert merged[0]["hot"]["rank"] == 1
+    assert merged[0]["url"] == "https://xueqiu.com/111/123"
+    assert stats == {"hot_total": 1, "merged": 1, "hot_only": 0, "skipped": 0}
+
+
+def test_merge_hot_items_appends_hot_only_in_order():
+    articles = [
+        {"article_id": "a", "title": "a", "content": "x" * 400},
+        {"article_id": "b", "title": "b", "content": "x" * 400},
+    ]
+    hot_items = [
+        make_item("c", "2026-10-17T10:00:00+08:00"),
+        make_item("a", "2026-10-17T09:00:00+08:00"),
+    ]
+
+    merged, stats = hp.merge_hot_items(articles, hot_items)
+
+    assert [a["article_id"] for a in merged] == ["a", "b", "c"]
+    assert merged[0]["source"] == "both"
+    assert merged[2]["source"] == "hot"
+    assert merged[2]["hot"]["rank"] == 1
+    assert stats == {"hot_total": 2, "merged": 1, "hot_only": 1, "skipped": 0}
+
+
+def test_merge_hot_items_skips_duplicate_hot_status():
+    hot_items = [
+        make_item("1", "2026-10-17T10:00:00+08:00"),
+        make_item("1", "2026-10-17T10:00:00+08:00"),
+    ]
+    merged, stats = hp.merge_hot_items([], hot_items)
+    assert len(merged) == 1
+    assert stats["hot_only"] == 1
+    assert stats["skipped"] == 1
+
+
+def test_merge_hot_items_prefers_longer_text_when_crawled_body_shorter():
+    """详情页只渲染出一部分的短正文，不该压过更长的热榜摘要。"""
+    articles = [{'article_id': '1', 'title': 't', 'content': '短' * 50}]
+    hot_items = [make_item('1', '2026-10-17T10:00:00+08:00', text='长' * 150)]
+
+    merged, _ = hp.merge_hot_items(articles, hot_items)
+
+    assert len(merged[0]['content']) == 150
+    assert merged[0]['content_source'] == 'excerpt'
+
+
+def test_merge_hot_items_skips_non_dict_items():
+    merged, stats = hp.merge_hot_items([], ['not-a-dict'])
+    assert merged == []
+    assert stats['skipped'] == 1
+
+
+def test_filter_candidates_drops_short_and_prior():
+    items = [
+        make_item("1", "2026-10-17T10:00:00+08:00"),
+        make_item("2", "2026-10-17T10:00:00+08:00", text="太短" * 10),
+        make_item("3", "2026-10-17T10:00:00+08:00"),
+        make_item("1", "2026-10-17T10:00:00+08:00"),
+    ]
+
+    out = hp.filter_candidates(items, {"3"})
+
+    assert [item["status_id"] for item in out] == ["1"]
+
+
+def test_load_prior_status_ids_excludes_today(tmp_path):
+    (tmp_path / 'index.json').write_text(
+        json.dumps(
+            {
+                "articles": {
+                    "a": {"article_id": "1", "crawl_time": "2026-10-17T08:00:00"},
+                    "b": {"article_id": "2", "crawl_time": "2026-10-18T08:00:00"},
+                    "c": {"article_id": "3"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert hp.load_prior_status_ids(tmp_path, "2026-10-18") == {"1", "3"}
+
+
+def test_merge_hot_items_empty_hot_returns_original():
+    articles = [{"article_id": "a", "title": "a", "content": "x" * 400}]
+    merged, stats = hp.merge_hot_items(articles, [])
+    assert merged == articles
+    assert stats == {"hot_total": 0, "merged": 0, "hot_only": 0, "skipped": 0}
