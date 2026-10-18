@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import opencli_extractor
 
-# 插件层限速器的「单次可能的最长等待」是 max_delay_s + long_pause_max_s + 取锁轮询
-# 上限 —— 它的等待发生在 **opencli 子进程内部**，会被 subprocess.run 的墙钟一并计时，
+# 插件层限速器的「单次可能的最长等待」是 max_delay_s + long_pause_max_s + 窗口有界
+# 等待（window_wait_max_s，opencli-adapters#4）+ 取锁轮询上限 —— 它的等待发生在 **opencli 子进程内部**，会被 subprocess.run 的墙钟一并计时，
 # 所以调用方的 timeout 必须大于「这个等待 + 单次真实执行」，否则长停一命中就必然被
 # 误杀（2026-10-12 实测：30s 上限下 2/18 账号失败）。
 #
@@ -67,16 +67,25 @@ def _plugin_const_ms(name: str) -> float:
     return float(found.group(1).replace("_", "")) / 1000.0
 
 
-def _plugin_worst_wait_seconds(site: str) -> float:
-    """单次调用在插件层可能被等待的最长时间 = 取锁轮询上限 + 预留等待上限.
+def _plugin_number_or(site: str, key: str, default: float) -> float:
+    """宽容版：键没声明时返回 default（滚动窗口参数只在对额度有意的键上声明）。"""
+    policy = _plugin_policy_js(site)
+    found = re.search(rf"\b{re.escape(key)}\s*:\s*([0-9.]+)", policy)
+    return float(found.group(1)) if found else default
 
-    取锁那一段与预留等待是**相加**的（先拿到锁才预留、才 sleep），所以不能漏 ——
+
+def _plugin_worst_wait_seconds(site: str) -> float:
+    """单次调用在插件层可能被等待的最长时间 = 取锁轮询上限 + 预留等待上限 + 窗口有界等待.
+
+    取锁那一段、预留等待与滚动小时额度的有界等待（opencli-adapters#4 的
+    `window_wait_max_s`）是**相加**的（先拿到锁才预留、才 sleep），所以不能漏 ——
     漏了会给出「120 够用」的虚假保证。
     """
     return (
         _plugin_const_ms("LOCK_WAIT_MS")
         + _plugin_number(site, "max_delay_s")
         + _plugin_number(site, "long_pause_max_s")
+        + _plugin_number_or(site, "window_wait_max_s", 0)
     )
 
 

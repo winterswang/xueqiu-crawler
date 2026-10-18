@@ -51,11 +51,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: winterswang/opencli-adapters
-          # 2026-10-17 升 ref：af0f0b7 新增 xueqiu hot —— 首页「热门」贴 DOM 适配器
-          # （opencli-adapters#8/#9，早报热贴段的数据源；插件命令 6 → 7 条）。
-          # 上一轮：2026-10-13 6ed6c56 移除了 xiaohongshu search 覆盖（7 → 6 条）。
+          # 2026-10-18 升 ref：4b61421 滚动小时额度（opencli-adapters#10）——
+          # 守卫公式纳入 window_wait_max_s 需要新版 XUEQIU_PACE；#7 熔断状态目录认
+          # OPENCLI_STATE_DIR；#11 CI 补 npm ci + 声明 @jackwener/opencli 依赖。
+          # 上一轮：2026-10-17 af0f0b7 新增 xueqiu hot（插件命令 6 → 7 条）。
           # 必须与 test_opencli_command_names.py 的条数断言同步，否则守卫会读到旧 ref 而红。
-          ref: af0f0b70c1688c09138abb152ab179a6b29e3037
+          ref: c68d16622285e569e811304276af6447860248d5
           path: _deps/opencli-adapters
 
       - uses: actions/setup-python@v5
