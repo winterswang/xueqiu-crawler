@@ -624,12 +624,14 @@ class ArticleAnalyzer:
             # 计算优先级和评分详情
             scores = calculate_priority_score(article, analysis)
             priority = classify_priority(article, analysis)
+            priority, demoted = _demote_if_pnl_showoff(priority, analysis)
 
             return {
                 'quality_passed': True,
                 'issues': [],
                 'priority': priority,
                 'scores': scores,
+                'demoted': demoted,
                 'analysis': analysis,
             }
         except Exception as e:
@@ -709,6 +711,7 @@ class ArticleAnalyzer:
     "category": "行业分析 | 公司研究 | 投资理念 | 宏观经济 | 其他",
     "topic_category": "科技/AI/互联网 | 新能源/制造业 | 医药/医疗 | 消费/零售 | 金融/地产/宏观 | 海外市场 | IPO/新股 | 市场策略/投资理念 | 商业航天 | 其他",
     "sentiment": "bullish | bearish | neutral",
+    "is_pnl_showoff": false,
     "related_stocks": ["股票名称(code)", "..."],
     "core_points": [
         "核心观点1：内容要饱满，不少于50字，完整呈现论点",
@@ -726,6 +729,9 @@ class ArticleAnalyzer:
 ```
 
 ## 写作要求
+- is_pnl_showoff：文章主体若是「晒自己账户赚了多少 / 亏了多少」（累计收益、回撤金额、
+  几年赚了几十万几百万、账户翻几倍），置 true；只是记录持仓变化、或分析公司财报业绩的，
+  一律 false
 - core_points 要有观点、有数据支撑，不是复述原文
 - deep_analysis 的五个维度要充分利用文章中已有的信息，不要泛泛而谈
 - 语言简洁专业，直接切入要点
@@ -1188,6 +1194,7 @@ class ArticleAnalyzer:
             'category': '其他',
             'topic_category': '其他',
             'related_stocks': [],
+            'is_pnl_showoff': False,
             'core_points': ['[解析异常] LLM 返回不完整，请查看原文'],
             'deep_analysis': {
                 'business_quality': 'LLM 返回不完整，无法生成深度分析',
@@ -1240,6 +1247,28 @@ class ArticleAnalyzer:
 
 
 # ============ 报告生成器 ============
+
+
+def _demote_if_pnl_showoff(
+    priority: str, analysis: dict | None
+) -> tuple[str, str | None]:
+    """晒收益/账户流水 → 直接压到最低优先级（产品口径，2026-10-18 用户要求）。
+
+    不靠分数自然落位：一篇 3500 字的流水贴内容分并不低，会顺着分数进「值得关注」。
+    返回 `(priority, demoted_reason)`。
+    """
+    if _is_truthy((analysis or {}).get('is_pnl_showoff')):
+        return 'reference', 'pnl_showoff'
+    return priority, None
+
+
+def _is_truthy(value) -> bool:
+    """LLM 偶尔把布尔写成字符串，统一收一下。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {'true', 'yes', '1', '是'}
+    return bool(value)
 
 
 def _article_url(article: dict) -> str:
@@ -1771,6 +1800,8 @@ def _format_article_brief(index: int, article: dict, result: dict | None) -> Lis
 
     if not result.get('quality_passed'):
         lines.append(f"   - ⚠️ {', '.join(result.get('issues', []))}")
+    elif result.get('demoted') == 'pnl_showoff':
+        lines.append('   - ⚠️ 晒收益/账户流水，已降到参考')
 
     return lines
 

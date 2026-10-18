@@ -421,6 +421,37 @@ def test_quality_gate_does_not_relax_both():
     assert passed is False
 
 
+def test_pnl_showoff_forces_reference():
+    """晒收益/账户流水 → 直接降到参考，不靠分数自然落位。"""
+    assert an._demote_if_pnl_showoff('must_read', {'is_pnl_showoff': True}) == (
+        'reference',
+        'pnl_showoff',
+    )
+    # LLM 把布尔写成字符串也要认
+    assert an._demote_if_pnl_showoff('worth_reading', {'is_pnl_showoff': 'true'})[
+        0
+    ] == ('reference')
+    assert an._demote_if_pnl_showoff('must_read', {'is_pnl_showoff': False}) == (
+        'must_read',
+        None,
+    )
+    assert an._demote_if_pnl_showoff('must_read', {}) == ('must_read', None)
+
+
+def test_prompt_asks_for_pnl_flag():
+    analyzer = an.ArticleAnalyzer.__new__(an.ArticleAnalyzer)
+    analyzer.max_content_chars = 8000
+    prompt = analyzer._build_prompt(_article('1'))
+    assert '"is_pnl_showoff"' in prompt
+    assert '晒自己账户' in prompt
+
+
+def test_brief_renders_pnl_demotion_note():
+    result = dict(_result(), demoted='pnl_showoff')
+    text = an.generate_daily_report([_article('1')], [result])
+    assert '晒收益/账户流水，已降到参考' in text
+
+
 def test_prompt_warns_about_excerpt_only():
     analyzer = an.ArticleAnalyzer.__new__(an.ArticleAnalyzer)  # 跳过 __init__
     analyzer.max_content_chars = 8000

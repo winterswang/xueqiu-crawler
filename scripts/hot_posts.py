@@ -66,6 +66,8 @@ DEFAULT_CONFIG = {
     'freshness_half_life_hours': 36.0,
     'repeat_decay': 0.9,
     'prefetch_max': 50,
+    # 权重表之外的一次性扣分（负分）
+    'penalties': {'pnl_showoff': 20},
     # 抓全文的时间预算。实测约 11 秒/条（限速 + 单次导航），50 条约 9 分钟；
     # 01:00 没人抢额度，给足 15 分钟，避免「排在后面的条目拿不到全文」
     # 导致同一批候选里有的按全文、有的按摘要评分（不可比）。
@@ -85,6 +87,23 @@ DEFAULT_CONFIG = {
 
 # $中国平安(SH601318)$ / $腾讯控股(00700)$ → 括号里的代码
 _SYMBOL_RE = re.compile(r'\$[^$\s][^$]*?\(([A-Z]{0,4}[0-9A-Z.]+)\)\$')
+
+# 「晒收益 / 账户流水」特征：只认**具体金额**（万）或明确的盈亏表述。
+# 产品口径（用户 2026-10-18）：这类内容对投研没用，热榜里降到最低。
+# 必须避开两类误伤：
+#   - 公司业绩分析（「台积电三季度营收 467.2 亿美元、同比增长 41.2%」）
+#   - 纯持仓记录（「招商银行：持股 22300 股，不变，每股成本 36.075」）
+_PNL_PATTERNS = (
+    re.compile(r'(赚|挣|盈利)了?[^。！？\n]{0,12}?\d+(?:\.\d+)?\s*万'),
+    re.compile(r'(累计|总共|一共)[^。！？\n]{0,8}?(收益|盈利|赚)[^。！？\n]{0,10}?\d'),
+    re.compile(r'(回撤|亏了|赔了)[^。！？\n]{0,8}?\d+(?:\.\d+)?\s*万'),
+    re.compile(r'账户[^。！？\n]{0,12}?(翻倍|翻了[一两三四五六七八九十几\d]+倍)'),
+)
+
+
+def looks_like_pnl_showoff(text: str) -> bool:
+    """是不是「晒自己账户赚了多少/亏了多少」类帖子（用于热榜降权）。"""
+    return any(pattern.search(text or '') for pattern in _PNL_PATTERNS)
 
 
 def load_hot_config(config_path: Path | None = None) -> dict:
@@ -347,6 +366,7 @@ def score_items(
     half_life = float(cfg['freshness_half_life_hours'])
     weights = cfg['weights']
     depth_chars = cfg.get('depth_chars') or DEFAULT_CONFIG['depth_chars']
+    penalties = cfg.get('penalties') or DEFAULT_CONFIG['penalties']
     total_n = max(1, len(items))
 
     engagement_raws = [_engagement_raw(item) for item in items]
@@ -391,6 +411,10 @@ def score_items(
             ),
             'depth': round(weights['depth'] * depth, 2),
         }
+        # 晒收益/账户流水：权重表之外直接扣分（用户明确不感兴趣）
+        is_pnl = looks_like_pnl_showoff(body)
+        if is_pnl:
+            breakdown['pnl_showoff'] = -abs(float(penalties.get('pnl_showoff', 20)))
         score = sum(breakdown.values())
         if str(item.get('status_id', '')) in prev_top_ids:
             score *= float(cfg['repeat_decay'])
@@ -401,6 +425,7 @@ def score_items(
             {
                 'symbols_hit': hits,
                 'followed': is_followed,
+                'is_pnl_showoff': is_pnl,
                 'score': round(score, 1),
                 'breakdown': breakdown,
             }
@@ -720,6 +745,7 @@ def _candidate_summary(item: dict) -> dict:
         'content_len': len(item.get('content') or item.get('text') or ''),
         'symbols_hit': item.get('symbols_hit') or [],
         'followed': item.get('followed'),
+        'is_pnl_showoff': bool(item.get('is_pnl_showoff')),
     }
 
 
