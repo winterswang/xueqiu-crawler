@@ -16,15 +16,20 @@ storage:
   output_dir: data/         # 输出目录
   format: markdown          # 存储格式
 
-# 全网热门贴（早报「🔥 全网热贴 Top 10」段，scripts/hot_posts.py）
+# 全网热门贴（日报融合分析的热贴数据源，scripts/hot_posts.py）
 # 数据源：opencli xueqiu hot（DOM 适配器，opencli-adapters#8/#9）
+# 产出 data/hot_posts/<date>/hot_top10.json，由 generate_report.py 读入后与自选账号
+# 文章按文章 ID 去重合并，走同一套 LLM 分析（不再单独成段）。
 hot_posts:
   enabled: true
   limit: 60               # 抓取条数上限（--limit）；热门榜当天供给多少取多少
   scrolls: 5              # 滚动加载页数（--scrolls，每次约 +8-10 条，适配器上限 5）
   window_hours: 24         # 滚动时间窗（小时）：只收「抓取时刻往前 N 小时」内发布的帖，
                            # 几点跑窗口自动跟到几点；跨零点发布的条目标「今晨」
-  top_n: 10               # 进日报的条数
+  top_n: 10               # 进日报的条数（融合后最多新增这么多次分析）
+  fetch_fulltext: true    # 热榜贴抓全文再分析。首页摘要只有 143-199 字，不够分析门槛；
+                          # 撞 WAF / 熔断冷却时自动停手并降级为摘要。
+                          # 临时关掉可把当轮页面请求数降回纯爬取水平（约 64 次/小时）。
   freshness_half_life_hours: 36  # 新鲜度半衰期（小时）
   repeat_decay: 0.9       # 命中昨日 top10 的连击降权系数
   weights:                # 打分权重（和为 100）
