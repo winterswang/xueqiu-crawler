@@ -65,6 +65,20 @@ def _fixture(tmp_path: Path, bodies: dict[str, str]) -> Path:
     )
     for aid, text in bodies.items():
         (root / "data" / "u1" / f"{aid}.md").write_text(text, encoding="utf-8")
+    # 热榜贴由 01:00 的 prepare job 落盘（含全文）；没有它 morning 巡检会报。
+    hot_dir = root / "data" / "hot_posts" / TODAY
+    hot_dir.mkdir(parents=True)
+    (hot_dir / "hot_top10.json").write_text(
+        json.dumps(
+            {
+                "items": [
+                    {"status_id": "h1", "content_source": "full", "content": "全文"},
+                    {"status_id": "h2", "content_source": "full", "content": "全文"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     return root
 
 
@@ -102,6 +116,31 @@ def test_empty_body_is_reported(tmp_path):
     assert "今天有 1 篇正文是空的" in out
     assert "a2" in out
     assert "a1" not in out.split("正文是空的")[1]
+
+
+def test_missing_hot_posts_is_reported(tmp_path):
+    """01:00 的 prepare job 没跑成时，日报会**静默**少一块 —— 必须叫出来。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    (root / "data" / "hot_posts" / TODAY / "hot_top10.json").unlink()
+
+    code, out = _run(root)
+
+    assert code == 0
+    assert "没有热榜数据" in out
+
+
+def test_hot_posts_without_fulltext_is_reported(tmp_path):
+    """热榜只有首页摘要（正文没抓到）时分析质量会打折，也要报。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    (root / "data" / "hot_posts" / TODAY / "hot_top10.json").write_text(
+        json.dumps({"items": [{"status_id": "h1", "content_source": "excerpt"}]}),
+        encoding="utf-8",
+    )
+
+    code, out = _run(root)
+
+    assert code == 0
+    assert "全是首页摘要" in out
 
 
 def test_missing_body_file_is_not_double_reported(tmp_path):

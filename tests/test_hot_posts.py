@@ -353,6 +353,24 @@ def test_merge_hot_items_prefers_longer_text_when_crawled_body_shorter():
     assert merged[0]['content_source'] == 'excerpt'
 
 
+def test_merge_keeps_full_source_when_hot_side_has_fulltext():
+    """热榜侧已有全文时，替换后不能标成 excerpt（否则 LLM 会被误导成「只有摘要」）。"""
+    articles = [{'article_id': '1', 'title': 't', 'content': '短' * 50}]
+    hot_items = [
+        make_item(
+            '1',
+            '2026-10-17T10:00:00+08:00',
+            content='全文' * 200,
+            content_source='full',
+        )
+    ]
+
+    merged, _ = hp.merge_hot_items(articles, hot_items)
+
+    assert merged[0]['content'] == '全文' * 200
+    assert merged[0]['content_source'] == 'full'
+
+
 def test_merge_hot_items_skips_non_dict_items():
     merged, stats = hp.merge_hot_items([], ['not-a-dict'])
     assert merged == []
@@ -370,6 +388,108 @@ def test_filter_candidates_drops_short_and_prior():
     out = hp.filter_candidates(items, {"3"})
 
     assert [item["status_id"] for item in out] == ["1"]
+
+
+# ── 01:00 prepare job：抓全文并写回 item ────────────────────────────────
+
+
+def _enrich(items, fetch):
+    return hp.enrich_items_with_fulltext(items, fetch=fetch)
+
+
+def test_enrich_writes_fulltext_and_title():
+    items = [make_item("1", "2026-10-17T10:00:00+08:00")]
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        return {"url": url, "title": "真实标题", "content": "全文" * 300}
+
+    stats = _enrich(items, fetch)
+
+    assert stats == {"attempted": 1, "fetched": 1, "skipped": 0}
+    assert calls == ["https://xueqiu.com/111/1"]
+    assert items[0]["content_source"] == "full"
+    assert items[0]["content"] == "全文" * 300
+    assert items[0]["title"] == "真实标题"
+
+
+def test_enrich_skips_items_already_has_content():
+    items = [make_item("1", "2026-10-17T10:00:00+08:00", content="已抓好的全文")]
+
+    def fetch(url):  # pragma: no cover - 不该被调用
+        raise AssertionError("已有全文的条目不该重复抓")
+
+    stats = _enrich(items, fetch)
+
+    assert stats == {"attempted": 0, "fetched": 0, "skipped": 0}
+
+
+@pytest.mark.parametrize("mode", ["waf", "cooldown"])
+def test_enrich_stops_on_waf_or_cooldown(mode):
+    items = [
+        make_item("1", "2026-10-17T10:00:00+08:00"),
+        make_item("2", "2026-10-17T10:00:00+08:00"),
+    ]
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if mode == "waf":
+            return {"url": url, "title": "", "content": "", "waf_detected": True}
+        return {"url": url, "title": "", "content": "", "cooldown": True}
+
+    stats = _enrich(items, fetch)
+
+    assert len(calls) == 1, "撞墙/冷却后必须停手，不能逐条继续打站点"
+    assert stats["fetched"] == 0
+    assert all("content" not in item for item in items)
+
+
+def test_enrich_keeps_excerpt_when_body_shorter():
+    items = [make_item("1", "2026-10-17T10:00:00+08:00", text="摘要" * 100)]
+
+    def fetch(url):
+        return {"url": url, "title": "", "content": "只有一小段" * 2}
+
+    stats = _enrich(items, fetch)
+
+    assert stats["skipped"] == 1
+    assert "content" not in items[0]
+
+
+def test_enrich_keeps_derived_title_when_site_chrome():
+    items = [make_item("1", "2026-10-17T10:00:00+08:00")]
+
+    def fetch(url):
+        return {
+            "url": url,
+            "title": "雪球-聪明的投资者都在这里",
+            "content": "全文" * 300,
+        }
+
+    _enrich(items, fetch)
+
+    assert items[0]["content_source"] == "full"
+    assert items[0]["title"].startswith("正文")
+
+
+def test_enrich_survives_fetch_exception():
+    items = [
+        make_item("1", "2026-10-17T10:00:00+08:00"),
+        make_item("2", "2026-10-17T10:00:00+08:00"),
+    ]
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        raise FileNotFoundError("opencli: command not found")
+
+    stats = _enrich(items, fetch)
+
+    assert len(calls) == 1
+    assert stats["fetched"] == 0
+    assert all("content" not in item for item in items)
 
 
 def test_load_prior_status_ids_excludes_today(tmp_path):

@@ -64,8 +64,8 @@ def _write_index(data_dir: Path, rows: list[tuple[str, str, str, Path]]) -> None
     )
 
 
-def _hot_item(status_id: str, rank: int = 1, author: str = '热榜作者') -> dict:
-    return {
+def _hot_item(status_id: str, rank: int = 1, author: str = '热榜作者', **extra) -> dict:
+    item = {
         'status_id': status_id,
         'author': author,
         'author_id': '',
@@ -81,6 +81,20 @@ def _hot_item(status_id: str, rank: int = 1, author: str = '热榜作者') -> di
         'followed': False,
         'symbols_hit': [],
     }
+    item.update(extra)
+    return item
+
+
+def _prepared_hot_item(status_id: str, rank: int = 1, **extra) -> dict:
+    """模拟 01:00 prepare job 的产物：全文 + 真实标题已写进 item。"""
+    return _hot_item(
+        status_id,
+        rank,
+        content='抓到的完整正文。' * 40,
+        content_source='full',
+        title=f'真实标题{status_id}',
+        **extra,
+    )
 
 
 def _write_hot(data_dir: Path, items: list[dict], raw: str | None = None) -> None:
@@ -139,30 +153,13 @@ def fake_analyzer(monkeypatch):
 
 
 @pytest.fixture
-def fake_fetch(monkeypatch):
-    """替换全文抓取：默认返回全文，调用次数可断言。"""
-    calls: list[str] = []
-    state = {'mode': 'ok', 'content': '抓到的完整正文。' * 40, 'title': '真实标题'}
+def no_fetch(monkeypatch):
+    """默认配置下 08:00 不该发任何页面请求 —— 全文由 01:00 的 job 准备好。"""
 
-    def _fetch(url, max_retries=2):
-        calls.append(url)
-        if state['mode'] == 'waf':
-            return {'url': url, 'title': '', 'content': '', 'waf_detected': True}
-        if state['mode'] == 'cooldown':
-            return {'url': url, 'title': '', 'content': '', 'cooldown': True}
-        if state['mode'] == 'empty':
-            return {'url': url, 'title': '', 'content': '', 'waf_detected': False}
-        return {
-            'url': url,
-            'title': state['title'],
-            'content': state['content'],
-            'waf_detected': False,
-        }
+    def _boom(*args, **kwargs):
+        raise AssertionError('08:00 生成日报时不该抓正文（fetch_fulltext 默认 false）')
 
-    import opencli_extractor
-
-    monkeypatch.setattr(opencli_extractor, 'get_article_content', _fetch)
-    return calls, state
+    monkeypatch.setattr(gr, 'enrich_items_with_fulltext', _boom)
 
 
 def _data_dir(tmp_path: Path) -> Path:
@@ -183,12 +180,15 @@ def _run(data_dir: Path, **kwargs):
 
 
 def test_hot_items_merged_before_analysis_and_deduped(
-    tmp_path, fake_analyzer, fake_fetch
+    tmp_path, fake_analyzer, no_fetch
 ):
     data_dir = _data_dir(tmp_path)
     path = _write_article(data_dir, '111', '123', '自有账号文章')
     _write_index(data_dir, [('111', '123', '自有账号文章', path)])
-    _write_hot(data_dir, [_hot_item('123', 1), _hot_item('999', 2)])
+    _write_hot(
+        data_dir,
+        [_prepared_hot_item('123', 1), _prepared_hot_item('999', 2)],
+    )
 
     _run(data_dir)
 
@@ -203,56 +203,30 @@ def test_hot_items_merged_before_analysis_and_deduped(
     assert hot_only['content_source'] == 'full'
 
 
-def test_duplicate_hot_item_is_not_refetched(tmp_path, fake_analyzer, fake_fetch):
-    calls, _ = fake_fetch
+def test_prepared_fulltext_is_used_without_fetching(tmp_path, fake_analyzer, no_fetch):
+    """01:00 已把全文写进 hot_top10.json —— 08:00 一个请求都不该发。"""
     data_dir = _data_dir(tmp_path)
     path = _write_article(data_dir, '111', '123', '自有账号文章')
     _write_index(data_dir, [('111', '123', '自有账号文章', path)])
-    _write_hot(data_dir, [_hot_item('123', 1), _hot_item('999', 2)])
-
-    _run(data_dir)
-
-    assert len(calls) == 1, '重合条目已有全文，不该再发一次页面请求'
-    assert calls[0].endswith('/999')
-
-
-def test_fulltext_replaces_excerpt_and_title(tmp_path, fake_analyzer, fake_fetch):
-    _, state = fake_fetch
-    data_dir = _data_dir(tmp_path)
-    path = _write_article(data_dir, '111', '123', '自有账号文章')
-    _write_index(data_dir, [('111', '123', '自有账号文章', path)])
-    _write_hot(data_dir, [_hot_item('999', 1)])
-
-    _run(data_dir)
-
-    hot_only = next(
-        a for a in fake_analyzer.instances[-1].seen if a['article_id'] == '999'
+    _write_hot(
+        data_dir,
+        [_prepared_hot_item('123', 1), _prepared_hot_item('999', 2)],
     )
-    assert hot_only['content'] == state['content']
-    assert hot_only['title'] == state['title']
-
-
-@pytest.mark.parametrize('mode', ['waf', 'cooldown', 'empty'])
-def test_fetch_failure_falls_back_to_excerpt(tmp_path, fake_analyzer, fake_fetch, mode):
-    calls, state = fake_fetch
-    state['mode'] = mode
-    data_dir = _data_dir(tmp_path)
-    path = _write_article(data_dir, '111', '123', '自有账号文章')
-    _write_index(data_dir, [('111', '123', '自有账号文章', path)])
-    _write_hot(data_dir, [_hot_item('999', 1), _hot_item('1000', 2)])
 
     _run(data_dir)
 
     seen = fake_analyzer.instances[-1].seen
-    assert len(seen) == 3, '抓不到全文也要继续分析，不能整批丢掉'
-    for article in seen:
-        if article.get('source') == 'hot':
-            assert article['content_source'] == 'excerpt'
-    if mode in ('waf', 'cooldown'):
-        assert len(calls) == 1, '撞墙/冷却后必须停手，不能逐条继续打站点'
+    hot_only = next(a for a in seen if a['article_id'] == '999')
+    assert hot_only['content_source'] == 'full'
+    assert hot_only['content'].startswith('抓到的完整正文')
+    assert hot_only['title'] == '真实标题999'
+    # 重合条目保留自选账号爬到的全文，不被热榜版本覆盖
+    identical = next(a for a in seen if a['article_id'] == '123')
+    assert identical['source'] == 'both'
+    assert len(identical['content']) > 200
 
 
-def test_limit_applies_only_to_account_articles(tmp_path, fake_analyzer, fake_fetch):
+def test_limit_applies_only_to_account_articles(tmp_path, fake_analyzer, no_fetch):
     data_dir = _data_dir(tmp_path)
     rows = []
     for article_id in ('1', '2', '3'):
@@ -459,14 +433,18 @@ def test_prompt_warns_about_excerpt_only():
 # ── 代码评审发现的边界 ──────────────────────────────────────────────────
 
 
-def test_fetch_exception_does_not_break_report(tmp_path, fake_analyzer, monkeypatch):
-    """opencli 不在 PATH / 子进程超时 → 必须降级，不能让整份日报零交付。"""
-    import opencli_extractor
+def test_enrich_failure_when_enabled_does_not_break_report(
+    tmp_path, fake_analyzer, monkeypatch
+):
+    """兜底开关打开、但补抓炸了 → 只降级为纯自选账号日报，不能零交付。"""
+    monkeypatch.setattr(
+        gr.yaml, 'safe_load', lambda _text: {'hot_posts': {'fetch_fulltext': True}}
+    )
 
-    def _boom(url, max_retries=2):
-        raise FileNotFoundError('opencli: command not found')
+    def _boom(*args, **kwargs):
+        raise RuntimeError('opencli crashed')
 
-    monkeypatch.setattr(opencli_extractor, 'get_article_content', _boom)
+    monkeypatch.setattr(gr, 'enrich_items_with_fulltext', _boom)
     data_dir = _data_dir(tmp_path)
     path = _write_article(data_dir, '111', '123', '自有账号文章')
     _write_index(data_dir, [('111', '123', '自有账号文章', path)])
@@ -474,41 +452,8 @@ def test_fetch_exception_does_not_break_report(tmp_path, fake_analyzer, monkeypa
 
     report, out = _run(data_dir)
 
-    assert out.exists(), '抓取异常也不能让当天日报消失'
+    assert out.exists(), '补抓异常也不能让当天日报消失'
     assert '价值投资日报' in report
-    hot = next(a for a in fake_analyzer.instances[-1].seen if a.get('source') == 'hot')
-    assert hot['content_source'] == 'excerpt'
-
-
-def test_unusable_fetched_title_keeps_derived(tmp_path, fake_analyzer, fake_fetch):
-    _, state = fake_fetch
-    state['title'] = '雪球-聪明的投资者都在这里'  # 详情页没渲染出标题时的回落值
-    data_dir = _data_dir(tmp_path)
-    path = _write_article(data_dir, '111', '123', '自有账号文章')
-    _write_index(data_dir, [('111', '123', '自有账号文章', path)])
-    _write_hot(data_dir, [_hot_item('999', 1)])
-
-    _run(data_dir)
-
-    hot = next(a for a in fake_analyzer.instances[-1].seen if a.get('source') == 'hot')
-    assert '雪球-聪明的投资者都在这里' not in hot['title']
-    assert hot['title'].startswith('热榜首页摘要')
-
-
-def test_shorter_fetched_body_keeps_excerpt(tmp_path, fake_analyzer, fake_fetch):
-    """详情页只渲染出一小段时，不能用更短的「全文」把可分析的摘要换掉。"""
-    _, state = fake_fetch
-    state['content'] = '只有一小段' * 2  # 10 字，比 140 字的摘要短
-    data_dir = _data_dir(tmp_path)
-    path = _write_article(data_dir, '111', '123', '自有账号文章')
-    _write_index(data_dir, [('111', '123', '自有账号文章', path)])
-    _write_hot(data_dir, [_hot_item('999', 1)])
-
-    _run(data_dir)
-
-    hot = next(a for a in fake_analyzer.instances[-1].seen if a.get('source') == 'hot')
-    assert hot['content_source'] == 'excerpt'
-    assert len(hot['content']) == 140
 
 
 def test_overview_accounts_for_skipped_hot_items():
