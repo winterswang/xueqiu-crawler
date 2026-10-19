@@ -679,6 +679,9 @@ def test_main_fetches_watchlist_before_fulltext_burst(monkeypatch, tmp_path):
     def fake_enrich(
         items, log=None, budget_seconds=0.0, fetch=None, interval_seconds=0.0
     ):
+        # 顺手钉死配置透传：main() 改了 cfg.get 的键名/删掉透传，这里立刻红
+        assert budget_seconds == CFG["fulltext_budget_seconds"]
+        assert interval_seconds == CFG["fulltext_interval_seconds"]
         order.append("fulltext")
         return {"attempted": len(items), "fetched": len(items), "skipped": 0}
 

@@ -71,9 +71,9 @@ DEFAULT_CONFIG = {
     # 抓全文的时间预算。给足 15 分钟，避免「排在后面的条目拿不到全文」
     # 导致同一批候选里有的按全文、有的按摘要评分（不可比）。
     'fulltext_budget_seconds': 900.0,
-    # 相邻详情页抓取的最小间隔（秒），0 = 不额外限速。设 15 的理由见
+    # 相邻详情页抓取的最小间隔（秒）。默认即安全值，理由见
     # HOT_FULLTEXT_INTERVAL_SECONDS 的注释（详情页令牌桶，5 篇/分必撞墙）。
-    'fulltext_interval_seconds': 0.0,
+    'fulltext_interval_seconds': 15.0,
     # 内容深度分档（按**全文**字数）。全文实测 504-6922、中位 1235，
     # 旧的 500/200 是按摘要（≤300 字）设计的，用在全文上会 10 条全满分。
     'depth_chars': {'deep': 3000, 'medium': 1500, 'short': 800},
@@ -521,7 +521,7 @@ def hot_item_to_article(item: dict, rank: int) -> dict | None:
     """单条热贴 → analyzer 可消费的 article dict；无效条目返回 None。
 
     `content` 默认用首页摘要（`content_source='excerpt'`）；若条目已被
-    `enrich_items_with_fulltext` 补过全文（01:00 的 prepare job），直接用全文和
+    `enrich_items_with_fulltext` 补过全文（prepare job），直接用全文和
     真实标题。`rank` 是 Top N 列表里的 1 起序号。
     """
     status_id = str(item.get('status_id') or '').strip()
@@ -610,7 +610,7 @@ def merge_hot_items(
         # 用更长的摘要换掉它 —— 否则「有全文」反而让这条被判成无效文章。
         if len(hot_article['content']) > len(existing.get('content') or ''):
             existing['content'] = hot_article['content']
-            # 用热榜侧的真实来源：01:00 prepare job 抓过全文就是 'full'，
+            # 用热榜侧的真实来源：prepare job 抓过全文就是 'full'，
             # 只有摘要时才是 'excerpt' —— 不能一律标成摘要，否则 LLM 会
             # 被「这是页面摘要，不要臆造」的提示误导，明明有全文却写「摘要未提供」。
             existing['content_source'] = hot_article['content_source']
@@ -624,12 +624,16 @@ def merge_hot_items(
 # 注意：若调大 fulltext_interval_seconds，这里要同步够用（15s/条 × 48 条 ≈ 12 分钟）。
 HOT_FULLTEXT_BUDGET_SECONDS = 900.0
 
-# 相邻两次详情页抓取的最小间隔（秒），0 = 不额外限速（只靠插件限速器）。
+# 相邻两次详情页抓取的最小间隔（秒）。安全默认值（非 0）：配置缺失/不可读时
+# load_hot_config 会回落到这里，不能回落成「不限速」的连发。
 # 站点风控对详情页是令牌桶：实测容量 ≈32 篇、每分钟回 1 个，即「一轮能过的
 # 篇数 ≈ 32 + 本轮耗时(分钟)」。单次导航 ~9s、插件预留 6-9s 全被导航吃掉，
 # 5 篇/分的连发会在第 42 篇左右撞墙（2026-10-19 01:00 与 09:19 两次实测一致）。
-# 拉到 15s ≈ 4 篇/分，45 条约 11 分钟，预算内能过线。
-HOT_FULLTEXT_INTERVAL_SECONDS = 0.0
+# 15s（≈4.3 篇/分）按模型只把撞墙点推迟到第 ~43 篇 —— 45-50 条的候选池仍会
+# 撞；真正兜底的是 main() 的「watchlist 先行 + enrich 内部停手照常落盘」，
+# 撞墙代价从「整轮丢弃」降为「尾部几条保留摘要」。要完全过线需 ≥18s（45 条）
+# 或 ≥22s（50 条），或把 prefetch_max 降到 ≤40 —— 先按 15s 观察实际撞点。
+HOT_FULLTEXT_INTERVAL_SECONDS = 15.0
 
 
 def _apply_fulltext_result(item: dict, result: dict) -> bool:
@@ -785,7 +789,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         '--fetch-fulltext',
         action='store_true',
-        help='给 top_n 条目抓正文再落盘（01:00 的 prepare job 用）。'
+        help='给 top_n 条目抓正文再落盘（06:00 的 prepare job 用）。'
         '不加则只存首页摘要，08:00 由日报按摘要分析。',
     )
     args = parser.parse_args(argv)
