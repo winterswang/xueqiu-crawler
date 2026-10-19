@@ -184,10 +184,11 @@ fi
 
 # === 分析 + 发布阶段（--crawl-only 时跳过） ===
 if [ "$MODE" != "crawl-only" ]; then
-    # 2.5 首页热门贴：正常由 01:00 的 prepare job（hermes: xueqiu-hot-posts-prepare）
+    # 2.5 首页热门贴：正常由 06:00 的 prepare job（hermes: xueqiu-hot-posts-prepare）
     # 提前抓好并落盘 data/hot_posts/{今天}/hot_top10.json（**含全文**）。
-    # 拆开的原因：抓全文会多出约 10 次页面请求，而 08:00 这一轮爬取已占 ~64 次，
-    # 站点额度是每滚动小时 75-85 次 —— 叠在一起就贴墙。01:00 单独跑只有 ~13 次。
+    # 拆开的原因：抓全文会多出 40+ 次详情页请求（站点风控对详情页是令牌桶，
+    # 见 hot_posts.py 的 HOT_FULLTEXT_INTERVAL_SECONDS 注释），而 08:00 这一轮
+    # 爬取已占 40+ 篇详情页 —— 叠在同一个滚动小时里必撞墙。
     #
     # 这里只做兜底：当日文件不存在才现场补抓（且**不抓全文**，避免把请求叠回
     # 08:00）；失败不影响主流程，日报降级为纯自选账号文章。
@@ -195,7 +196,7 @@ if [ "$MODE" != "crawl-only" ]; then
     # 否则在非 CST 主机上会去检查「昨天」那份文件。
     HOT_DOC="data/hot_posts/$(TZ=Asia/Shanghai date +%Y-%m-%d)/hot_top10.json"
     if [ -f "$HOT_DOC" ]; then
-        echo "[2.5/6] 热榜已由 01:00 job 准备，跳过抓取" >> "$LOG_FILE"
+        echo "[2.5/6] 热榜已由 prepare job 准备，跳过抓取" >> "$LOG_FILE"
     else
         echo "[2.5/6] 热榜缺失，兜底抓取（仅列表，不抓全文）..." >> "$LOG_FILE"
         $PYTHON_BIN scripts/hot_posts.py >> "$LOG_FILE" 2>&1 \

@@ -567,6 +567,140 @@ def test_enrich_survives_fetch_exception():
     assert all("content" not in item for item in items)
 
 
+# ── 全文抓取节流（详情页令牌桶，2026-10-19 两次实测死在第 42 篇）────────
+
+
+class _FakeClock:
+    """替代 hp.time：monotonic 可控，sleep 只推进时钟（测试不真睡）。"""
+
+    def __init__(self, start=1000.0):
+        self.now = float(start)
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def test_enrich_paces_between_fetches(monkeypatch):
+    clock = _FakeClock()
+
+    def fetch(url):
+        clock.now += 9.0  # 单次导航 ~9s（限速 + 导航），插件预留被导航吃掉
+        return {"url": url, "title": "", "content": "全文" * 300}
+
+    monkeypatch.setattr(hp, "time", clock)
+    items = [
+        make_item("1", "2026-10-17T10:00:00+08:00"),
+        make_item("2", "2026-10-17T10:00:00+08:00"),
+        make_item("3", "2026-10-17T10:00:00+08:00"),
+    ]
+
+    stats = hp.enrich_items_with_fulltext(items, fetch=fetch, interval_seconds=15.0)
+
+    assert stats["fetched"] == 3
+    # 首条不等待；后续每条把「距上次发起」补齐到 15s（导航已用 9s → 睡 6s）
+    assert clock.sleeps == [6.0, 6.0]
+
+
+def test_enrich_without_interval_never_sleeps(monkeypatch):
+    clock = _FakeClock()
+
+    def fetch(url):
+        clock.now += 9.0
+        return {"url": url, "title": "", "content": "全文" * 300}
+
+    monkeypatch.setattr(hp, "time", clock)
+    items = [make_item("1", "2026-10-17T10:00:00+08:00")]
+
+    stats = hp.enrich_items_with_fulltext(items, fetch=fetch)
+
+    assert stats["fetched"] == 1
+    assert clock.sleeps == []
+
+
+def test_enrich_interval_counts_against_budget(monkeypatch):
+    clock = _FakeClock()
+
+    def fetch(url):
+        clock.now += 9.0
+        return {"url": url, "title": "", "content": "全文" * 300}
+
+    monkeypatch.setattr(hp, "time", clock)
+    items = [
+        make_item("1", "2026-10-17T10:00:00+08:00"),
+        make_item("2", "2026-10-17T10:00:00+08:00"),
+        make_item("3", "2026-10-17T10:00:00+08:00"),
+    ]
+
+    stats = hp.enrich_items_with_fulltext(
+        items, fetch=fetch, budget_seconds=20.0, interval_seconds=15.0
+    )
+
+    # 预算 20s：#1 发起@1000 → 完@1009；#2 等 6s 发起@1015 → 完@1024；
+    # #3 顶部检查 1024 > 1020 截停。等待确实占预算，不会靠睡绕过截停。
+    assert stats["attempted"] == 2
+    assert clock.sleeps == [6.0]
+
+
+# ── main 的调用顺序：watchlist 必须先于全文抓取 ─────────────────────────
+
+
+def test_main_fetches_watchlist_before_fulltext_burst(monkeypatch, tmp_path):
+    """熔断丢弃 bug 的回归钉。
+
+    2026-10-19 01:00 实测：watchlist 排在全文抓取之后，全文途中撞墙触发的
+    熔断冷却让它抛 RuntimeError → 整轮作废，已抓到手的 41 篇全文全部丢弃。
+    顺序对调后，全文途中撞墙只由 enrich 内部停手兜底，hot_top10.json 照常落盘。
+    """
+    order = []
+    raw = [make_item("1", "2026-10-17T10:00:00+08:00")]
+
+    monkeypatch.setattr(hp, "load_hot_config", lambda path=None: dict(CFG))
+    monkeypatch.setattr(hp, "fetch_hot_posts", lambda cfg: list(raw))
+    monkeypatch.setattr(
+        hp,
+        "filter_window",
+        lambda items, now, cfg: (list(items), {"no_time": 0, "out_of_window": 0}),
+    )
+    monkeypatch.setattr(hp, "load_prior_status_ids", lambda data_dir, day: set())
+    monkeypatch.setattr(hp, "load_prev_top_status_ids", lambda data_dir, now: [])
+    monkeypatch.setattr(hp, "filter_candidates", lambda items, prior: list(items))
+    monkeypatch.setattr(
+        hp,
+        "fetch_watchlist_codes",
+        lambda data_dir, now: order.append("watchlist") or ["00700"],
+    )
+    monkeypatch.setattr(hp, "load_followed_author_ids", lambda: {})
+
+    def fake_enrich(
+        items, log=None, budget_seconds=0.0, fetch=None, interval_seconds=0.0
+    ):
+        # 顺手钉死配置透传：main() 改了 cfg.get 的键名/删掉透传，这里立刻红
+        assert budget_seconds == CFG["fulltext_budget_seconds"]
+        assert interval_seconds == CFG["fulltext_interval_seconds"]
+        order.append("fulltext")
+        return {"attempted": len(items), "fetched": len(items), "skipped": 0}
+
+    monkeypatch.setattr(hp, "enrich_items_with_fulltext", fake_enrich)
+    monkeypatch.setattr(
+        hp,
+        "score_items",
+        lambda candidates, watchlist, followed, cfg, now, prev: [
+            dict(item, score=50.0) for item in candidates
+        ],
+    )
+    monkeypatch.setattr(hp, "select_top", lambda scored, n: list(scored)[:n])
+
+    rc = hp.main(["--fetch-fulltext", "--data-dir", str(tmp_path)])
+
+    assert rc == 0
+    assert order == ["watchlist", "fulltext"]
+
+
 def test_load_prior_status_ids_excludes_today(tmp_path):
     (tmp_path / 'index.json').write_text(
         json.dumps(
