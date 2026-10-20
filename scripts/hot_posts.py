@@ -67,7 +67,7 @@ DEFAULT_CONFIG = {
     'repeat_decay': 0.9,
     'prefetch_max': 50,
     # 权重表之外的一次性扣分（负分）
-    'penalties': {'pnl_showoff': 20},
+    'penalties': {'pnl_showoff': 20, 'volatility': 15},
     # 抓全文的时间预算。给足 15 分钟，避免「排在后面的条目拿不到全文」
     # 导致同一批候选里有的按全文、有的按摘要评分（不可比）。
     'fulltext_budget_seconds': 900.0,
@@ -84,6 +84,7 @@ DEFAULT_CONFIG = {
         'watchlist': 15,
         'followed': 10,
         'depth': 5,
+        'topic': 10,
     },
 }
 
@@ -106,6 +107,140 @@ _PNL_PATTERNS = (
 def looks_like_pnl_showoff(text: str) -> bool:
     """是不是「晒自己账户赚了多少/亏了多少」类帖子（用于热榜降权）。"""
     return any(pattern.search(text or '') for pattern in _PNL_PATTERNS)
+
+
+# ── 主题分类（2026-10-20 用户口径）：企业分析 / 价值投资理念 / 策略 加权，
+#    市场波动相关的分析预测降权。全部按**全文**判（score_items 在补抓全文之后跑）。
+# 纪律同 _PNL_PATTERNS：每个词都要过一遍「会不会误伤好内容」——
+#   - 「低估」「安全边际」是理念词，不是波动词；「PE」是估值词，不是看涨看跌词
+#   - 「组合」「风控」放策略组，波动组不得收编（资产配置贴不能被当成择时贴）
+#   - 「大盘」「指数」单独出现太常见（业绩分析顺嘴一提），只算弱信号
+_TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
+    'company': (
+        '护城河',
+        '商业模式',
+        '竞争格局',
+        '财报',
+        '业绩',
+        '营收',
+        '净利润',
+        '现金流',
+        'ROE',
+        '毛利率',
+        '管理层',
+        '市占率',
+        '产能',
+        '订单',
+        '壁垒',
+        '基本面',
+        '估值',
+        '分红',
+        '回购',
+        '负债率',
+    ),
+    'philosophy': (
+        '价值投资',
+        '巴菲特',
+        '芒格',
+        '安全边际',
+        '内在价值',
+        '能力圈',
+        '市场先生',
+        '长期主义',
+        '复利',
+        '股权思维',
+        '低估',
+        '好生意',
+        '股息',
+    ),
+    'strategy': (
+        '仓位管理',
+        '资产配置',
+        '定投',
+        '再平衡',
+        '投资体系',
+        '风控',
+        '组合',
+        '纪律',
+        '策略',
+        '回撤控制',
+        '预期收益',
+    ),
+}
+
+# 强信号：词本身就是典型的择时/交易行为话语，命中 1 个即判波动类
+_VOLATILITY_STRONG = (
+    '逃顶',
+    '抄底',
+    '割肉',
+    '满仓',
+    '清仓',
+    '梭哈',
+    '见顶',
+    '见底',
+    '变盘',
+    '套牢',
+    '踏空',
+    '涨停',
+    '跌停',
+    '追涨杀跌',
+)
+# 强信号正则：预测/判断大盘涨跌方向的话语（「预测大盘会涨」式）
+_VOLATILITY_STRONG_RES = (
+    re.compile(
+        r'(预测|预判|猜)[^。！？\n]{0,4}(大盘|指数|沪指|上证|创业板|纳指|道指|涨跌|顶部|底部)'
+    ),
+    re.compile(
+        r'(大盘|指数|沪指|上证|创业板)[^。！？\n]{0,6}(会涨|会跌|要涨|要跌|冲高|见顶|见底)'
+    ),
+)
+# 弱信号：常见市场行情词，单独出现不说明什么，≥2 个 distinct 才判波动类
+_VOLATILITY_WEAK = (
+    '大盘',
+    '指数',
+    '沪指',
+    '上证',
+    '创业板',
+    '回调',
+    '反弹',
+    '跳水',
+    '暴跌',
+    '暴涨',
+    '牛市',
+    '熊市',
+    '点位',
+    '技术面',
+    'K线',
+    '均线',
+    'MACD',
+    '支撑位',
+    '压力位',
+    '资金面',
+    '北向资金',
+    '成交量',
+)
+
+
+def topic_hits(text: str) -> dict[str, int]:
+    """主题词命中数（按组返回，distinct 词计——刷词不算多主题）。"""
+    t = text or ''
+    return {
+        group: sum(1 for kw in keywords if kw in t)
+        for group, keywords in _TOPIC_KEYWORDS.items()
+    }
+
+
+def volatility_signal(text: str) -> tuple[int, int]:
+    """市场波动/涨跌预测信号强度，返回 `(strong_hits, weak_hits)`。
+
+    strong = 择时/交易话语词（逃顶、抄底…）+ 预测大盘方向的句式；
+    weak = 常见行情词（大盘、回调…）。均按 distinct 计。
+    """
+    t = text or ''
+    strong = sum(1 for kw in _VOLATILITY_STRONG if kw in t)
+    strong += sum(1 for pattern in _VOLATILITY_STRONG_RES if pattern.search(t))
+    weak = sum(1 for kw in _VOLATILITY_WEAK if kw in t)
+    return strong, weak
 
 
 def load_hot_config(config_path: Path | None = None) -> dict:
@@ -413,10 +548,27 @@ def score_items(
             ),
             'depth': round(weights['depth'] * depth, 2),
         }
+        # 主题契合（用户 2026-10-20 口径）：企业分析/投资理念/策略 加权。
+        # 三组词的 distinct 命中合并计，命中 5 个拿满——一篇正经企业分析
+        # 通常「护城河/业绩/估值」一路都有，纯感慨贴碰不到这么多实词。
+        topics = topic_hits(body)
+        total_topic_hits = sum(topics.values())
+        topic_sub = min(1.0, total_topic_hits / 5)
+        breakdown['topic'] = round(weights['topic'] * topic_sub, 2)
         # 晒收益/账户流水：权重表之外直接扣分（用户明确不感兴趣）
         is_pnl = looks_like_pnl_showoff(body)
         if is_pnl:
             breakdown['pnl_showoff'] = -abs(float(penalties.get('pnl_showoff', 20)))
+        # 市场波动/涨跌预测类降权：强信号 1 个即扣，弱信号要 ≥2 个 distinct
+        # （公司分析顺嘴提一句大盘不该误伤，见 _VOLATILITY_WEAK 注释）。
+        # 主题词积攒 ≥4 的按实质分析对待、波动罚分让路——择时/情绪贴几乎
+        # 不会积攒这么多主题实词，而深度分析**引用**行情词很常见：
+        # 2026-10-20 真实数据校准，「恐慌割肉」「不要追涨杀跌」式的理念长文
+        # 两篇都被强词误伤，罚分让路后其中一篇（主题满配）恢复原位。
+        vol_strong, vol_weak = volatility_signal(body)
+        is_volatility = (vol_strong >= 1 or vol_weak >= 2) and total_topic_hits < 4
+        if is_volatility:
+            breakdown['volatility'] = -abs(float(penalties.get('volatility', 15)))
         score = sum(breakdown.values())
         if str(item.get('status_id', '')) in prev_top_ids:
             score *= float(cfg['repeat_decay'])
@@ -428,6 +580,8 @@ def score_items(
                 'symbols_hit': hits,
                 'followed': is_followed,
                 'is_pnl_showoff': is_pnl,
+                'topic_hits': topics,
+                'is_volatility_speculation': is_volatility,
                 'score': round(score, 1),
                 'breakdown': breakdown,
             }
@@ -833,6 +987,8 @@ def _candidate_summary(item: dict) -> dict:
         'symbols_hit': item.get('symbols_hit') or [],
         'followed': item.get('followed'),
         'is_pnl_showoff': bool(item.get('is_pnl_showoff')),
+        'topic_hits': item.get('topic_hits') or {},
+        'is_volatility_speculation': bool(item.get('is_volatility_speculation')),
     }
 
 

@@ -55,13 +55,19 @@ hot_posts:
     pnl_showoff: 20       # 晒收益/账户流水（「我今年赚了300万」「回撤170万」）：
                           # 直接扣 20 分，基本进不了 Top10。只认具体金额，不碰
                           # 公司业绩分析和纯持仓记录。LLM 侧还会再压到参考。
-  weights:                # 打分权重（和为 100）
+    volatility: 15        # 市场波动/涨跌预测类（逃顶抄底、预测大盘方向）：
+                          # 强信号命中 1 个或弱信号（大盘/回调/均线…）命中
+                          # ≥2 个 distinct 就扣。公司分析顺带提大盘不误伤。
+  weights:                # 打分权重（和为 110；score 只用于相对排序与展示）
     rank: 30              # 雪球热门榜位次
     freshness: 20         # 新鲜度
     engagement: 20        # 互动热度（赞+2评+3转，log 归一）
     watchlist: 15         # 正文命中自选股
     followed: 10          # 作者在关注列表（accounts.yaml）
     depth: 5              # 内容深度（长文加分）
+    topic: 10             # 主题契合：企业分析/价值投资理念/策略（2026-10-20
+                          # 用户口径）。三组词 distinct 命中合并计，命中 5 个
+                          # 拿满；词表见 hot_posts._TOPIC_KEYWORDS
 
 # AI 分析配置
 analysis:
