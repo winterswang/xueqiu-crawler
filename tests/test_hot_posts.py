@@ -807,3 +807,155 @@ def test_update_top_doc_items_false_on_missing_or_bad_doc(tmp_path):
         )
         is False
     )
+
+
+# ── 主题加权 / 市场波动降权（2026-10-20 用户口径：标准力度，强弱信号分级）──
+
+
+def test_topic_hits_counts_distinct_keywords_per_group():
+    text = "这家公司的护城河和商业模式不错，估值不高，安全边际很厚。巴菲特强调能力圈。"
+    hits = hp.topic_hits(text)
+    assert hits["company"] == 3  # 护城河 / 商业模式 / 估值
+    assert hits["philosophy"] == 3  # 安全边际 / 巴菲特 / 能力圈
+    assert hits["strategy"] == 0
+
+
+def test_topic_hits_dedupes_repeated_words():
+    """distinct 计：同一个词刷十遍不是一个主题。"""
+    hits = hp.topic_hits("护城河护城河护城河，基本面基本面")
+    assert hits["company"] == 2
+
+
+def test_volatility_signal_tiers():
+    # 强信号 1 个
+    assert hp.volatility_signal("这波要学会逃顶。") == (1, 0)
+    # 预测大盘方向的句式也算强信号
+    strong_n, weak_n = hp.volatility_signal("预测大盘要涨到 4000 点")
+    assert strong_n >= 1
+    # 弱信号单个不算
+    assert hp.volatility_signal("大盘今天缩量。") == (0, 1)
+    # 弱信号 ≥2 个 distinct
+    assert hp.volatility_signal("大盘回调，均线走坏。")[1] >= 2
+    # 干净内容
+    assert hp.volatility_signal("这家公司业绩稳增，现金流扎实。") == (0, 0)
+
+
+def test_score_items_topic_boost_full_and_partial():
+    rich = (
+        "聊聊$贵州茅台(SH600519)$的护城河、商业模式与估值，"
+        "再谈安全边际和巴菲特的长期主义。" + "详细" * 100
+    )
+    partial = "这家公司业绩超预期，管理层执行力强。" + "详细" * 100
+    plain = "聊聊今天的见闻。" + "详细" * 100
+    items = _windowed(
+        [
+            make_item(1, "2026-10-16T20:00:00+08:00", content=plain),
+            make_item(2, "2026-10-16T20:00:00+08:00", content=rich),
+            make_item(3, "2026-10-16T20:00:00+08:00", content=partial),
+        ]
+    )
+    scored = hp.score_items(items, [], set(), CFG, NOW, set())
+    by_id = {s["status_id"]: s for s in scored}
+
+    # 命中 ≥5 个 distinct 词拿满配
+    assert by_id["2"]["breakdown"]["topic"] == CFG["weights"]["topic"]
+    # 部分命中按比例（业绩/管理层 = 2/5）
+    assert by_id["3"]["breakdown"]["topic"] == pytest.approx(
+        CFG["weights"]["topic"] * 2 / 5,
+    )
+    assert by_id["1"]["breakdown"]["topic"] == 0
+    assert by_id["2"]["topic_hits"]["company"] >= 2
+    # 剔掉 rank 分再比：两条的榜位差恰好会抵消 +10 的主题分
+    base2 = by_id["2"]["score"] - by_id["2"]["breakdown"]["rank"]
+    base1 = by_id["1"]["score"] - by_id["1"]["breakdown"]["rank"]
+    assert base2 > base1
+
+
+def test_score_items_penalizes_volatility_speculation():
+    timing = "我觉得该逃顶了，这波大盘要回调，均线也走坏了。" + "详细" * 100
+    plain = "聊聊持仓感受。" + "详细" * 100
+    items = _windowed(
+        [
+            make_item(1, "2026-10-16T20:00:00+08:00", content=timing),
+            make_item(2, "2026-10-16T20:00:00+08:00", content=plain),
+        ]
+    )
+    scored = hp.score_items(items, [], set(), CFG, NOW, set())
+    by_id = {s["status_id"]: s for s in scored}
+
+    assert by_id["1"]["is_volatility_speculation"] is True
+    assert by_id["1"]["breakdown"]["volatility"] == -CFG["penalties"]["volatility"]
+    assert by_id["2"]["is_volatility_speculation"] is False
+    assert "volatility" not in by_id["2"]["breakdown"]
+    # 剔掉 rank 分再比：两条的榜位差（30→15）恰好抵消 −15 的扣分
+    base1 = by_id["1"]["score"] - by_id["1"]["breakdown"]["rank"]
+    base2 = by_id["2"]["score"] - by_id["2"]["breakdown"]["rank"]
+    assert base1 < base2
+
+
+def test_score_items_no_penalty_for_single_weak_mention():
+    """非目标：公司分析顺嘴提一句大盘，不能被当波动贴降权。"""
+    content = (
+        "公司三季报业绩超预期，管理层执行力强，就是大盘最近不太好。" + "详细" * 100
+    )
+    items = _windowed([make_item(1, "2026-10-16T20:00:00+08:00", content=content)])
+
+    scored = hp.score_items(items, [], set(), CFG, NOW, set())
+
+    assert scored[0]["is_volatility_speculation"] is False
+    assert "volatility" not in scored[0]["breakdown"]
+    assert scored[0]["topic_hits"]["company"] == 2  # 业绩 / 管理层
+
+
+def test_score_items_volatility_penalty_yields_to_substantive_topics():
+    """深度分析**引用**行情词（「恐慌割肉」「不要追涨杀跌」）不是择时贴：
+    主题词积攒 ≥4 时波动罚分让路——2026-10-20 真实数据两篇 8-12K 字理念/
+    框架长文被强词误伤的校准。"""
+    content = (
+        "这篇谈谈$贵州茅台(SH600519)$的护城河、商业模式、估值与业绩，"
+        "以及安全边际。牛市里大家追涨杀跌，等暴跌来了才想起价值投资。" + "详细" * 100
+    )
+    items = _windowed([make_item(1, "2026-10-16T20:00:00+08:00", content=content)])
+
+    scored = hp.score_items(items, [], set(), CFG, NOW, set())
+
+    assert scored[0]["topic_hits"]["philosophy"] >= 2
+    assert sum(scored[0]["topic_hits"].values()) >= 4
+    assert scored[0]["is_volatility_speculation"] is False
+    assert "volatility" not in scored[0]["breakdown"]
+
+
+def test_volatility_composite_index_name_counts_once():
+    """「上证指数」是一个专名，不能拆成 上证+指数 两个 distinct 弱信号
+    （PR #124 review 实测：跑输上证指数的公司分析被误罚 −15）。"""
+    strong_n, weak_n = hp.volatility_signal("股价今年跑输上证指数，但公司基本面没变。")
+    assert strong_n == 0
+    assert weak_n == 0  # 专名归一后，这句里不再有任何独立行情词
+
+    strong_n, weak_n = hp.volatility_signal("创业板指数回调了 3%。")
+    assert strong_n == 0
+    assert weak_n == 1  # 创业板指数归一后只剩 回调 一个弱信号
+    # 专名之外的独立行情词照常计数
+    assert hp.volatility_signal("大盘走弱，全年跑输上证指数。") == (0, 1)
+
+
+def test_volatility_suppression_boundary_at_four_topic_hits():
+    """校准常数钉死：主题词 3 个照罚、4 个让路。"""
+
+    def _make(text):
+        items = _windowed([make_item(1, "2026-10-16T20:00:00+08:00", content=text)])
+        return hp.score_items(items, [], set(), CFG, NOW, set())[0]
+
+    three = (
+        "这家公司业绩扎实、估值便宜，管理层也靠谱，可惜这波要学会逃顶。" + "详细" * 100
+    )
+    four = (
+        "这家公司业绩扎实、估值便宜，管理层也靠谱，现金流稳，"
+        "可惜这波要学会逃顶。" + "详细" * 100
+    )
+    assert sum(hp.topic_hits("业绩估值管理层现金流").values()) == 4
+
+    scored_three = _make(three)
+    scored_four = _make(four)
+    assert scored_three["is_volatility_speculation"] is True
+    assert scored_four["is_volatility_speculation"] is False
