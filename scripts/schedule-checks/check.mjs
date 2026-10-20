@@ -38,8 +38,31 @@ const dayOf = (d) => d.toLocaleDateString('sv-SE');
 // ⚠️ 必须**锚定在行首**：不带 `^` 的 `爬取时间：` 会把正文里出现该字样的整行删掉 ——
 // 「正则打在全文上」这类坑刚在影子的归一层踩过一次（那边被 review 抓出来）。
 const METADATA_LINE = /^(?:>|\*爬取时间：)/;
-// 实测正常正文最短 150 字符（2026-10-08–15 全量样本），空抽取≈0 —— 取 100 留余量。
-const MIN_BODY_CHARS = 100;
+// 每篇都有的「来源：雪球App，作者：…」样板行（后缀带作者和链接，故前缀匹配），
+// 以及正文两侧的 `---` 分隔线 —— 都是存储格式的一部分，不是文章内容。
+// ⚠️ `$` 锚的是整条正则的行尾：把签名行写成 `^来源：…$` 会因后缀永不匹配，
+// 剥样板整个空转（PR #122 review 实测抓出来的）。
+const BOILERPLATE_LINE = /^(?:来源：雪球App，作者：.*|---+)$/;
+
+/**
+ * 一篇 `.md` 里**文章自己的内容**：剥掉头部元数据、标题行、样板行之后剩下的。
+ *
+ * 判「抽取故障」只认这个，不认总长度（2026-10-16/20 两次误报的教训）：
+ * - 短帖/图帖的正文就是标题本身，或只有一两句话 —— 长度很短但**有**内容，
+ *   抽取没坏。而且现在 opencli 链路上「无内容根本不落盘」（crawler_nodriver
+ *   的「跳过无内容」分支），存下来的短文就是作者真的只写了这么多。
+ * - 真正的故障签名是剥完样板后**什么都不剩**（只剩存储格式）。
+ */
+function articleContent(raw) {
+  return bodyText(raw)
+    .split('\n')
+    .filter((line) => {
+      const t = line.trim();
+      return t !== '' && !BOILERPLATE_LINE.test(t);
+    })
+    .join('\n')
+    .trim();
+}
 
 /** 一篇 `.md` 里属于「正文」的部分（剥掉头部元数据与标题行）。 */
 function bodyText(raw) {
@@ -73,9 +96,9 @@ function emptyBodies() {
       if (!row || !row.article_id) continue;
       const md = join(CRAWLER, 'data', user, `${row.article_id}.md`);
       if (!existsSync(md)) continue; // 缺文件由「今天没抓够」那条覆盖，这里只管内容空
-      const body = bodyText(readFileSync(md, 'utf8'));
-      if (body.length < MIN_BODY_CHARS) {
-        found.push(`${user}/${row.article_id}（正文 ${body.length} 字符）`);
+      const content = articleContent(readFileSync(md, 'utf8'));
+      if (content.length === 0) {
+        found.push(`${user}/${row.article_id}（正文只剩样板，0 字符内容）`);
       }
     }
   }
@@ -110,7 +133,7 @@ function checkCrawler() {
   const empty = emptyBodies();
   if (empty.length > 0) {
     problems.push(
-      `今天有 ${empty.length} 篇正文是空的（stats 不会报这个）：${empty.slice(0, 5).join('，')}`,
+      `今天有 ${empty.length} 篇正文只剩样板、没有内容（stats 不会报这个）：${empty.slice(0, 5).join('，')}`,
     );
   }
 }
