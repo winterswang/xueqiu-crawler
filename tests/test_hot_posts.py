@@ -723,3 +723,87 @@ def test_merge_hot_items_empty_hot_returns_original():
     merged, stats = hp.merge_hot_items(articles, [])
     assert merged == articles
     assert stats == {"hot_total": 0, "merged": 0, "hot_only": 0, "skipped": 0}
+
+
+# ── 全文回写（2026-10-20 收口：fetch_fulltext 兜底补抓只改内存，同步侧读不到）──
+
+
+def _write_top_doc(path, doc):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+DATE = "2026-10-20"
+
+
+def test_update_top_doc_items_merges_by_status_id(tmp_path):
+    path = _write_top_doc(
+        tmp_path / "hot_posts" / DATE / "hot_top10.json",
+        {
+            "candidates": 44,
+            "window": {"hours": 24},
+            "items": [
+                {"status_id": "a", "content_source": "excerpt", "content": ""},
+                {"status_id": "b", "content_source": "full", "content": "已有全文"},
+            ],
+        },
+    )
+
+    ok = hp.update_top_doc_items(
+        tmp_path,
+        [{"status_id": "a", "content_source": "full", "content": "新抓的全文"}],
+        report_date=DATE,
+    )
+
+    assert ok is True
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["candidates"] == 44  # items 以外的字段原样保留
+    assert doc["items"][0]["content"] == "新抓的全文"
+    assert doc["items"][1]["content"] == "已有全文"  # 没补抓的条目原样不动
+
+
+def test_update_top_doc_items_ignores_excerpt_and_empty(tmp_path):
+    """摘要不冒充全文：没有一条可回写时返回 False，文件原样不动。"""
+    path = _write_top_doc(
+        tmp_path / "hot_posts" / DATE / "hot_top10.json",
+        {"items": [{"status_id": "a", "content_source": "excerpt", "content": ""}]},
+    )
+    before = path.read_text(encoding="utf-8")
+
+    ok = hp.update_top_doc_items(
+        tmp_path,
+        [
+            {"status_id": "a", "content_source": "excerpt", "content": "摘要"},
+            {"status_id": "b", "content_source": "full", "content": ""},
+            {"status_id": "c"},
+        ],
+        report_date=DATE,
+    )
+
+    assert ok is False
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_update_top_doc_items_false_on_missing_or_bad_doc(tmp_path):
+    assert (
+        hp.update_top_doc_items(
+            tmp_path,
+            [{"status_id": "a", "content_source": "full", "content": "x"}],
+            report_date=DATE,
+        )
+        is False
+    )
+
+    bad = tmp_path / "hot_posts" / DATE / "hot_top10.json"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text("[]", encoding="utf-8")
+
+    assert (
+        hp.update_top_doc_items(
+            tmp_path,
+            [{"status_id": "a", "content_source": "full", "content": "x"}],
+            report_date=DATE,
+        )
+        is False
+    )

@@ -478,6 +478,64 @@ def load_top_doc(
     return doc if isinstance(doc, dict) and doc.get('items') else None
 
 
+def update_top_doc_items(
+    data_dir: Path | str = 'data',
+    items: list[dict] | None = None,
+    log=None,
+    report_date: str | None = None,
+) -> bool:
+    """把（补抓过全文的）条目回写进当天的 hot_top10.json，按 status_id 合并。
+
+    generate_report 的 fetch_fulltext 兜底补抓只改内存对象 —— 不回写的话，
+    同一轮 cron 里 5/6 步的 sync_raw_articles_to_ima 读到的还是首页摘要，
+    会把刚拿到全文的热榜帖当 missing 跳过（2026-10-20 收口）。
+
+    只回写 `content_source='full'` 且 content 非空的条目；摘要不冒充全文。
+    cron 全程持有 .cron_running.lock，与 06:00 的 prepare job 不会并发写。
+    任何失败只打日志返回 False，不能影响日报主流程。
+    """
+    log = log or logger
+    updates = {
+        str(item.get('status_id')): item
+        for item in items or []
+        if isinstance(item, dict)
+        and item.get('status_id')
+        and item.get('content_source') == 'full'
+        and item.get('content')
+    }
+    if not updates:
+        return False
+
+    date_str = report_date or datetime.now(TZ).strftime('%Y-%m-%d')
+    path = Path(data_dir) / 'hot_posts' / date_str / 'hot_top10.json'
+    try:
+        doc = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        log.warning('热榜全文回写失败（不影响日报）: %s (%s)', path, exc)
+        return False
+    if not isinstance(doc, dict) or not isinstance(doc.get('items'), list):
+        log.warning('热榜全文回写失败，文件顶层不是 {items: [...]}: %s', path)
+        return False
+
+    merged = 0
+    for idx, existing in enumerate(doc['items']):
+        if not isinstance(existing, dict):
+            continue
+        update = updates.get(str(existing.get('status_id')))
+        if update is not None:
+            doc['items'][idx] = update
+            merged += 1
+    if not merged:
+        return False
+    try:
+        _write_json(path, doc)
+    except OSError as exc:
+        log.warning('热榜全文回写失败（不影响日报）: %s (%s)', path, exc)
+        return False
+    log.info('热榜全文回写: %d 条补抓全文已落盘 %s', merged, path)
+    return True
+
+
 _REPLY_PREFIX_RE = re.compile(r'^回复@[^:：]+[:：]\s*')
 _URL_USER_RE = re.compile(r'xueqiu\.com/(\d+)/')
 

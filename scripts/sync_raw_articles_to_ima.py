@@ -356,10 +356,13 @@ def main():
             stat = f.stat()
             mtime = stat.st_mtime
             size = stat.st_size
-        except Exception:
+        except OSError as exc:
+            # 静默 continue 会让这篇永远进不了知识库还没人知道（2026-10-20 收口）
+            logger.warning("  ⚠️ 文件 stat 失败，本轮跳过: %s (%s)", f, exc)
             continue
 
         if size < 100:  # 跳过太小的空文件/短状态
+            logger.warning("  ⚠️ 入选文件过小（%d 字节），不会上传到知识库: %s", size, f)
             continue
 
         if key in state:
