@@ -491,7 +491,9 @@ def update_top_doc_items(
     会把刚拿到全文的热榜帖当 missing 跳过（2026-10-20 收口）。
 
     只回写 `content_source='full'` 且 content 非空的条目；摘要不冒充全文。
-    cron 全程持有 .cron_running.lock，与 06:00 的 prepare job 不会并发写。
+    不并发写的保证来自**排程错开**（prepare job 固定 06:00、报告 08:15，
+    .cron_running.lock 只管 run_daily.sh 自己，管不到 hermes 直跑的 prepare）；
+    若 prepare 被手动重跑撞进 08:00 窗口，最坏是单条目内容被旧副本覆盖。
     任何失败只打日志返回 False，不能影响日报主流程。
     """
     log = log or logger
@@ -526,6 +528,8 @@ def update_top_doc_items(
             doc['items'][idx] = update
             merged += 1
     if not merged:
+        # 正常只在上游传错 status_id 时发生；若文件在读取后被外部重写也可能到这里
+        log.debug('热榜全文回写: 0 条命中（status_id 对不上当天文件？）')
         return False
     try:
         _write_json(path, doc)
