@@ -160,6 +160,25 @@ def test_empty_body_is_reported(tmp_path):
     assert "a1" not in out.split("正文只剩样板")[1]
 
 
+def test_signature_only_body_is_reported(tmp_path):
+    """正文只剩「来源：雪球App，作者：…」签名行 —— 历史上真实出现过的失败签名
+    （见 test_title_guard 的签名行用例）。样板行带作者后缀，正则必须前缀匹配，
+    不能因为行尾锚死而漏掉（PR #122 review 抓过这个空转）。"""
+    signature_only = (
+        "# 标题\n\n> 作者：张三 | 发布时间：3分钟前\n> 原文链接：https://xueqiu.com/u1/x\n\n"
+        "---\n\n"
+        "来源：雪球App，作者： 张三，（https://xueqiu.com/u1/x）\n\n---\n\n"
+        "*爬取时间：2026-01-01 08:00:00*\n"
+    )
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY, "a2": signature_only})
+
+    code, out = _run(root)
+
+    assert code == 0, "只剩签名行应放行 agent（exit 0）"
+    assert "今天有 1 篇正文只剩样板" in out
+    assert "a2" in out
+
+
 def test_missing_hot_posts_is_reported(tmp_path):
     """01:00 的 prepare job 没跑成时，日报会**静默**少一块 —— 必须叫出来。"""
     root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
