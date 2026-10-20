@@ -496,3 +496,35 @@ def test_overview_accounts_for_skipped_hot_items():
     )
     assert '**热门贴融合**：1 条' in text
     assert '**热榜未纳入**：2 条' in text
+
+
+def test_fetch_fulltext_writes_back_to_hot_top10(tmp_path, fake_analyzer, monkeypatch):
+    """fetch_fulltext 兜底补抓的全文必须回写 hot_top10.json —— 同一轮 cron 的
+    5/6 步 IMA 同步按这个文件找热榜帖的 raw，不回写等于白抓（2026-10-20 收口）。"""
+    monkeypatch.setattr(
+        gr.yaml, 'safe_load', lambda _text: {'hot_posts': {'fetch_fulltext': True}}
+    )
+
+    def _fake_enrich(items, log=None, **_kwargs):
+        for item in items:
+            item['content'] = '补抓到的全文。' * 30
+            item['content_source'] = 'full'
+        return {'attempted': len(items), 'fetched': len(items), 'skipped': 0}
+
+    monkeypatch.setattr(gr, 'enrich_items_with_fulltext', _fake_enrich)
+
+    data_dir = _data_dir(tmp_path)
+    path = _write_article(data_dir, '111', '123', '自有账号文章')
+    _write_index(data_dir, [('111', '123', '自有账号文章', path)])
+    _write_hot(data_dir, [_hot_item('999', 1)])
+
+    _run(data_dir)
+
+    doc = json.loads(
+        (data_dir / 'hot_posts' / _today() / 'hot_top10.json').read_text(
+            encoding='utf-8'
+        )
+    )
+    item = next(i for i in doc['items'] if i['status_id'] == '999')
+    assert item['content_source'] == 'full'
+    assert item['content'].startswith('补抓到的全文')

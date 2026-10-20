@@ -22,7 +22,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from logging_utils import get_logger, log_execution_summary
 from analyzer import ArticleAnalyzer, generate_daily_report
-from hot_posts import enrich_items_with_fulltext, load_top_doc, merge_hot_items
+from hot_posts import (
+    enrich_items_with_fulltext,
+    load_top_doc,
+    merge_hot_items,
+    update_top_doc_items,
+)
 
 # 风控页判定统一走 xueqiu_analyzer.waf（唯一实现，见 scripts/waf_bridge.py）
 from waf_bridge import is_error_page
@@ -190,7 +195,12 @@ def _merge_hot_posts(
                 '热榜: %d 条缺全文，按 fetch_fulltext=true 现场补抓',
                 len(missing_items),
             )
-            enrich_items_with_fulltext(missing_items, logger)
+            enrich_stats = enrich_items_with_fulltext(missing_items, logger)
+            if enrich_stats.get('fetched'):
+                # 补抓的全文必须回写 hot_top10.json：同一轮 cron 的 5/6 步
+                # IMA 同步按这个文件找热榜帖的 raw，不回写的话那边读到的
+                # 还是首页摘要，刚抓的全文白抓（2026-10-20 收口）。
+                update_top_doc_items(data_dir, missing_items, logger)
         else:
             logger.info(
                 '热榜: %d 条没有全文（01:00 prepare job 未抓到），按首页摘要分析',
