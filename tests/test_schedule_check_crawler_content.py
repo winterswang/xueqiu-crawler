@@ -5,8 +5,10 @@
 **正文抓成空**：stats 仍报 `successful=18, failed=0`、日报照样产出（只剩标题），
 下游全绿 —— 「错误的结果和正常的结果长得一样」。
 
-这里钉住新加的那条断言（正文 < 100 字符即报警）。阈值依据：2026-10-08–15
-全量样本里正常正文最短 150 字符，空抽取约 0–35 字符，100 落在两者中间。
+这里钉住这条断言。判定标准（2026-10-20 收口误报后）：剥掉头部元数据、
+`来源：雪球App` 样板行和 `---` 分隔线之后**什么都不剩**才算故障 ——
+短帖/图帖的正文就是标题本身或一两句话，长度短但**有**内容，抽取没坏；
+2026-10-16/20 两次按「< 100 字符」误报的都是这类。
 """
 
 from __future__ import annotations
@@ -36,6 +38,25 @@ _NORMAL_BODY = (
 _EMPTY_BODY = (
     "# 标题\n\n> 作者：张三 | 发布时间：3分钟前\n> 原文链接：https://xueqiu.com/u1/x\n\n"
     "*爬取时间：2026-01-01 08:00:00*\n"
+)
+# 2026-10-20 的真实误报（1936609590/412907698）：只发标题、内容在配图里的帖子 ——
+# 正文剥完样板后等于标题，抽取没坏。
+_TITLE_ONLY_BODY = (
+    "# 最近有比较重要的发现，找到跟踪AI小游戏广告流水的方法(ARR）\n\n"
+    "> 作者：逸修1 | 发布时间：昨天 19:25\n> 点赞：0 | 评论：0\n"
+    "> 原文链接：https://xueqiu.com/1936609590/412907698\n\n---\n\n"
+    "来源：雪球App，作者： 逸修1，（https://xueqiu.com/1936609590/412907698）\n\n"
+    "最近有比较重要的发现，找到跟踪AI小游戏广告流水的方法(ARR）\n\n---\n\n"
+    "*爬取时间：2026-10-20 08:04:52*\n"
+)
+# 2026-10-16 的真实误报（1936609590/412503141）：一句话短帖 + 引用块。
+_SHORT_POST_BODY = (
+    "# 没毛病，确实是\n\n"
+    "> 作者：逸修1 | 发布时间：昨天 21:36\n> 点赞：67 | 评论：24\n\n---\n\n"
+    "来源：雪球App，作者： 逸修1，（https://xueqiu.com/1936609590/412503141）\n\n"
+    "没毛病，确实是\n\n"
+    "> [@某人：](/1936609590)\n>\n> 应该这样说：AI股票跌、美债收益率也下来了\n\n---\n\n"
+    "*爬取时间：2026-10-16 08:06:25*\n"
 )
 
 
@@ -97,25 +118,46 @@ def _run(root: Path) -> tuple[int, str]:
 
 
 def test_normal_bodies_do_not_trigger_the_assertion(tmp_path):
-    """正常正文（≥100 字符）不该被报 —— 误报会天天白叫醒一个 agent。"""
+    """正常正文不该被报 —— 误报会天天白叫醒一个 agent。"""
     root = _fixture(tmp_path, {"a1": _NORMAL_BODY, "a2": _NORMAL_BODY})
 
     code, out = _run(root)
 
     assert code == 2, f"应判为一切正常（exit 2），实际 {code}：{out}"
-    assert "正文是空的" not in out
+    assert "正文只剩样板" not in out
+
+
+def test_title_only_post_is_not_reported(tmp_path):
+    """2026-10-20 实测回归：只发标题的图帖不是抽取故障，别再叫醒 agent。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY, "a2": _TITLE_ONLY_BODY})
+
+    code, out = _run(root)
+
+    assert code == 2, f"标题帖不该被报（exit 2），实际 {code}：{out}"
+    assert "正文只剩样板" not in out
+    assert "a2" not in out
+
+
+def test_short_post_is_not_reported(tmp_path):
+    """2026-10-16 实测回归：一句话短帖有真实内容，不是故障。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY, "a2": _SHORT_POST_BODY})
+
+    code, out = _run(root)
+
+    assert code == 2, f"短帖不该被报（exit 2），实际 {code}：{out}"
+    assert "正文只剩样板" not in out
 
 
 def test_empty_body_is_reported(tmp_path):
-    """正文空掉但 stats 全绿时，必须报出来 —— 这正是这条断言存在的理由。"""
+    """正文剥完样板什么都不剩、stats 又全绿 —— 必须报出来，这正是断言存在的理由。"""
     root = _fixture(tmp_path, {"a1": _NORMAL_BODY, "a2": _EMPTY_BODY})
 
     code, out = _run(root)
 
     assert code == 0, "有问题应放行 agent（exit 0）"
-    assert "今天有 1 篇正文是空的" in out
+    assert "今天有 1 篇正文只剩样板" in out
     assert "a2" in out
-    assert "a1" not in out.split("正文是空的")[1]
+    assert "a1" not in out.split("正文只剩样板")[1]
 
 
 def test_missing_hot_posts_is_reported(tmp_path):
@@ -150,7 +192,7 @@ def test_missing_body_file_is_not_double_reported(tmp_path):
 
     code, out = _run(root)
 
-    assert "正文是空的" not in out
+    assert "正文只剩样板" not in out
 
 
 def test_body_line_mentioning_crawl_time_is_not_stripped(tmp_path):
@@ -167,7 +209,7 @@ def test_body_line_mentioning_crawl_time_is_not_stripped(tmp_path):
     code, out = _run(root)
 
     assert code == 2, f"该篇正文足够长，不该被报空：{out}"
-    assert "正文是空的" not in out
+    assert "正文只剩样板" not in out
 
 
 def test_title_line_only_strips_the_first_heading(tmp_path):
