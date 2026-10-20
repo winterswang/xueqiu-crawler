@@ -21,6 +21,7 @@ from sync_raw_articles_to_ima import (  # noqa: E402
     HOT_RAW_SUBDIR,
     find_selected_article_files,
     load_hot_top_items,
+    make_state_key,
     materialize_hot_post_raw,
     render_hot_post_markdown,
 )
@@ -168,12 +169,45 @@ def test_materialize_falls_back_to_url_for_missing_author_id(tmp_path):
     assert path.exists()
 
 
+def test_materialize_recovers_from_corrupt_existing_file(tmp_path):
+    """上一轮写到一半留下的坏文件（截断的多字节字符）不能让重跑崩掉：
+    当作「内容不一致」覆盖重写，同步步骤照常走。"""
+    hot_items = {HOT_ITEM["status_id"]: HOT_ITEM}
+    hot_dir = tmp_path / "hot_posts"
+
+    first = materialize_hot_post_raw(
+        DATE, "7336413989", "412922588", hot_items, hot_dir
+    )
+    assert first is not None
+    first.write_bytes(b"\xff\xfe truncated \xa5")
+
+    second = materialize_hot_post_raw(
+        DATE, "7336413989", "412922588", hot_items, hot_dir
+    )
+
+    assert second == first
+    assert second.read_text(encoding="utf-8") == render_hot_post_markdown(HOT_ITEM)
+
+
 def test_load_hot_top_items_tolerates_missing_and_broken_file(tmp_path):
     assert load_hot_top_items(DATE, tmp_path) == {}
 
     broken = tmp_path / DATE / "hot_top10.json"
     broken.parent.mkdir(parents=True, exist_ok=True)
     broken.write_text("{not json", encoding="utf-8")
+
+    assert load_hot_top_items(DATE, tmp_path) == {}
+
+
+def test_load_hot_top_items_tolerates_non_object_json(tmp_path):
+    """合法 JSON 但顶层不是对象（`[]`/`null`）时不能 AttributeError 炸掉整步。"""
+    broken = tmp_path / DATE / "hot_top10.json"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_text("[]", encoding="utf-8")
+
+    assert load_hot_top_items(DATE, tmp_path) == {}
+
+    broken.write_text("null", encoding="utf-8")
 
     assert load_hot_top_items(DATE, tmp_path) == {}
 
@@ -220,3 +254,28 @@ def test_materialize_only_uses_full_text(tmp_path, source):
     )
 
     assert (path is not None) is (source == "full")
+
+
+def test_materialize_skips_empty_content_even_when_marked_full(tmp_path):
+    """content_source=full 但正文为空 —— 同样不能落一个只有元数据壳的文件。"""
+    item = dict(HOT_ITEM, content="", content_source="full")
+
+    path = materialize_hot_post_raw(
+        DATE, "7336413989", "412922588", {HOT_ITEM["status_id"]: item}, tmp_path
+    )
+
+    assert path is None
+
+
+def test_state_key_is_stable_for_hot_paths(tmp_path):
+    """去重全靠 state key：热榜路径两次生成必须一致，且带日期不会跨天复用。"""
+    hot_path = (
+        tmp_path / "hot_posts" / DATE / HOT_RAW_SUBDIR / "7336413989" / "412922588.md"
+    )
+
+    key_a = make_state_key(DATE, hot_path, tmp_path)
+    key_b = make_state_key(DATE, hot_path, tmp_path)
+
+    assert key_a == key_b
+    assert key_a.startswith(f"{DATE}:")
+    assert "raw_md" in key_a

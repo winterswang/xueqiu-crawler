@@ -51,9 +51,8 @@ logger = logging.getLogger(__name__)
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_DIR / "data"
 SYNC_STATE_FILE = DATA_DIR / ".ima_raw_sync_state.json"
-HOT_POSTS_DIR = DATA_DIR / "hot_posts"
-# 热榜帖落盘的子目录：与 hot_posts 同目录，避免污染 data/<uid>/（那里是自选账号的
-# 爬取产物，crawler 的索引/历史/日报都按目录口径读）。
+# 热榜帖落盘的子目录（相对 data/ 的 hot_posts/<date>/ 下）：避免污染 data/<uid>/
+# （那里是自选账号的爬取产物，crawler 的索引/历史/日报都按目录口径读）。
 HOT_RAW_SUBDIR = "raw_md"
 KB_ID = "_gi4FCt1TSGAGMETEKONaWB4jBog1i3aukvR7usNDYQ="
 KB_NAME = "雪球内容数据"
@@ -117,6 +116,10 @@ def load_hot_top_items(date_str: str, hot_dir: Path) -> dict[str, dict]:
         return {}
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.warning(f"读取热榜文件失败，本轮不做热榜补位: {path} ({exc})")
+        return {}
+    if not isinstance(doc, dict):
+        # 合法 JSON 但不是对象（`[]`/`null` 等）—— 与损坏同论
+        logger.warning(f"热榜文件格式不对（顶层不是对象），本轮不做热榜补位: {path}")
         return {}
     items = doc.get("items") or []
     return {
@@ -199,6 +202,11 @@ def materialize_hot_post_raw(
         # 内容没变就不重写：保持 mtime，让下文的「mtime+size 未变 → 已上传」判断生效
         if path.exists() and path.read_text(encoding="utf-8") == markdown:
             return path
+    except (OSError, UnicodeDecodeError):
+        # 旧文件读不出来（同日一轮被中途打断留下的半截多字节字符等）：
+        # 当作「内容不一致」走下面的重写自愈，而不是让整个同步步骤崩掉
+        logger.warning(f"  ⚠️ 已有热榜 raw 读不出来，覆盖重写: {path}")
+    try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(markdown, encoding="utf-8")
     except OSError as exc:
@@ -267,18 +275,23 @@ def find_selected_article_files(
     return sorted(paths), total, missing, hot_filled
 
 
-def make_state_key(date_str: str, file_path: Path) -> str:
-    """[W32 新增] 生成 state key: date:user_id:post_id"""
+def make_state_key(date_str: str, file_path: Path, data_dir: Path | None = None) -> str:
+    """[W32 新增] 生成 state key: date:user_id:post_id
+
+    热榜补齐路径（hot_posts/<date>/raw_md/<uid>/<pid>.md）落不进 uid/pid 短式，
+    用相对路径兜底 —— 只需两次生成一致（test_state_key_is_stable_for_hot_paths 守着）。
+    """
+    data_dir = DATA_DIR if data_dir is None else data_dir
     try:
-        rel = file_path.relative_to(DATA_DIR)
-        parts = rel.parts  # ('1425236713', '400972632.md')
-        if len(parts) == 2 and parts[0].isdigit():
-            post_id = parts[1].replace('.md', '')
-            return f"{date_str}:{parts[0]}:{post_id}"
+        rel = file_path.relative_to(data_dir)
     except ValueError:
-        pass
-    # 兜底用相对路径
-    return f"{date_str}:{str(file_path.relative_to(DATA_DIR))}"
+        # 不在 data_dir 下（理论上不该发生）：退回绝对路径，保证可生成、可复现
+        return f"{date_str}:abs:{file_path}"
+    parts = rel.parts  # ('1425236713', '400972632.md')
+    if len(parts) == 2 and parts[0].isdigit():
+        post_id = parts[1].replace('.md', '')
+        return f"{date_str}:{parts[0]}:{post_id}"
+    return f"{date_str}:{rel}"
 
 
 def extract_article_title(md_path: Path) -> str:
