@@ -923,3 +923,39 @@ def test_score_items_volatility_penalty_yields_to_substantive_topics():
     assert sum(scored[0]["topic_hits"].values()) >= 4
     assert scored[0]["is_volatility_speculation"] is False
     assert "volatility" not in scored[0]["breakdown"]
+
+
+def test_volatility_composite_index_name_counts_once():
+    """「上证指数」是一个专名，不能拆成 上证+指数 两个 distinct 弱信号
+    （PR #124 review 实测：跑输上证指数的公司分析被误罚 −15）。"""
+    strong_n, weak_n = hp.volatility_signal("股价今年跑输上证指数，但公司基本面没变。")
+    assert strong_n == 0
+    assert weak_n == 0  # 专名归一后，这句里不再有任何独立行情词
+
+    strong_n, weak_n = hp.volatility_signal("创业板指数回调了 3%。")
+    assert strong_n == 0
+    assert weak_n == 1  # 创业板指数归一后只剩 回调 一个弱信号
+    # 专名之外的独立行情词照常计数
+    assert hp.volatility_signal("大盘走弱，全年跑输上证指数。") == (0, 1)
+
+
+def test_volatility_suppression_boundary_at_four_topic_hits():
+    """校准常数钉死：主题词 3 个照罚、4 个让路。"""
+
+    def _make(text):
+        items = _windowed([make_item(1, "2026-10-16T20:00:00+08:00", content=text)])
+        return hp.score_items(items, [], set(), CFG, NOW, set())[0]
+
+    three = (
+        "这家公司业绩扎实、估值便宜，管理层也靠谱，可惜这波要学会逃顶。" + "详细" * 100
+    )
+    four = (
+        "这家公司业绩扎实、估值便宜，管理层也靠谱，现金流稳，"
+        "可惜这波要学会逃顶。" + "详细" * 100
+    )
+    assert sum(hp.topic_hits("业绩估值管理层现金流").values()) == 4
+
+    scored_three = _make(three)
+    scored_four = _make(four)
+    assert scored_three["is_volatility_speculation"] is True
+    assert scored_four["is_volatility_speculation"] is False

@@ -9,13 +9,15 @@
 （默认 24h，Asia/Shanghai）。不按日历日切：几点跑窗口就自动跟到几点，
 早报 8 点跑即「昨早 8 点 → 现在」。跨过零点发布的条目在报告里标「今晨」。
 
-打分（0-100，权重见 config.yaml hot_posts.weights）：
+打分（权重和 110，score 只用于相对排序与展示；见 config.yaml hot_posts.weights）：
   rank        雪球「热门」榜位次（站点 smart 排序的置信度）
   freshness   exp(-小时龄 / 半衰期)
   engagement  log1p(赞 + 2*评 + 3*转) / log1p(批次 P95)
   watchlist   正文 $股票(代码)$ 与自选股（opencli xueqiu watchlist）交集
   followed    作者在 config/accounts.yaml 关注列表
   depth       长文加分、短贴降权（以纯文本长度近似内容深度）
+  topic       主题契合：企业分析/投资理念/策略（2026-10-20 用户口径）
+主题外扣分（penalties）：pnl_showoff 晒收益；volatility 市场波动/涨跌预测。
 连续霸榜降权：命中昨日 top10 的条目总分 × repeat_decay。
 
 失败契约：任何一步失败都落盘 data/.last_hot_stats.json（ok=false）并以非 0
@@ -185,7 +187,8 @@ _VOLATILITY_STRONG = (
     '跌停',
     '追涨杀跌',
 )
-# 强信号正则：预测/判断大盘涨跌方向的话语（「预测大盘会涨」式）
+# 强信号正则：预测/预判大盘涨跌方向的话语（「预测大盘会涨」式）。
+# 故意不含「判断」——「判断一家公司的价值」是正常分析，误伤面太大。
 _VOLATILITY_STRONG_RES = (
     re.compile(
         r'(预测|预判|猜)[^。！？\n]{0,4}(大盘|指数|沪指|上证|创业板|纳指|道指|涨跌|顶部|底部)'
@@ -194,7 +197,9 @@ _VOLATILITY_STRONG_RES = (
         r'(大盘|指数|沪指|上证|创业板)[^。！？\n]{0,6}(会涨|会跌|要涨|要跌|冲高|见顶|见底)'
     ),
 )
-# 弱信号：常见市场行情词，单独出现不说明什么，≥2 个 distinct 才判波动类
+# 弱信号：常见市场行情词，单独出现不说明什么，≥2 个 distinct 才判波动类。
+# ⚠️ 复合指数名（上证指数/创业板指数/沪深300指数…）横跨两个词条（上证+指数），
+# 统计前必须先归一（见 _COMPOSITE_INDEX_RE），否则提一次专名就算 2 个信号。
 _VOLATILITY_WEAK = (
     '大盘',
     '指数',
@@ -230,13 +235,22 @@ def topic_hits(text: str) -> dict[str, int]:
     }
 
 
+# 复合指数名归一：一个专有名词横跨两个弱信号词条（上证+指数、创业板+指数），
+# 不归一的话提一次「上证指数」就被当成 2 个 distinct 信号（PR #124 review 实测：
+# 「跑输上证指数」的公司分析被罚 −15，正打「顺带提大盘不误伤」的非目标）。
+_COMPOSITE_INDEX_RE = re.compile(
+    r'(?:上证|大盘|创业板|科创板|沪深|中证|深证|纳斯达克|道琼斯|标普|费城)\s*'
+    r'(?:\d+\s*)?指数'
+)
+
+
 def volatility_signal(text: str) -> tuple[int, int]:
     """市场波动/涨跌预测信号强度，返回 `(strong_hits, weak_hits)`。
 
     strong = 择时/交易话语词（逃顶、抄底…）+ 预测大盘方向的句式；
     weak = 常见行情词（大盘、回调…）。均按 distinct 计。
     """
-    t = text or ''
+    t = _COMPOSITE_INDEX_RE.sub('☉', text or '')
     strong = sum(1 for kw in _VOLATILITY_STRONG if kw in t)
     strong += sum(1 for pattern in _VOLATILITY_STRONG_RES if pattern.search(t))
     weak = sum(1 for kw in _VOLATILITY_WEAK if kw in t)
