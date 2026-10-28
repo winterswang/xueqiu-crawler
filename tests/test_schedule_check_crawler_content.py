@@ -106,12 +106,17 @@ def _fixture(tmp_path: Path, bodies: dict[str, str]) -> Path:
 
 
 def _run(
-    root: Path, mode: str = "morning", monitor: Path | None = None
+    root: Path,
+    mode: str = "morning",
+    monitor: Path | None = None,
+    artifact_hour: int = 0,
 ) -> tuple[int, str]:
     env = {
         "PATH": "/usr/bin:/bin:/usr/local/bin",
         "XQ_CRAWLER_DIR": str(root),
         "XQ_PRECHECK_MODE": mode,
+        # 0 让 19:00 产物检查在测试里恒定生效，不受跑测试的钟点影响。
+        "XQ_ARTIFACT_HOUR": str(artifact_hour),
     }
     if monitor is not None:
         env["XQ_MONITOR_DIR"] = str(monitor)
@@ -170,6 +175,12 @@ def _monitor_fixture(
     (root / "logs").mkdir(parents=True)
     # 12:00 的 sync-watchlist 产物；缺了会被 eod 单独报一条，掩盖本组断言。
     (root / "logs" / "sync_watchlist.log").write_text("ok\n", encoding="utf-8")
+    # 19:00 的三件套同理：默认造齐，只在专门测「缺产物」的用例里删掉。
+    (root / "data" / "daily_reports").mkdir(parents=True)
+    for suffix in ("-alerts.md", "-sentiment.md", "-summary.json"):
+        (root / "data" / "daily_reports" / f"{TODAY}{suffix}").write_text(
+            "ok\n", encoding="utf-8"
+        )
     for name, runs in groups.items():
         p = root / "logs" / name
         blocks = []
@@ -652,3 +663,45 @@ def test_peak_realerts_after_recovery_then_recurrence(tmp_path):
     code, out = _peak_run(root, monitor, final=False)
     assert code == 0
     assert "pipeline-g2.log 整组零帖" in out
+
+
+def test_missing_report_artifact_is_reported_once(tmp_path):
+    """日报产物由两个不同的 job 写，缺哪个就报哪个，别把三个一起喊。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    (monitor / "data" / "daily_reports" / f"{TODAY}-summary.json").unlink()
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert code == 0
+    assert out.count("缺") == 1, f"只缺一个文件却报了几条：{out}"
+    assert "-summary.json" in out
+    assert "-alerts.md" not in out
+    assert "-sentiment.md" not in out
+
+
+def test_empty_report_artifact_is_not_treated_as_present(tmp_path):
+    """非原子写入被打断会留下 0 字节文件 —— 存在 ≠ 写完了。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    (monitor / "data" / "daily_reports" / f"{TODAY}-sentiment.md").write_text(
+        "", encoding="utf-8"
+    )
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert code == 0
+    assert "19:00 舆情日报是空文件" in out
+
+
+def test_artifact_gate_waits_until_after_the_1900_job(tmp_path):
+    """19:00 的产物 19:04 才落盘，而 eod 模式 18 点就生效 —— 早了不判，免得误报。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    for suffix in ("-alerts.md", "-sentiment.md", "-summary.json"):
+        (monitor / "data" / "daily_reports" / f"{TODAY}{suffix}").unlink()
+
+    code, out = _run(root, mode="eod", monitor=monitor, artifact_hour=99)
+
+    assert code == 2, f"未到点不该报产物缺失：{out}"
+    assert "缺" not in out
