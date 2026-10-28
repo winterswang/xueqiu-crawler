@@ -30,7 +30,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-import { readPipelineRun, isAllEmpty } from './pipeline-stats.mjs';
+import { readPipelineRun, isAllEmpty, zeroPostProblems } from './pipeline-stats.mjs';
 
 const now = new Date();
 const hour = now.getHours();
@@ -88,6 +88,41 @@ function checkWindow() {
   }
 }
 
+// 六组 pipeline 的收尾状态。**每小时都判**，不只在收官轮 ——
+// 2026-10-28 的 g2/g4 是 15:00–16:06 空的，若只在 18:xx 判，等于晚了两个多小时。
+// 日志由各条 cron tee **覆盖**写入，所以「今天更新过 + 有 [SUMMARY]」才等于
+// 「这组今天跑完了」。2026-10-05 踩过：只看 [SUMMARY] 不看 mtime，13:30 跑收官
+// 分支会把**昨天**的 g2–g5 日志读成 ok —— 那几组今天还没到点。
+let pipeReport = [];
+
+function checkPipelines() {
+  const today = now.toLocaleDateString('sv-SE');
+  const groups = ['pipeline.log', 'pipeline-g1.log', 'pipeline-g2.log',
+                  'pipeline-g3.log', 'pipeline-g4.log', 'pipeline-g5.log'];
+  const report = [];
+  const pipeStats = [];
+  for (const name of groups) {
+    const p = join(MONITOR, 'logs', name);
+    if (!existsSync(p)) { report.push(`${name}: 缺日志`); continue; }
+    if (statSync(p).mtime.toLocaleDateString('sv-SE') !== today) {
+      report.push(`${name}: 今天还没跑`);
+      continue;
+    }
+    const run = readPipelineRun(p, today);
+    if (!run.summary) { report.push(`${name}: 跑了但没跑完（无 [SUMMARY]）`); continue; }
+    const bad = run.failed;
+    if (bad > 0) problems.push(`${name} 有 ${bad} 只失败：${run.summary}`);
+    // failed=0 只说明没抛异常；整组零帖时 [SUMMARY] 照样写 success=N/N（见 check.mjs）。
+    pipeStats.push({ name, run });
+    const total = run.total ?? run.stocks;
+    report.push(
+      `${name}: ${bad > 0 ? `失败 ${bad} 只` : isAllEmpty(run) ? `整组零帖 ${total} 只` : 'ok'}`,
+    );
+  }
+  problems.push(...zeroPostProblems(pipeStats));
+  pipeReport = report;
+}
+
 // 收官轮：把 14:00 起整个下午的峰值画像与六组 pipeline 的产出一起汇总。
 function buildAfternoonSummary() {
   let afternoon;
@@ -105,52 +140,12 @@ function buildAfternoonSummary() {
     `近 5 小时按小时：${Object.entries(afternoon.by_hour || {}).map(([h, n]) => `${h.slice(11)}→${n}`).join('  ')}`,
   ];
 
-  // 六组 pipeline 各自的 [SUMMARY]。日志由各条 cron tee **覆盖**写入，
-  // 所以「今天更新过 + 有 [SUMMARY]」才等于「这组今天跑完了」。
-  // 2026-10-05 踩过：只看 [SUMMARY] 不看 mtime，13:30 跑收官分支会把**昨天**
-  // 的 g2–g5 日志读成 ok —— 那几组今天还没到点。必须按日期先判新鲜度。
-  const today = now.toLocaleDateString('sv-SE');
-  const groups = ['pipeline.log', 'pipeline-g1.log', 'pipeline-g2.log',
-                  'pipeline-g3.log', 'pipeline-g4.log', 'pipeline-g5.log'];
-  const pipeReport = [];
-  const pipeStats = [];
-  for (const name of groups) {
-    const p = join(MONITOR, 'logs', name);
-    if (!existsSync(p)) { pipeReport.push(`${name}: 缺日志`); continue; }
-    if (statSync(p).mtime.toLocaleDateString('sv-SE') !== today) {
-      pipeReport.push(`${name}: 今天还没跑`);
-      continue;
-    }
-    const run = readPipelineRun(p);
-    if (!run.summary) { pipeReport.push(`${name}: 跑了但没跑完（无 [SUMMARY]）`); continue; }
-    const bad = run.failed;
-    if (bad > 0) problems.push(`${name} 有 ${bad} 只失败：${run.summary}`);
-    // failed=0 只说明没抛异常；整组零帖时 [SUMMARY] 照样写 success=N/N（见 check.mjs）。
-    pipeStats.push({ name, run });
-    const emptyAll = isAllEmpty(run);
-    const total = run.total ?? run.stocks;
-    pipeReport.push(
-      `${name}: ${bad > 0 ? `失败 ${bad} 只` : emptyAll ? `整组零帖 ${total} 只` : 'ok'}`,
-    );
-  }
-  // 别的组有数据、这组全空 → 逐组报；六组全空 → 一条汇总（全站故障不能静默）。
-  const emptyGroups = pipeStats.filter(({ run }) => isAllEmpty(run));
-  if (emptyGroups.length > 0 && emptyGroups.length === pipeStats.length) {
-    problems.push(`六组 pipeline 全部零帖（${emptyGroups.map((g) => g.name).join('、')}）`
-      + ' —— 要么站点侧全挂，要么今天休市；请人工确认是哪一种');
-  } else {
-    for (const { name, run } of emptyGroups) {
-      problems.push(
-        `${name} 整组零帖（${run.total ?? run.stocks} 只跑完却一只都没抓到帖子，`
-        + `SUMMARY 仍报 failed=${run.failed}）`,
-      );
-    }
-  }
   lines.push(`pipeline：${pipeReport.join('  ')}`);
   problems.push('【下午峰值小结】\n  ' + lines.join('\n  '));
 }
 
 checkWindow();
+checkPipelines();
 if (isFinal) buildAfternoonSummary();
 
 if (complete) process.stdout.write('CINDY_PRECHECK_OK\n');

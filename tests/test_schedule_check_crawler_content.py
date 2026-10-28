@@ -14,9 +14,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
-from datetime import date
+import time
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -122,9 +124,16 @@ def _run(
     return proc.returncode, proc.stdout
 
 
-def _log_run(total: int, with_posts: int, failed: int = 0) -> str:
-    """一次运行的收尾三行，字段与线上日志同形（顺序也是线上的顺序）。"""
+def _log_run(
+    total: int,
+    with_posts: int,
+    failed: int = 0,
+    day: str = "",
+    with_health: bool = True,
+) -> str:
+    """一次运行的收尾三行，字段与线上日志同形（含 `YYYY-MM-DD HH:MM:SS` 前缀）。"""
     empty = total - with_posts - failed
+    stamp = f"{day} 13:20:00 " if day else ""
     health = {
         "status": "healthy" if with_posts == total and failed == 0 else "degraded",
         "total": total,
@@ -139,32 +148,47 @@ def _log_run(total: int, with_posts: int, failed: int = 0) -> str:
         "failed": failed,
         "total_stocks": total,
         "alerts": 0,
-        "crawl_health": health,
     }
+    if with_health:  # 老日志没有 crawl_health，走人读行回退分支
+        done["crawl_health"] = health
     return (
-        f"[INFO] __main__: 成功但零帖: {empty} | 超时: 0 | 失败: {failed}\n"
-        f"[INFO] __main__: Pipeline完成: {json.dumps(done)}\n"
-        f"[INFO] __main__: [SUMMARY] stocks={total}/{total} success={total - failed} "
-        f"failed={failed} alerts=0 p0=0 p1=0 p2=0 filtered=0 elapsed=100s\n"
+        f"{stamp}[INFO] __main__: 成功但零帖: {empty} | 超时: 0 | 失败: {failed}\n"
+        f"{stamp}[INFO] __main__: Pipeline完成: {json.dumps(done)}\n"
+        f"{stamp}[INFO] __main__: [SUMMARY] stocks={total}/{total} "
+        f"success={total - failed} failed={failed} alerts=0 p0=0 p1=0 p2=0 "
+        f"filtered=0 elapsed=100s\n"
     )
 
 
-def _monitor_fixture(tmp_path: Path, groups: dict[str, list[tuple[int, int]]]) -> Path:
+def _monitor_fixture(
+    tmp_path: Path,
+    groups: dict[str, list[tuple]],
+    stale: tuple[str, ...] = (),
+) -> Path:
     """造一个 monitor 目录：每组一份今天更新过的 pipeline 日志。
 
-    ``groups`` 的 value 是**历次运行**的 ``(股票数, 有帖数[, 失败数])`` 列表，
-    最后一次是今天这轮。
-    主 job 的 ``pipeline.log`` 是跨天**追加**的，所以这里要能写出多轮 ——
-    只写一轮的话，「取第一条还是最后一条」的 bug 测不出来。
+    ``groups`` 的 value 是**历次运行**的 ``(股票数, 有帖数[, 失败数[, 日期]])``
+    列表，最后一轮是今天这轮。主 job 的 ``pipeline.log`` 是跨天**追加**的，
+    所以这里要能写出多轮 —— 只写一轮的话，「取第一条还是最后一条」测不出来。
+
+    ``stale`` 里的组把 mtime 往前推一天，模拟「今天还没跑」。
     """
     root = tmp_path / "monitor"
     (root / "logs").mkdir(parents=True)
     # 12:00 的 sync-watchlist 产物；缺了会被 eod 单独报一条，掩盖本组断言。
     (root / "logs" / "sync_watchlist.log").write_text("ok\n", encoding="utf-8")
     for name, runs in groups.items():
-        (root / "logs" / name).write_text(
-            "".join(_log_run(*run) for run in runs), encoding="utf-8"
-        )
+        p = root / "logs" / name
+        blocks = []
+        for run in runs:
+            # 四元组自带日期（用来写昨天的运行）；否则默认今天。
+            blocks.append(
+                _log_run(*run) if len(run) >= 4 else _log_run(*run, day=TODAY)
+            )
+        p.write_text("".join(blocks), encoding="utf-8")
+        if name in stale:
+            yesterday = time.time() - 86400
+            os.utime(p, (yesterday, yesterday))
     return root
 
 
@@ -388,7 +412,7 @@ def _usage_stub(root: Path, payload: dict) -> None:
     p.write_text(f"import json\nprint(json.dumps({payload!r}))\n", encoding="utf-8")
 
 
-def _peak_run(root: Path, monitor: Path) -> tuple[int, str]:
+def _peak_run(root: Path, monitor: Path, final: bool = True) -> tuple[int, str]:
     proc = subprocess.run(
         ["node", str(_PEAK)],
         capture_output=True,
@@ -397,7 +421,7 @@ def _peak_run(root: Path, monitor: Path) -> tuple[int, str]:
             "PATH": "/usr/bin:/bin:/usr/local/bin",
             "XQ_CRAWLER_DIR": str(root),
             "XQ_MONITOR_DIR": str(monitor),
-            "XQ_PEAK_FINAL": "1",
+            "XQ_PEAK_FINAL": "1" if final else "0",
         },
     )
     return proc.returncode, proc.stdout
@@ -444,3 +468,74 @@ def test_peak_is_silent_when_every_group_is_healthy(tmp_path):
 
     assert "整组零帖" not in out
     assert "pipeline.log: ok" in out
+
+
+# ── 审查追加：日期绑定、残缺组、老日志回退、每小时都判 ──
+_YESTERDAY = (date.today() - timedelta(days=1)).isoformat()
+
+
+def test_hung_run_today_is_not_judged_by_yesterdays_summary(tmp_path):
+    """今天起了头就崩、还没写收尾时，最后一条是昨天的 —— 不能当「今天跑完了」。
+
+    主 job 的 pipeline.log 追加多天；只看「最后一条」而不看日期，
+    今天崩掉的运行会被昨天的 healthy 记录顶替，巡检报全绿。
+    """
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(
+        tmp_path, {**_OK_GROUPS, "pipeline-g2.log": [(9, 9, 0, _YESTERDAY)]}
+    )
+    # 只有昨天的收尾记录，但 mtime 是今天（进程刚起就崩，文件被这次运行写过）
+    assert "没有 [SUMMARY]" in _run(root, mode="eod", monitor=monitor)[1]
+
+
+def test_one_empty_group_with_others_not_run_is_not_called_sitewide(tmp_path):
+    """五组没跑 + 一组零帖 ≠ 全站故障。说成「六组全部零帖」会把排查带偏。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    others = tuple(n for n in _OK_GROUPS if n != "pipeline-g2.log")
+    monitor = _monitor_fixture(
+        tmp_path, {**_OK_GROUPS, "pipeline-g2.log": [(9, 0)]}, stale=others
+    )
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert "pipeline-g2.log 整组零帖" in out
+    assert "六组 pipeline 全部零帖" not in out
+
+
+def test_legacy_log_without_crawl_health_still_detects_zero_posts(tmp_path):
+    """老日志没有 crawl_health 时走人读行回退；有失败/超时也必须判得出来。
+
+    回退分支此前拿「零帖数 >= 股票总数」比，8 只里 7 只失败、1 只零帖时
+    1 >= 8 永远不成立 —— 明明一条帖子都没有，却判成正常。
+    """
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    (monitor / "logs" / "pipeline-g4.log").write_text(
+        _log_run(8, 0, 7, day=TODAY, with_health=False), encoding="utf-8"
+    )
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert "pipeline-g4.log 整组零帖" in out
+
+
+def test_peak_hourly_round_also_checks_zero_posts(tmp_path):
+    """15:00 出的问题不能等到 18:xx 收官轮才说 —— 每小时那一轮就要判。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    _usage_stub(
+        root,
+        {
+            "site_total": 20,
+            "site_failed": 0,
+            "local_total": 0,
+            "site_peak": {"minute": "2026-10-28 15:30", "count": 4},
+            "by_hour": {"2026-10-28 15:00": 20},
+        },
+    )
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g2.log": [(9, 0)]})
+
+    code, out = _peak_run(root, monitor, final=False)
+
+    assert code == 0
+    assert "pipeline-g2.log 整组零帖" in out
+    assert "【下午峰值小结】" not in out

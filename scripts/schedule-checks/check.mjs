@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-import { readPipelineRun, isAllEmpty } from './pipeline-stats.mjs';
+import { readPipelineRun, zeroPostProblems } from './pipeline-stats.mjs';
 
 const now = new Date();
 const mode = process.env.XQ_PRECHECK_MODE
@@ -211,7 +211,7 @@ function checkEod() {
       problems.push(`${name} 今天没更新（最后 ${dayOf(statSync(p).mtime)}）`);
       continue;
     }
-    const run = readPipelineRun(p);
+    const run = readPipelineRun(p, today);
     if (!run.summary) { problems.push(`${name} 今天跑了但没有 [SUMMARY]（可能中途失败）`); continue; }
     if (run.failed > 0) problems.push(`${name} 有 ${run.failed} 只失败：${run.summary}`);
     // 和上面「正文只剩样板」同一类：failed=0 只说明没抛异常。opencli 两个操作全挂时
@@ -219,23 +219,7 @@ function checkEod() {
     // 17 只股票整天没数据，[SUMMARY] 仍写 success=9/9 failed=0，巡检全绿。
     pipeStats.push({ name, run });
   }
-  // 整组零帖：别的组有数据、这组全空是异常；六组全空则是一次汇总（不是静默，
-  // 也不刷六条）—— 全站性故障正是最该叫醒人的那种。
-  const empty = pipeStats.filter(({ run }) => isAllEmpty(run));
-  const alive = pipeStats.length - empty.length;
-  if (empty.length > 0 && alive > 0) {
-    for (const { name, run } of empty) {
-      problems.push(
-        `${name} 整组零帖（${run.total ?? run.stocks} 只跑完却一只都没抓到帖子，`
-        + `SUMMARY 仍报 failed=${run.failed}）`,
-      );
-    }
-  } else if (empty.length > 0 && alive === 0) {
-    problems.push(
-      `六组 pipeline 全部零帖（${empty.map((g) => g.name).join('、')}）`
-      + ' —— 要么站点侧全挂，要么今天休市；请人工确认是哪一种',
-    );
-  }
+  problems.push(...zeroPostProblems(pipeStats));
   const syncLog = join(MONITOR, 'logs/sync_watchlist.log');
   if (!existsSync(syncLog)) {
     problems.push('缺 logs/sync_watchlist.log（12:00 的 sync-watchlist 没跑过？）');

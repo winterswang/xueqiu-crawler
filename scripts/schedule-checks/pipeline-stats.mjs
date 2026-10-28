@@ -4,9 +4,11 @@
 // ----------------
 // `pipeline.log`（13:00 主 job）是跨天**追加**的，同一天里能翻到前几天的
 // `[SUMMARY]`；`pipeline-g1..g5.log` 是各条 cron 每次 tee **覆盖**的。
-// 所以取收尾记录一律取**最后一次**运行 —— 用 `match`（第一次匹配）会让主 job
-// 永远读到几天前的数字。2026-10-28 复现：pipeline.log 里 6 条 SUMMARY（10-23…10-28），
-// 首条是 10-23 的，`failed=0` 和零帖数都成了陈年数据。
+// 所以取收尾记录要同时满足两件事：**最后一次**运行，且**是今天**的。
+//
+// 只看「最后一次」不够：今天的 job 起了头就卡死/崩掉、还没来得及写收尾时，
+// 最后一条仍是昨天的，mtime 却是今天 —— 会被当成「今天跑完了且一切正常」。
+// 日志每行都带 `YYYY-MM-DD HH:MM:SS` 前缀，拿它绑定日期。
 //
 // 为什么读 `Pipeline完成:` 而不是人读日志行
 // -----------------------------------------
@@ -20,6 +22,7 @@
 import { readFileSync } from 'node:fs';
 
 const DONE_MARK = 'Pipeline完成: ';
+const GROUPS = 6;
 
 function lastMatch(text, re) {
   // matchAll 只接受带 g 的正则；调用方写 `/x/` 时在这里补上，免得每次都要记。
@@ -29,33 +32,37 @@ function lastMatch(text, re) {
 }
 
 /**
- * 读一份 pipeline 日志里**最后一次运行**的收尾状态。
+ * 读一份 pipeline 日志里**今天最后一次运行**的收尾状态。
  *
  * @param {string} file 日志绝对路径。
+ * @param {string} today `YYYY-MM-DD`；只认带这个日期前缀的行。不传则不按日期过滤
+ *   （仅便于手工排查，巡检一律传）。
  * @returns {{summary: string|null, stocks: number, failed: number,
  *   total: number|null, withPosts: number|null, coverage: number|null,
  *   status: string|null, trailZero: number|null}}
+ *   `summary` 为 null 表示今天没有收尾记录（没跑、或跑到一半崩了）；
  *   `total`/`withPosts` 来自 `crawl_health`，缺失时为 null（老日志）。
  */
-export function readPipelineRun(file) {
+export function readPipelineRun(file, today = null) {
   const text = readFileSync(file, 'utf8');
-  const lines = text.split('\n');
+  const days = text.split('\n').filter((line) => !today || line.startsWith(today));
 
   // 从尾部往前找一个能解析的收尾 JSON —— 进程被打断时最后一行可能是半截。
   let done = null;
-  for (let i = lines.length - 1; i >= 0 && done === null; i -= 1) {
-    const at = lines[i].indexOf(DONE_MARK);
+  for (let i = days.length - 1; i >= 0 && done === null; i -= 1) {
+    const at = days[i].indexOf(DONE_MARK);
     if (at < 0) continue;
     try {
-      done = JSON.parse(lines[i].slice(at + DONE_MARK.length).trim());
+      done = JSON.parse(days[i].slice(at + DONE_MARK.length).trim());
     } catch {
       done = null;
     }
   }
 
-  const summary = lastMatch(text, /\[SUMMARY\] (.+)/);
+  const scope = days.join('\n');
+  const summary = lastMatch(scope, /\[SUMMARY\] (.+)/);
   const health = done?.crawl_health ?? null;
-  const zeroText = lastMatch(text, /成功但零帖: (\d+)/);
+  const zeroText = lastMatch(scope, /成功但零帖: (\d+)/);
 
   return {
     summary,
@@ -83,6 +90,36 @@ export function isAllEmpty(run) {
   const total = run.total ?? run.stocks;
   if (!(total > 0)) return false;
   if (run.withPosts !== null) return run.withPosts === 0;
-  if (run.trailZero !== null) return run.trailZero >= total;
+  // 老日志：没有 withPosts，只有「成功但零帖」的只数。要拿它和**成功数**比，
+  // 不能和总数比 —— 超时/失败的股票本来就不会产出帖子，不该稀释这条判断。
+  if (run.trailZero !== null) return run.trailZero >= total - run.failed;
   return false;
+}
+
+function describe(run) {
+  const total = run.total ?? run.stocks;
+  const failed = run.failed > 0 ? `，failed=${run.failed}` : '';
+  return `${total} 只里没有一只有帖子${failed}`;
+}
+
+/**
+ * 把分组状态翻译成要报的问题（check.mjs 与 peak.mjs 共用同一套措辞）。
+ *
+ * @param {{name: string, run: ReturnType<typeof readPipelineRun>}[]} pipeStats
+ *   今天**成功解析出收尾记录**的分组；没跑/没跑完的组不进这个数组（各自另有告警）。
+ * @returns {string[]}
+ */
+export function zeroPostProblems(pipeStats) {
+  const empty = pipeStats.filter(({ run }) => isAllEmpty(run));
+  if (empty.length === 0) return [];
+  // 只有六组全部解析成功、且全部为空，才是「全站性故障/休市」。
+  // 少几组多半是那几组没跑（它们另有「今天没更新/没有 [SUMMARY]」的告警），
+  // 这时说成「六组全部零帖」会把排查方向带偏。
+  if (pipeStats.length === GROUPS && empty.length === GROUPS) {
+    return [
+      `六组 pipeline 全部零帖（${pipeStats.map((g) => g.name).join('、')}）`
+      + ' —— 要么站点侧全挂，要么今天休市；请人工确认是哪一种',
+    ];
+  }
+  return empty.map(({ name, run }) => `${name} 整组零帖（${describe(run)}，SUMMARY 仍报 failed=${run.failed}）`);
 }
