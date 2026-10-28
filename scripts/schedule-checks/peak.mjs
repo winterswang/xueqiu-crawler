@@ -30,6 +30,8 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
+import { readPipelineRun, isAllEmpty } from './pipeline-stats.mjs';
+
 const now = new Date();
 const hour = now.getHours();
 // 最后一轮（18 点后）除了巡检，还要把整个下午的峰值画像汇总出来。
@@ -111,6 +113,7 @@ function buildAfternoonSummary() {
   const groups = ['pipeline.log', 'pipeline-g1.log', 'pipeline-g2.log',
                   'pipeline-g3.log', 'pipeline-g4.log', 'pipeline-g5.log'];
   const pipeReport = [];
+  const pipeStats = [];
   for (const name of groups) {
     const p = join(MONITOR, 'logs', name);
     if (!existsSync(p)) { pipeReport.push(`${name}: 缺日志`); continue; }
@@ -118,12 +121,30 @@ function buildAfternoonSummary() {
       pipeReport.push(`${name}: 今天还没跑`);
       continue;
     }
-    const s = readFileSync(p, 'utf8').match(/\[SUMMARY\] (.+)/);
-    if (!s) { pipeReport.push(`${name}: 跑了但没跑完（无 [SUMMARY]）`); continue; }
-    const failed = /failed=(\d+)/.exec(s[1]);
-    const bad = failed ? Number(failed[1]) : 0;
-    if (bad > 0) problems.push(`${name} 有 ${bad} 只失败：${s[1]}`);
-    pipeReport.push(`${name}: ${bad > 0 ? `失败 ${bad} 只` : 'ok'}`);
+    const run = readPipelineRun(p);
+    if (!run.summary) { pipeReport.push(`${name}: 跑了但没跑完（无 [SUMMARY]）`); continue; }
+    const bad = run.failed;
+    if (bad > 0) problems.push(`${name} 有 ${bad} 只失败：${run.summary}`);
+    // failed=0 只说明没抛异常；整组零帖时 [SUMMARY] 照样写 success=N/N（见 check.mjs）。
+    pipeStats.push({ name, run });
+    const emptyAll = isAllEmpty(run);
+    const total = run.total ?? run.stocks;
+    pipeReport.push(
+      `${name}: ${bad > 0 ? `失败 ${bad} 只` : emptyAll ? `整组零帖 ${total} 只` : 'ok'}`,
+    );
+  }
+  // 别的组有数据、这组全空 → 逐组报；六组全空 → 一条汇总（全站故障不能静默）。
+  const emptyGroups = pipeStats.filter(({ run }) => isAllEmpty(run));
+  if (emptyGroups.length > 0 && emptyGroups.length === pipeStats.length) {
+    problems.push(`六组 pipeline 全部零帖（${emptyGroups.map((g) => g.name).join('、')}）`
+      + ' —— 要么站点侧全挂，要么今天休市；请人工确认是哪一种');
+  } else {
+    for (const { name, run } of emptyGroups) {
+      problems.push(
+        `${name} 整组零帖（${run.total ?? run.stocks} 只跑完却一只都没抓到帖子，`
+        + `SUMMARY 仍报 failed=${run.failed}）`,
+      );
+    }
   }
   lines.push(`pipeline：${pipeReport.join('  ')}`);
   problems.push('【下午峰值小结】\n  ' + lines.join('\n  '));

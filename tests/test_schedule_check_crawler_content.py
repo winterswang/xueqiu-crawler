@@ -103,18 +103,79 @@ def _fixture(tmp_path: Path, bodies: dict[str, str]) -> Path:
     return root
 
 
-def _run(root: Path) -> tuple[int, str]:
+def _run(
+    root: Path, mode: str = "morning", monitor: Path | None = None
+) -> tuple[int, str]:
+    env = {
+        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "XQ_CRAWLER_DIR": str(root),
+        "XQ_PRECHECK_MODE": mode,
+    }
+    if monitor is not None:
+        env["XQ_MONITOR_DIR"] = str(monitor)
     proc = subprocess.run(
         ["node", str(CHECK)],
         capture_output=True,
         text=True,
-        env={
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
-            "XQ_CRAWLER_DIR": str(root),
-            "XQ_PRECHECK_MODE": "morning",
-        },
+        env=env,
     )
     return proc.returncode, proc.stdout
+
+
+def _log_run(total: int, with_posts: int, failed: int = 0) -> str:
+    """一次运行的收尾三行，字段与线上日志同形（顺序也是线上的顺序）。"""
+    empty = total - with_posts - failed
+    health = {
+        "status": "healthy" if with_posts == total and failed == 0 else "degraded",
+        "total": total,
+        "success_with_posts": with_posts,
+        "empty_success": empty,
+        "failed": failed,
+        "timeout": 0,
+        "posts_coverage": round(with_posts / total, 3) if total else 0.0,
+    }
+    done = {
+        "crawled": total - failed,
+        "failed": failed,
+        "total_stocks": total,
+        "alerts": 0,
+        "crawl_health": health,
+    }
+    return (
+        f"[INFO] __main__: 成功但零帖: {empty} | 超时: 0 | 失败: {failed}\n"
+        f"[INFO] __main__: Pipeline完成: {json.dumps(done)}\n"
+        f"[INFO] __main__: [SUMMARY] stocks={total}/{total} success={total - failed} "
+        f"failed={failed} alerts=0 p0=0 p1=0 p2=0 filtered=0 elapsed=100s\n"
+    )
+
+
+def _monitor_fixture(tmp_path: Path, groups: dict[str, list[tuple[int, int]]]) -> Path:
+    """造一个 monitor 目录：每组一份今天更新过的 pipeline 日志。
+
+    ``groups`` 的 value 是**历次运行**的 ``(股票数, 有帖数[, 失败数])`` 列表，
+    最后一次是今天这轮。
+    主 job 的 ``pipeline.log`` 是跨天**追加**的，所以这里要能写出多轮 ——
+    只写一轮的话，「取第一条还是最后一条」的 bug 测不出来。
+    """
+    root = tmp_path / "monitor"
+    (root / "logs").mkdir(parents=True)
+    # 12:00 的 sync-watchlist 产物；缺了会被 eod 单独报一条，掩盖本组断言。
+    (root / "logs" / "sync_watchlist.log").write_text("ok\n", encoding="utf-8")
+    for name, runs in groups.items():
+        (root / "logs" / name).write_text(
+            "".join(_log_run(*run) for run in runs), encoding="utf-8"
+        )
+    return root
+
+
+_OK_GROUPS = {
+    "pipeline.log": [(7, 7)],
+    "pipeline-g1.log": [(9, 9)],
+    "pipeline-g2.log": [(9, 9)],
+    "pipeline-g3.log": [(8, 8)],
+    "pipeline-g4.log": [(8, 8)],
+    "pipeline-g5.log": [(8, 8)],
+}
 
 
 def test_normal_bodies_do_not_trigger_the_assertion(tmp_path):
@@ -241,3 +302,145 @@ def test_title_line_only_strips_the_first_heading(tmp_path):
     code, out = _run(root)
 
     assert code == 2, f"小标题算正文，不该被剥成空：{out}"
+
+
+# ── pipeline 日志的零帖断言 ──
+# 2026-10-28 的真实事故：opencli 的 comments + stock-notices 在 15:00–16:06 全挂，
+# 爬虫静默回退 Playwright，回退也抓不到，于是 g2/g4 的 17 只股票整天没数据。
+# 而 [SUMMARY] 仍写 success=9/9 failed=0 —— 巡检只看 failed=，全绿放行。
+
+
+def test_all_zero_post_group_is_reported(tmp_path):
+    """整组零帖但 failed=0 —— 这是「成功」和「没抓到东西」长得一样的典型。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g2.log": [(9, 0)]})
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert code == 0
+    assert "pipeline-g2.log 整组零帖（9 只" in out
+
+
+def test_appended_main_log_reads_the_last_run(tmp_path):
+    """主 job 的 pipeline.log 是**追加**的：必须读最后一轮，不能读几天前那轮。
+
+    2026-10-28 复现：文件里 10-23…10-28 六条 [SUMMARY]，`match`（第一次匹配）
+    取到 10-23 的 healthy 记录，当天真实的零帖被整条盖掉。
+    """
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(
+        tmp_path,
+        {**_OK_GROUPS, "pipeline.log": [(7, 7), (7, 7), (7, 0)]},
+    )
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert code == 0
+    assert "pipeline.log 整组零帖（7 只" in out
+
+
+def test_partial_zero_post_group_is_not_reported(tmp_path):
+    """个别股票没帖子是正常的（冷门股、停牌），只有整组全空才算故障。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g3.log": [(8, 3)]})
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert code == 2, f"零帖 3/8 不该报：{out}"
+    assert "整组零帖" not in out
+
+
+def test_timeout_without_posts_is_not_counted_as_having_posts(tmp_path):
+    """超时既不是「抓到帖子」也不是零帖 —— 别拿 `零帖数 < 股票数` 当「有数据」。
+
+    8 只里 7 只失败、1 只零帖：一组一条帖子都没有，仍应算整组空转。
+    """
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g4.log": [(8, 0, 7)]})
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert code == 0
+    assert "pipeline-g4.log 整组零帖" in out
+
+
+def test_all_groups_zero_post_is_one_aggregate_alarm(tmp_path):
+    """六组全空 = 全站性故障，最该叫醒人 —— 但不能刷六条，也不能静默。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    all_zero = {name: [(stocks, 0)] for name, [(stocks, _)] in _OK_GROUPS.items()}
+    monitor = _monitor_fixture(tmp_path, all_zero)
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert code == 0
+    assert out.count("六组 pipeline 全部零帖") == 1
+    assert "要么站点侧全挂，要么今天休市" in out
+
+
+# ── 收官轮（peak.mjs）走同一套判定 ──
+_PEAK = CRAWLER / "scripts" / "schedule-checks" / "peak.mjs"
+
+
+def _usage_stub(root: Path, payload: dict) -> None:
+    """在 fixture 里放一个假的 analyze_opencli_usage.py，让 peak.mjs 不读真台账。"""
+    p = root / "scripts" / "analyze_opencli_usage.py"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"import json\nprint(json.dumps({payload!r}))\n", encoding="utf-8")
+
+
+def _peak_run(root: Path, monitor: Path) -> tuple[int, str]:
+    proc = subprocess.run(
+        ["node", str(_PEAK)],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "XQ_CRAWLER_DIR": str(root),
+            "XQ_MONITOR_DIR": str(monitor),
+            "XQ_PEAK_FINAL": "1",
+        },
+    )
+    return proc.returncode, proc.stdout
+
+
+def test_peak_summary_reports_zero_post_group(tmp_path):
+    """收官小结不能用「ok」把整组零帖盖过去 —— 这行是给人看下午结论的。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    _usage_stub(
+        root,
+        {
+            "site_total": 51,
+            "site_failed": 0,
+            "local_total": 0,
+            "site_peak": {"minute": "2026-10-28 18:03", "count": 7},
+            "by_hour": {"2026-10-28 18:00": 51},
+        },
+    )
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g2.log": [(9, 0)]})
+
+    code, out = _peak_run(root, monitor)
+
+    assert code == 0
+    assert "pipeline-g2.log: 整组零帖 9 只" in out
+    assert "pipeline.log: ok" in out
+
+
+def test_peak_is_silent_when_every_group_is_healthy(tmp_path):
+    """全绿时收官轮只出小结、不报问题（problem 列表为空才算正常）。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    _usage_stub(
+        root,
+        {
+            "site_total": 51,
+            "site_failed": 0,
+            "local_total": 0,
+            "site_peak": {"minute": "2026-10-28 18:03", "count": 7},
+            "by_hour": {"2026-10-28 18:00": 51},
+        },
+    )
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+
+    code, out = _peak_run(root, monitor)
+
+    assert "整组零帖" not in out
+    assert "pipeline.log: ok" in out
