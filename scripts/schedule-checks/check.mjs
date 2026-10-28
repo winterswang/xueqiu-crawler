@@ -19,6 +19,10 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
+import {
+  readPipelineRun, zeroPostProblems, failureProblem, GROUP_LOGS,
+} from './pipeline-stats.mjs';
+
 const now = new Date();
 const mode = process.env.XQ_PRECHECK_MODE
   || (now.getHours() < 12 ? 'morning' : now.getHours() < 18 ? 'health' : 'eod');
@@ -198,21 +202,25 @@ function checkHealth() {
 function checkEod() {
   checkCrawler();
   checkHotPosts();
-  // 六个 pipeline 日志由 13:00 / 14:00–18:00 六条 cron 各自 tee **覆盖**写入，
-  // 所以「今天更新过 + 有 [SUMMARY]」= 今天跑完了。
-  for (const name of ['pipeline.log', 'pipeline-g1.log', 'pipeline-g2.log',
-                      'pipeline-g3.log', 'pipeline-g4.log', 'pipeline-g5.log']) {
+  // 六个 pipeline 日志：g1–g5 每次 tee **覆盖**，主 job 的 pipeline.log 是跨天**追加**。
+  // 「今天更新过 + 有 [SUMMARY]」= 今天跑完了；收尾记录一律取最后一次运行。
+  const pipeStats = [];
+  for (const name of GROUP_LOGS) {
     const p = join(MONITOR, 'logs', name);
     if (!existsSync(p)) { problems.push(`缺日志 ${name}`); continue; }
     if (dayOf(statSync(p).mtime) !== today) {
       problems.push(`${name} 今天没更新（最后 ${dayOf(statSync(p).mtime)}）`);
       continue;
     }
-    const s = readFileSync(p, 'utf8').match(/\[SUMMARY\] (.+)/);
-    if (!s) { problems.push(`${name} 今天跑了但没有 [SUMMARY]（可能中途失败）`); continue; }
-    const failed = /failed=(\d+)/.exec(s[1]);
-    if (failed && Number(failed[1]) > 0) problems.push(`${name} 有 ${failed[1]} 只失败：${s[1]}`);
+    const run = readPipelineRun(p, today);
+    if (!run.summary) { problems.push(`${name} 今天跑了但没有 [SUMMARY]（可能中途失败）`); continue; }
+    if (run.failed > 0) problems.push(failureProblem(name, run));
+    // 和上面「正文只剩样板」同一类：failed=0 只说明没抛异常。opencli 两个操作全挂时
+    // 会静默回退 Playwright，回退也抓不到就成了整组零帖 —— 2026-10-28 的 g2/g4
+    // 17 只股票整天没数据，[SUMMARY] 仍写 success=9/9 failed=0，巡检全绿。
+    pipeStats.push({ name, run });
   }
+  problems.push(...zeroPostProblems(pipeStats).map((p) => p.message));
   const syncLog = join(MONITOR, 'logs/sync_watchlist.log');
   if (!existsSync(syncLog)) {
     problems.push('缺 logs/sync_watchlist.log（12:00 的 sync-watchlist 没跑过？）');
