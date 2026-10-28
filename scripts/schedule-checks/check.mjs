@@ -182,6 +182,14 @@ function checkHotPosts() {
 // #46 的落点：source_failures 按「最近一轮 pipeline」窗口算；ok 分支的 detail
 // 里必须带「窗口 ….」时间。注意 warn 分支的文案（N 次失败 → …）本来就没有
 // 「窗口」二字 —— 那是真实失败，不是口径问题，别误报。
+/** 今天有没有任何一组 pipeline 写过日志（用来区分「全新环境」与「没落盘」）。 */
+function pipelineRanToday() {
+  return GROUP_LOGS.some((name) => {
+    const p = join(MONITOR, 'logs', name);
+    return existsSync(p) && dayOf(statSync(p).mtime) === today;
+  });
+}
+
 function checkHealth() {
   try {
     const out = execFileSync('python3', [join(MONITOR, 'scripts/health_check.py')], {
@@ -190,9 +198,17 @@ function checkHealth() {
     const rep = JSON.parse(out);
     if (rep.status !== 'ok') problems.push(`health_check status=${rep.status}（期望 ok）`);
     const sf = (rep.checks || []).find((c) => c.check === 'source_failures');
-    if (sf && String(sf.detail).startsWith('读取失败')) {
+    const sfDetail = String(sf?.detail ?? '');
+    if (sf && sfDetail.startsWith('读取失败')) {
       problems.push(`source_failures 读取失败：${sf.detail}（#46 修掉的 NameError 复发）`);
-    } else if (sf && sf.status === 'ok' && !String(sf.detail).includes('窗口')) {
+    } else if (sf && sf.status === 'ok' && sfDetail.startsWith('无失败记录文件')) {
+      // 台账整个不存在：全新环境本来就该是这样，不该报。但今天有 pipeline 跑过
+      // 却仍然没有文件，说明失败根本没被落盘（写入口坏了 / LOG_DIR 指错），
+      // 这时继续沉默等于把唯一的信号也关掉 —— 只有这一支能区分两者。
+      if (pipelineRanToday()) {
+        problems.push('source_failures.jsonl 不存在，但今天有 pipeline 跑过 —— 失败记录没落盘');
+      }
+    } else if (sf && sf.status === 'ok' && !sfDetail.includes('窗口')) {
       problems.push(`source_failures 报 ok 却没有窗口时间，可能没走到新口径：${sf.detail}`);
     }
   } catch (err) {
