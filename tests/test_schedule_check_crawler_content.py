@@ -724,16 +724,30 @@ def _health(check_detail: str, check_status: str = "ok") -> dict:
     }
 
 
-def test_health_missing_failure_log_is_not_a_broken_window(tmp_path):
-    """全新环境 / 清过日志时 detail 是「无失败记录文件」—— 这是正常态，不是口径没生效。"""
+def test_health_missing_failure_log_on_fresh_env_is_silent(tmp_path):
+    """全新环境本来就没有失败台账 —— 不该报。"""
     root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
-    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    monitor = tmp_path / "monitor"
     _health_stub(monitor, _health("无失败记录文件"))
 
     code, out = _run(root, mode="health", monitor=monitor)
 
-    assert code == 2, f"不该报：{out}"
-    assert "没走到新口径" not in out
+    assert code == 2, f"全新环境不该报：{out}"
+
+
+def test_health_missing_failure_log_after_pipeline_ran_is_reported(tmp_path):
+    """今天 pipeline 跑过了台账却不存在 = 失败没被落盘，这时不能沉默。
+
+    只放过「没有 pipeline 跑过」的新环境；否则记录链路断了也永远不会出声。
+    """
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)  # 六组日志 mtime 都是今天
+    _health_stub(monitor, _health("无失败记录文件"))
+
+    code, out = _run(root, mode="health", monitor=monitor)
+
+    assert code == 0
+    assert "失败记录没落盘" in out
 
 
 def test_health_still_flags_ok_without_window(tmp_path):
@@ -746,3 +760,26 @@ def test_health_still_flags_ok_without_window(tmp_path):
 
     assert code == 0
     assert "没走到新口径" in out
+
+
+def test_health_warn_status_is_not_the_window_assertion(tmp_path):
+    """warn 分支的 detail 本来就没有窗口信息，不该被口径断言误伤。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    _health_stub(
+        monitor,
+        {
+            "status": "ok",
+            "checks": [
+                {
+                    "check": "source_failures",
+                    "status": "warn",
+                    "detail": "1 次失败 → news",
+                }
+            ],
+        },
+    )
+
+    code, out = _run(root, mode="health", monitor=monitor)
+
+    assert code == 2, f"warn 分支不该触发口径断言：{out}"
