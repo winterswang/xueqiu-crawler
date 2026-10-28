@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-import { readPipelineRun, zeroPostProblems } from './pipeline-stats.mjs';
+import { readPipelineRun, zeroPostProblems, GROUP_LOGS } from './pipeline-stats.mjs';
 
 const now = new Date();
 const mode = process.env.XQ_PRECHECK_MODE
@@ -203,8 +203,7 @@ function checkEod() {
   // 六个 pipeline 日志：g1–g5 每次 tee **覆盖**，主 job 的 pipeline.log 是跨天**追加**。
   // 「今天更新过 + 有 [SUMMARY]」= 今天跑完了；收尾记录一律取最后一次运行。
   const pipeStats = [];
-  for (const name of ['pipeline.log', 'pipeline-g1.log', 'pipeline-g2.log',
-                      'pipeline-g3.log', 'pipeline-g4.log', 'pipeline-g5.log']) {
+  for (const name of GROUP_LOGS) {
     const p = join(MONITOR, 'logs', name);
     if (!existsSync(p)) { problems.push(`缺日志 ${name}`); continue; }
     if (dayOf(statSync(p).mtime) !== today) {

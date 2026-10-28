@@ -22,7 +22,16 @@
 import { readFileSync } from 'node:fs';
 
 const DONE_MARK = 'Pipeline完成: ';
-const GROUPS = 6;
+
+/** 六组 pipeline 的日志名。判定「六组全空」和巡检遍历都用它，别再各写一份。 */
+export const GROUP_LOGS = [
+  'pipeline.log',
+  'pipeline-g1.log',
+  'pipeline-g2.log',
+  'pipeline-g3.log',
+  'pipeline-g4.log',
+  'pipeline-g5.log',
+];
 
 function lastMatch(text, re) {
   // matchAll 只接受带 g 的正则；调用方写 `/x/` 时在这里补上，免得每次都要记。
@@ -68,10 +77,9 @@ export function readPipelineRun(file, today = null) {
     summary,
     stocks: Number(/stocks=(\d+)/.exec(summary ?? '')?.[1] ?? 0),
     failed: Number(/failed=(\d+)/.exec(summary ?? '')?.[1] ?? 0),
+    success: Number(/success=(\d+)/.exec(summary ?? '')?.[1] ?? 0),
     total: health?.total ?? null,
     withPosts: health?.success_with_posts ?? null,
-    coverage: health?.posts_coverage ?? null,
-    status: health?.status ?? null,
     trailZero: zeroText === null ? null : Number(zeroText),
   };
 }
@@ -92,14 +100,12 @@ export function isAllEmpty(run) {
   if (run.withPosts !== null) return run.withPosts === 0;
   // 老日志：没有 withPosts，只有「成功但零帖」的只数。要拿它和**成功数**比，
   // 不能和总数比 —— 超时/失败的股票本来就不会产出帖子，不该稀释这条判断。
-  if (run.trailZero !== null) return run.trailZero >= total - run.failed;
+  if (run.trailZero !== null) return run.success > 0 && run.trailZero >= run.success;
   return false;
 }
 
 function describe(run) {
-  const total = run.total ?? run.stocks;
-  const failed = run.failed > 0 ? `，failed=${run.failed}` : '';
-  return `${total} 只里没有一只有帖子${failed}`;
+  return `${run.total ?? run.stocks} 只里没有一只有帖子`;
 }
 
 /**
@@ -110,12 +116,13 @@ function describe(run) {
  * @returns {string[]}
  */
 export function zeroPostProblems(pipeStats) {
-  const empty = pipeStats.filter(({ run }) => isAllEmpty(run));
+  // failed>0 的组已经由调用方的「有 N 只失败」报过了，别为同一个根因再报一条。
+  const empty = pipeStats.filter(({ run }) => run.failed === 0 && isAllEmpty(run));
   if (empty.length === 0) return [];
   // 只有六组全部解析成功、且全部为空，才是「全站性故障/休市」。
   // 少几组多半是那几组没跑（它们另有「今天没更新/没有 [SUMMARY]」的告警），
   // 这时说成「六组全部零帖」会把排查方向带偏。
-  if (pipeStats.length === GROUPS && empty.length === GROUPS) {
+  if (pipeStats.length === GROUP_LOGS.length && empty.length === GROUP_LOGS.length) {
     return [
       `六组 pipeline 全部零帖（${pipeStats.map((g) => g.name).join('、')}）`
       + ' —— 要么站点侧全挂，要么今天休市；请人工确认是哪一种',

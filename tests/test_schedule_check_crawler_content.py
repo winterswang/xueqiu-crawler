@@ -374,18 +374,16 @@ def test_partial_zero_post_group_is_not_reported(tmp_path):
     assert "整组零帖" not in out
 
 
-def test_timeout_without_posts_is_not_counted_as_having_posts(tmp_path):
-    """超时既不是「抓到帖子」也不是零帖 —— 别拿 `零帖数 < 股票数` 当「有数据」。
-
-    8 只里 7 只失败、1 只零帖：一组一条帖子都没有，仍应算整组空转。
-    """
+def test_all_failed_group_reports_the_failure_not_a_duplicate(tmp_path):
+    """8 只全失败时「有 8 只失败」已经说明了根因，不再叠一条「整组零帖」。"""
     root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
-    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g4.log": [(8, 0, 7)]})
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g4.log": [(8, 0, 8)]})
 
     code, out = _run(root, mode="eod", monitor=monitor)
 
     assert code == 0
-    assert "pipeline-g4.log 整组零帖" in out
+    assert "pipeline-g4.log 有 8 只失败" in out
+    assert "pipeline-g4.log 整组零帖" not in out
 
 
 def test_all_groups_zero_post_is_one_aggregate_alarm(tmp_path):
@@ -503,20 +501,37 @@ def test_one_empty_group_with_others_not_run_is_not_called_sitewide(tmp_path):
 
 
 def test_legacy_log_without_crawl_health_still_detects_zero_posts(tmp_path):
-    """老日志没有 crawl_health 时走人读行回退；有失败/超时也必须判得出来。
+    """老日志没有 crawl_health 时走人读行回退，且要和**成功数**比而不是总数。
 
-    回退分支此前拿「零帖数 >= 股票总数」比，8 只里 7 只失败、1 只零帖时
-    1 >= 8 永远不成立 —— 明明一条帖子都没有，却判成正常。
+    8 只里 7 只超时（SUMMARY 的 failed 不含超时，success=1），剩下那 1 只也没帖子。
+    回退分支若拿「零帖数 >= 股票总数」比，1 >= 8 永远不成立 —— 明明一条帖子都没有，
+    却判成正常。
     """
     root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
     monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
     (monitor / "logs" / "pipeline-g4.log").write_text(
-        _log_run(8, 0, 7, day=TODAY, with_health=False), encoding="utf-8"
+        f"{TODAY} 13:20:00 [INFO] __main__: 成功但零帖: 1 | 超时: 7 | 失败: 0\n"
+        f"{TODAY} 13:20:00 [INFO] __main__: Pipeline完成: "
+        f"{json.dumps({'crawled': 8, 'failed': 0, 'total_stocks': 8})}\n"
+        f"{TODAY} 13:20:00 [INFO] __main__: [SUMMARY] stocks=8/8 success=1 "
+        "failed=0 alerts=0 elapsed=100s\n",
+        encoding="utf-8",
     )
 
     code, out = _run(root, mode="eod", monitor=monitor)
 
     assert "pipeline-g4.log 整组零帖" in out
+
+
+def test_group_with_failures_is_not_reported_twice(tmp_path):
+    """整组失败时「有 N 只失败」已经说清楚了，再报一条「整组零帖」是同一个根因报两遍。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g2.log": [(9, 0, 9)]})
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert "pipeline-g2.log 有 9 只失败" in out
+    assert "pipeline-g2.log 整组零帖" not in out
 
 
 def test_peak_hourly_round_also_checks_zero_posts(tmp_path):
@@ -539,3 +554,58 @@ def test_peak_hourly_round_also_checks_zero_posts(tmp_path):
     assert code == 0
     assert "pipeline-g2.log 整组零帖" in out
     assert "【下午峰值小结】" not in out
+
+
+def _healthy_usage(root: Path) -> None:
+    _usage_stub(
+        root,
+        {
+            "site_total": 20,
+            "site_failed": 0,
+            "local_total": 0,
+            "site_peak": {"minute": "2026-10-28 15:30", "count": 4},
+            "by_hour": {"2026-10-28 15:00": 20},
+        },
+    )
+
+
+def test_peak_hourly_round_is_silent_when_healthy(tmp_path):
+    """全绿的那一轮必须 exit 2 保持安静 —— 这是每小时都会走到的主路径。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    _healthy_usage(root)
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+
+    code, out = _peak_run(root, monitor, final=False)
+
+    assert code == 2, f"无异常应静默（exit 2），实际 {code}：{out}"
+    assert "整组零帖" not in out
+
+
+def test_peak_does_not_realert_the_same_incident_every_hour(tmp_path):
+    """同一个没修好的故障，每小时叫一次就是告警疲劳，真正的故障会被一起淹掉。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    _healthy_usage(root)
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g2.log": [(9, 0)]})
+
+    code1, first = _peak_run(root, monitor, final=False)
+    code2, second = _peak_run(root, monitor, final=False)
+
+    assert code1 == 0 and "pipeline-g2.log 整组零帖" in first
+    assert code2 == 2, f"同一故障的第二轮不该再叫醒（exit 2），实际 {code2}：{second}"
+    assert "整组零帖" not in second
+
+
+def test_peak_realerts_when_the_failure_set_changes(tmp_path):
+    """故障范围变了（又多挂一组）要重新报 —— 去重只压重复，不压新信息。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    _healthy_usage(root)
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g2.log": [(9, 0)]})
+    _peak_run(root, monitor, final=False)
+
+    (monitor / "logs" / "pipeline-g4.log").write_text(
+        _log_run(8, 0, day=TODAY), encoding="utf-8"
+    )
+    code, out = _peak_run(root, monitor, final=False)
+
+    assert code == 0
+    assert "pipeline-g4.log 整组零帖" in out
