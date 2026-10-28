@@ -34,6 +34,9 @@ const problems = [];
 let complete = true;
 const today = now.toLocaleDateString('sv-SE');
 const dayOf = (d) => d.toLocaleDateString('sv-SE');
+// 19:00 日报产物 19:04 左右才落盘，而 eod 模式 18 点就生效 —— 早于这个点跑会误报。
+// 环境变量只为测试能把「早/晚」两个方向都跑到，线上用默认值。
+const ARTIFACT_READY_HOUR = Number(process.env.XQ_ARTIFACT_HOUR || 20);
 
 // 正文里剥掉头部元数据，只留正文本身，用来判「抓到了没」。
 // 头部（作者/发布时间/原文链接/爬取时间/标题）占了 ~150 字符，不剥掉的话
@@ -227,13 +230,27 @@ function checkEod() {
   } else if (dayOf(statSync(syncLog).mtime) !== today) {
     problems.push(`sync_watchlist.log 今天没更新（最后 ${dayOf(statSync(syncLog).mtime)}）`);
   }
-  // 19:00 的 monitor 日报三件套。没有别的门守着这一步：health_check 只有显式带
-  // --require-daily-report 时才查 sentiment，而线上那条 cron 没带；-alerts.md 与
-  // -summary.json 更是只有这里看。原来这段只写在 xueqiu-monitor 仓的旧副本里，
-  // 合并巡检时补过来，让 20:30 那道门只依赖一份脚本。
-  for (const suffix of ['-alerts.md', '-sentiment.md', '-summary.json']) {
-    const p = join(MONITOR, 'data/daily_reports', `${today}${suffix}`);
-    if (!existsSync(p)) problems.push(`缺 19:00 产物 data/daily_reports/${today}${suffix}`);
+  // monitor 的日报产物。三个文件各由不同的 job 写，报错文案要分开 ——
+  // 混成一句「缺 19:00 产物」会把排查带到错的 job 上：
+  //   -alerts.md     13:00–18:00 的 pipeline 写的（cli.py 里的 report_path）
+  //   -sentiment.md  ┐ 19:00 的日报 job
+  //   -summary.json  ┘
+  // 19:30 的 health-check 带 --require-daily-report，但它查的是**爬虫仓**的
+  // <date>.md（存在/非空/不是「今日无新增」占位），管不到这三个，所以这里不是重复。
+  // 只判存在不够：非原子写入被打断会留下 0 字节文件，那正是「错误长得像正常」。
+  // 19:04 左右才落盘，而 eod 模式 18 点就生效 —— 早于 20 点跑会误报，先不判。
+  if (now.getHours() >= ARTIFACT_READY_HOUR) {
+    const artifacts = [
+      ['-alerts.md', 'pipeline 的告警报告'],
+      ['-sentiment.md', '19:00 舆情日报'],
+      ['-summary.json', '19:00 舆情日报摘要'],
+    ];
+    for (const [suffix, what] of artifacts) {
+      const p = join(MONITOR, 'data/daily_reports', `${today}${suffix}`);
+      const rel = `data/daily_reports/${today}${suffix}`;
+      if (!existsSync(p)) problems.push(`缺${what}：${rel}`);
+      else if (statSync(p).size === 0) problems.push(`${what}是空文件：${rel}`);
+    }
   }
 }
 
