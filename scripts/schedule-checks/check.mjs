@@ -192,7 +192,10 @@ function checkHealth() {
     const sf = (rep.checks || []).find((c) => c.check === 'source_failures');
     if (sf && String(sf.detail).startsWith('读取失败')) {
       problems.push(`source_failures 读取失败：${sf.detail}（#46 修掉的 NameError 复发）`);
-    } else if (sf && sf.status === 'ok' && !String(sf.detail).includes('窗口')) {
+    } else if (sf && sf.status === 'ok'
+               && !String(sf.detail).includes('窗口')
+               // 「无失败记录文件」是全新环境 / 日志被清过时的正常态，不代表没走新口径。
+               && !String(sf.detail).startsWith('无失败记录文件')) {
       problems.push(`source_failures 报 ok 却没有窗口时间，可能没走到新口径：${sf.detail}`);
     }
   } catch (err) {

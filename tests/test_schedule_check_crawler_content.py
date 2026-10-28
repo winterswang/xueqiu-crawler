@@ -705,3 +705,44 @@ def test_artifact_gate_waits_until_after_the_1900_job(tmp_path):
 
     assert code == 2, f"未到点不该报产物缺失：{out}"
     assert "缺" not in out
+
+
+# ── health 模式：health_check.py 的 source_failures 口径断言 ──
+def _health_stub(monitor: Path, payload: dict) -> None:
+    """放一个假的 health_check.py，让 health 模式不跑真的健康检查。"""
+    p = monitor / "scripts" / "health_check.py"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"import json\nprint(json.dumps({payload!r}))\n", encoding="utf-8")
+
+
+def _health(check_detail: str, check_status: str = "ok") -> dict:
+    return {
+        "status": "ok",
+        "checks": [
+            {"check": "source_failures", "status": check_status, "detail": check_detail}
+        ],
+    }
+
+
+def test_health_missing_failure_log_is_not_a_broken_window(tmp_path):
+    """全新环境 / 清过日志时 detail 是「无失败记录文件」—— 这是正常态，不是口径没生效。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    _health_stub(monitor, _health("无失败记录文件"))
+
+    code, out = _run(root, mode="health", monitor=monitor)
+
+    assert code == 2, f"不该报：{out}"
+    assert "没走到新口径" not in out
+
+
+def test_health_still_flags_ok_without_window(tmp_path):
+    """断言本身要还在：报 ok 却没有窗口时间，仍然说明没走到新口径。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    _health_stub(monitor, _health("最近一轮无源级失败"))
+
+    code, out = _run(root, mode="health", monitor=monitor)
+
+    assert code == 0
+    assert "没走到新口径" in out
