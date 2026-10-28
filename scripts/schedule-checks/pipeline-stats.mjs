@@ -46,11 +46,11 @@ function lastMatch(text, re) {
  * @param {string} file 日志绝对路径。
  * @param {string} today `YYYY-MM-DD`；只认带这个日期前缀的行。不传则不按日期过滤
  *   （仅便于手工排查，巡检一律传）。
- * @returns {{summary: string|null, stocks: number, failed: number,
- *   total: number|null, withPosts: number|null, coverage: number|null,
- *   status: string|null, trailZero: number|null}}
+ * @returns {{summary: string|null, stocks: number, failed: number, success: number,
+ *   total: number|null, withPosts: number|null, trailZero: number|null}}
  *   `summary` 为 null 表示今天没有收尾记录（没跑、或跑到一半崩了）；
- *   `total`/`withPosts` 来自 `crawl_health`，缺失时为 null（老日志）。
+ *   `failed` 不含超时（pipeline 侧 `failed` 只统计 status 既非 success 也非
+ *   timeout 的股票）；`total`/`withPosts` 来自 `crawl_health`，缺失时为 null（老日志）。
  */
 export function readPipelineRun(file, today = null) {
   const text = readFileSync(file, 'utf8');
@@ -109,24 +109,41 @@ function describe(run) {
 }
 
 /**
+ * 「有 N 只失败」的告警文案。零帖时把「一只都没有帖子」一并说清楚，
+ * 免得同一个根因再叠一条零帖告警。
+ *
+ * @param {string} name 日志名。
+ * @param {ReturnType<typeof readPipelineRun>} run
+ * @returns {string}
+ */
+export function failureProblem(name, run) {
+  const empty = isAllEmpty(run) ? '（整组零帖：没有一只抓到帖子）' : '';
+  return `${name} 有 ${run.failed} 只失败${empty}：${run.summary}`;
+}
+
+/**
  * 把分组状态翻译成要报的问题（check.mjs 与 peak.mjs 共用同一套措辞）。
  *
  * @param {{name: string, run: ReturnType<typeof readPipelineRun>}[]} pipeStats
  *   今天**成功解析出收尾记录**的分组；没跑/没跑完的组不进这个数组（各自另有告警）。
- * @returns {string[]}
+ * @returns {{name: string, message: string}[]} `name` 供调用方按组去重。
  */
 export function zeroPostProblems(pipeStats) {
-  // failed>0 的组已经由调用方的「有 N 只失败」报过了，别为同一个根因再报一条。
+  // failed>0 的组已经由 failureProblem 报过（并且带上了零帖上下文），别叠第二条。
   const empty = pipeStats.filter(({ run }) => run.failed === 0 && isAllEmpty(run));
   if (empty.length === 0) return [];
   // 只有六组全部解析成功、且全部为空，才是「全站性故障/休市」。
   // 少几组多半是那几组没跑（它们另有「今天没更新/没有 [SUMMARY]」的告警），
   // 这时说成「六组全部零帖」会把排查方向带偏。
   if (pipeStats.length === GROUP_LOGS.length && empty.length === GROUP_LOGS.length) {
-    return [
-      `六组 pipeline 全部零帖（${pipeStats.map((g) => g.name).join('、')}）`
-      + ' —— 要么站点侧全挂，要么今天休市；请人工确认是哪一种',
-    ];
+    return [{
+      name: '*',
+      message: `六组 pipeline 全部零帖（${pipeStats.map((g) => g.name).join('、')}）`
+        + ' —— 要么站点侧全挂，要么今天休市；请人工确认是哪一种',
+    }];
   }
-  return empty.map(({ name, run }) => `${name} 整组零帖（${describe(run)}，SUMMARY 仍报 failed=${run.failed}）`);
+  return empty.map(({ name, run }) => ({
+    name,
+    message: `${name} 整组零帖（${describe(run)}，SUMMARY 仍报 failed=${run.failed}）`,
+  }));
 }

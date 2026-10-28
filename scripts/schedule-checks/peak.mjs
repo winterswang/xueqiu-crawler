@@ -30,7 +30,9 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-import { readPipelineRun, isAllEmpty, zeroPostProblems, GROUP_LOGS } from './pipeline-stats.mjs';
+import {
+  readPipelineRun, isAllEmpty, zeroPostProblems, failureProblem, GROUP_LOGS,
+} from './pipeline-stats.mjs';
 
 const now = new Date();
 const hour = now.getHours();
@@ -90,30 +92,38 @@ function checkWindow() {
 
 // 六组 pipeline 的收尾状态。**每小时都判**，不只在收官轮 ——
 // 2026-10-28 的 g2/g4 是 15:00–16:06 空的，若只在 18:xx 判，等于晚了两个多小时。
-// 日志由各条 cron tee **覆盖**写入，所以「今天更新过 + 有 [SUMMARY]」才等于
-// 「这组今天跑完了」。2026-10-05 踩过：只看 [SUMMARY] 不看 mtime，13:30 跑收官
-// 分支会把**昨天**的 g2–g5 日志读成 ok —— 那几组今天还没到点。
+// g1–g5 每次 tee **覆盖**，主 job 的 pipeline.log 是跨天**追加**；所以「今天更新过
+// + 今天有 [SUMMARY]」才等于「这组今天跑完了」。2026-10-05 踩过：只看 [SUMMARY]
+// 不看 mtime，13:30 跑收官分支会把**昨天**的 g2–g5 日志读成 ok —— 那几组今天还没到点。
+// 2026-10-28 又踩了另一半：主 job 追加多天，只看「最后一条 [SUMMARY]」而不看日期，
+// 今天崩掉的运行会被昨天那条 healthy 记录顶替。
 let pipeReport = [];
 
 // 每小时都判，于是同一个没修好的故障会在 15:30/16:30/17:30 反复叫醒人。
 // 按「今天 + 同一组同一状态」去重，跟 cron_healthgate.sh 的 .healthgate_last_alert
 // 是同一套思路：告警疲劳最终会把真正的故障一起淹掉。
 const PIPELINE_ALERT_STATE = join(MONITOR, 'logs', '.peak_pipeline_alert');
+// 一轮 pipeline 实测 6–20 分钟；超过这个时长还停在「没有 [SUMMARY]」才算卡死，
+// 否则每小时的 :30 轮都会把「正在跑」误报成故障。
+const STALL_MINUTES = 25;
 
-function alertSignature(pipeStats) {
-  return pipeStats
-    .filter(({ run }) => run.failed > 0 || isAllEmpty(run))
-    .map(({ name, run }) => `${name}:${run.failed}/${run.withPosts ?? run.trailZero ?? '?'}`)
-    .sort()
-    .join(',');
+// 状态文件按**组**记今天已经报过的问题签名：
+//   <日期>\n<组名:签名>\n...
+// 组恢复正常就从集合里消失，之后再坏会重新报；只压「同一组同一个状态」的重复。
+function readAlertState(today) {
+  try {
+    const lines = readFileSync(PIPELINE_ALERT_STATE, 'utf8').trim().split('\n');
+    return lines[0] === today ? new Set(lines.slice(1).filter(Boolean)) : new Set();
+  } catch {
+    return new Set(); // 没有状态文件 = 今天还没报过
+  }
 }
 
-function alreadyAlerted(signature, today) {
+function writeAlertState(today, keys) {
   try {
-    const [day, prev] = readFileSync(PIPELINE_ALERT_STATE, 'utf8').trim().split(' ');
-    return day === today && prev === signature;
+    writeFileSync(PIPELINE_ALERT_STATE, `${today}\n${[...keys].sort().join('\n')}\n`);
   } catch {
-    return false; // 没有状态文件 = 今天还没报过
+    // 写不进去就每轮都报 —— 宁可多叫，不要静默。
   }
 }
 
@@ -121,17 +131,27 @@ function checkPipelines() {
   const today = now.toLocaleDateString('sv-SE');
   const report = [];
   const pipeStats = [];
-  const fresh = [];
+  const fresh = []; // {key, message}
   for (const name of GROUP_LOGS) {
     const p = join(MONITOR, 'logs', name);
     if (!existsSync(p)) { report.push(`${name}: 缺日志`); continue; }
-    if (statSync(p).mtime.toLocaleDateString('sv-SE') !== today) {
+    const st = statSync(p);
+    if (st.mtime.toLocaleDateString('sv-SE') !== today) {
       report.push(`${name}: 今天还没跑`);
       continue;
     }
     const run = readPipelineRun(p, today);
-    if (!run.summary) { report.push(`${name}: 跑了但没跑完（无 [SUMMARY]）`); continue; }
-    if (run.failed > 0) fresh.push(`${name} 有 ${run.failed} 只失败：${run.summary}`);
+    if (!run.summary) {
+      // 今天起了头却没写收尾：正在跑是常态，停了很久才是故障。
+      const idle = Math.round((Date.now() - st.mtimeMs) / 60000);
+      const stalled = idle > STALL_MINUTES;
+      report.push(`${name}: ${stalled ? `跑了但没跑完（日志已停 ${idle} 分钟）` : '正在跑'}`);
+      if (stalled) {
+        fresh.push({ key: `${name}:stalled`, message: `${name} 今天跑了但没写出 [SUMMARY]，日志已停 ${idle} 分钟` });
+      }
+      continue;
+    }
+    if (run.failed > 0) fresh.push({ key: `${name}:${run.failed}`, message: failureProblem(name, run) });
     // failed=0 只说明没抛异常；整组零帖时 [SUMMARY] 照样写 success=N/N（见 check.mjs）。
     pipeStats.push({ name, run });
     const total = run.total ?? run.stocks;
@@ -140,17 +160,16 @@ function checkPipelines() {
         : isAllEmpty(run) ? `整组零帖 ${total} 只` : 'ok'}`,
     );
   }
-  fresh.push(...zeroPostProblems(pipeStats));
-
-  const signature = alertSignature(pipeStats);
-  if (fresh.length > 0 && !alreadyAlerted(signature, today)) {
-    problems.push(...fresh);
-    try {
-      writeFileSync(PIPELINE_ALERT_STATE, `${today} ${signature}\n`);
-    } catch {
-      // 状态写不进去就每轮都报 —— 宁可多叫，不要静默。
-    }
+  for (const p of zeroPostProblems(pipeStats)) {
+    fresh.push({ key: `${p.name}:empty`, message: p.message });
   }
+
+  const prev = readAlertState(today);
+  const current = new Set(fresh.map((f) => f.key));
+  const toAlert = fresh.filter((f) => !prev.has(f.key));
+  writeAlertState(today, current);
+  // 组恢复正常时 current 会少掉它，状态文件随之收窄，之后再坏会重新叫。
+  if (toAlert.length > 0) problems.push(...toAlert.map((f) => f.message));
   pipeReport = report;
 }
 

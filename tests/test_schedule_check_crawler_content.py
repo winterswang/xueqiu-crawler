@@ -124,13 +124,7 @@ def _run(
     return proc.returncode, proc.stdout
 
 
-def _log_run(
-    total: int,
-    with_posts: int,
-    failed: int = 0,
-    day: str = "",
-    with_health: bool = True,
-) -> str:
+def _log_run(total: int, with_posts: int, failed: int = 0, day: str = "") -> str:
     """一次运行的收尾三行，字段与线上日志同形（含 `YYYY-MM-DD HH:MM:SS` 前缀）。"""
     empty = total - with_posts - failed
     stamp = f"{day} 13:20:00 " if day else ""
@@ -148,9 +142,8 @@ def _log_run(
         "failed": failed,
         "total_stocks": total,
         "alerts": 0,
+        "crawl_health": health,
     }
-    if with_health:  # 老日志没有 crawl_health，走人读行回退分支
-        done["crawl_health"] = health
     return (
         f"{stamp}[INFO] __main__: 成功但零帖: {empty} | 超时: 0 | 失败: {failed}\n"
         f"{stamp}[INFO] __main__: Pipeline完成: {json.dumps(done)}\n"
@@ -609,3 +602,53 @@ def test_peak_realerts_when_the_failure_set_changes(tmp_path):
 
     assert code == 0
     assert "pipeline-g4.log 整组零帖" in out
+    # 只报新增的那组，已报过的 g2 不再重复刷屏
+    assert "pipeline-g2.log" not in out
+
+
+def _touch_minutes_ago(path: Path, minutes: int) -> None:
+    ts = time.time() - minutes * 60
+    os.utime(path, (ts, ts))
+
+
+def test_peak_reports_a_stalled_run_but_not_one_still_in_flight(tmp_path):
+    """今天起了头却没写 [SUMMARY]：正在跑是常态，停太久才是故障。
+
+    只报「卡死」不报「运行中」，否则每小时 :30 那一轮会把正常跑着的组误报成故障。
+    """
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    _healthy_usage(root)
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    log = monitor / "logs" / "pipeline-g2.log"
+    log.write_text(f"{TODAY} 16:00:00 [INFO] __main__: 开始\n", encoding="utf-8")
+    _touch_minutes_ago(log, 5)
+
+    code, out = _peak_run(root, monitor, final=False)
+    assert code == 2, f"刚起 5 分钟不算卡死：{out}"
+
+    _touch_minutes_ago(log, 40)
+    code, out = _peak_run(root, monitor, final=False)
+    assert code == 0
+    assert "pipeline-g2.log 今天跑了但没写出 [SUMMARY]" in out
+
+
+def test_peak_realerts_after_recovery_then_recurrence(tmp_path):
+    """组恢复过就把它从「已报」里删掉；当天再坏要重新叫，别被早上的记录压住。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    _healthy_usage(root)
+    monitor = _monitor_fixture(tmp_path, {**_OK_GROUPS, "pipeline-g2.log": [(9, 0)]})
+
+    first = _peak_run(root, monitor, final=False)[1]
+    assert "pipeline-g2.log 整组零帖" in first
+
+    (monitor / "logs" / "pipeline-g2.log").write_text(
+        _log_run(9, 9, day=TODAY), encoding="utf-8"
+    )
+    assert _peak_run(root, monitor, final=False)[0] == 2  # 恢复，安静
+
+    (monitor / "logs" / "pipeline-g2.log").write_text(
+        _log_run(9, 0, day=TODAY), encoding="utf-8"
+    )
+    code, out = _peak_run(root, monitor, final=False)
+    assert code == 0
+    assert "pipeline-g2.log 整组零帖" in out

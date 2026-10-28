@@ -19,7 +19,9 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-import { readPipelineRun, zeroPostProblems, GROUP_LOGS } from './pipeline-stats.mjs';
+import {
+  readPipelineRun, zeroPostProblems, failureProblem, GROUP_LOGS,
+} from './pipeline-stats.mjs';
 
 const now = new Date();
 const mode = process.env.XQ_PRECHECK_MODE
@@ -212,13 +214,13 @@ function checkEod() {
     }
     const run = readPipelineRun(p, today);
     if (!run.summary) { problems.push(`${name} 今天跑了但没有 [SUMMARY]（可能中途失败）`); continue; }
-    if (run.failed > 0) problems.push(`${name} 有 ${run.failed} 只失败：${run.summary}`);
+    if (run.failed > 0) problems.push(failureProblem(name, run));
     // 和上面「正文只剩样板」同一类：failed=0 只说明没抛异常。opencli 两个操作全挂时
     // 会静默回退 Playwright，回退也抓不到就成了整组零帖 —— 2026-10-28 的 g2/g4
     // 17 只股票整天没数据，[SUMMARY] 仍写 success=9/9 failed=0，巡检全绿。
     pipeStats.push({ name, run });
   }
-  problems.push(...zeroPostProblems(pipeStats));
+  problems.push(...zeroPostProblems(pipeStats).map((p) => p.message));
   const syncLog = join(MONITOR, 'logs/sync_watchlist.log');
   if (!existsSync(syncLog)) {
     problems.push('缺 logs/sync_watchlist.log（12:00 的 sync-watchlist 没跑过？）');
