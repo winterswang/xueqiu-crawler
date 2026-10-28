@@ -227,6 +227,14 @@ function checkEod() {
   } else if (dayOf(statSync(syncLog).mtime) !== today) {
     problems.push(`sync_watchlist.log 今天没更新（最后 ${dayOf(statSync(syncLog).mtime)}）`);
   }
+  // 19:00 的 monitor 日报三件套。没有别的门守着这一步：health_check 只有显式带
+  // --require-daily-report 时才查 sentiment，而线上那条 cron 没带；-alerts.md 与
+  // -summary.json 更是只有这里看。原来这段只写在 xueqiu-monitor 仓的旧副本里，
+  // 合并巡检时补过来，让 20:30 那道门只依赖一份脚本。
+  for (const suffix of ['-alerts.md', '-sentiment.md', '-summary.json']) {
+    const p = join(MONITOR, 'data/daily_reports', `${today}${suffix}`);
+    if (!existsSync(p)) problems.push(`缺 19:00 产物 data/daily_reports/${today}${suffix}`);
+  }
 }
 
 if (mode === 'morning') {

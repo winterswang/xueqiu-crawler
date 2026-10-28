@@ -170,6 +170,12 @@ def _monitor_fixture(
     (root / "logs").mkdir(parents=True)
     # 12:00 的 sync-watchlist 产物；缺了会被 eod 单独报一条，掩盖本组断言。
     (root / "logs" / "sync_watchlist.log").write_text("ok\n", encoding="utf-8")
+    # 19:00 的三件套同理：默认造齐，只在专门测「缺产物」的用例里删掉。
+    (root / "data" / "daily_reports").mkdir(parents=True)
+    for suffix in ("-alerts.md", "-sentiment.md", "-summary.json"):
+        (root / "data" / "daily_reports" / f"{TODAY}{suffix}").write_text(
+            "ok\n", encoding="utf-8"
+        )
     for name, runs in groups.items():
         p = root / "logs" / name
         blocks = []
@@ -652,3 +658,16 @@ def test_peak_realerts_after_recovery_then_recurrence(tmp_path):
     code, out = _peak_run(root, monitor, final=False)
     assert code == 0
     assert "pipeline-g2.log 整组零帖" in out
+
+
+def test_missing_1900_report_artifact_is_reported(tmp_path):
+    """19:00 三件套没有别的门守着：health_check 不带 --require-daily-report 就不查。"""
+    root = _fixture(tmp_path, {"a1": _NORMAL_BODY})
+    monitor = _monitor_fixture(tmp_path, _OK_GROUPS)
+    (monitor / "data" / "daily_reports" / f"{TODAY}-summary.json").unlink()
+
+    code, out = _run(root, mode="eod", monitor=monitor)
+
+    assert code == 0
+    assert "缺 19:00 产物 data/daily_reports/" in out
+    assert "-summary.json" in out
