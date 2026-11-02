@@ -639,9 +639,26 @@ def select_top(scored: list[dict], top_n: int) -> list[dict]:
 # 开关：config hot_posts.gate_enabled（默认 True），置 false 一键回退旧行为。
 # ---------------------------------------------------------------------------
 _GATE_STRONG = (  # 企业分析强信号：公司基本面跟踪特征词（弱泛词「估值/基本面」不入——情绪贴也碰得到）
-    '三季报', '年报', '季报', '中报', '财报', '业绩', '营收', '净利',
-    '毛利率', '现金流', '产能', '订单', '调研', '纪要', '电话会',
-    '护城河', '市占率', '资本开支', '回购', '分红',
+    '三季报',
+    '年报',
+    '季报',
+    '中报',
+    '财报',
+    '业绩',
+    '营收',
+    '净利',
+    '毛利率',
+    '现金流',
+    '产能',
+    '订单',
+    '调研',
+    '纪要',
+    '电话会',
+    '护城河',
+    '市占率',
+    '资本开支',
+    '回购',
+    '分红',
 )
 # 个人叙事体：只收确定性模式；「收获很大/感悟」这类中性词不入（光启调研帖标题即此，会误杀）
 _GATE_NARRATIVE_RE = re.compile(
@@ -660,7 +677,9 @@ def gate_topic_filter(scored: list[dict]) -> tuple[list[dict], list[dict]]:
         body = it.get('content') or it.get('text') or ''
         title = it.get('title') or body[:60]
         head = f"{title}\n{body[:120]}"
-        if _GATE_REPLY_RE.search(title.lstrip()) or _GATE_REPLY_RE.search(body.lstrip()):
+        if _GATE_REPLY_RE.search(title.lstrip()) or _GATE_REPLY_RE.search(
+            body.lstrip()
+        ):
             blocked.append({**it, 'gate_reason': 'reply_fragment'})
             continue
         if _GATE_NARRATIVE_RE.search(head):
