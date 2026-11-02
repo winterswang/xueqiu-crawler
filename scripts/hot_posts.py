@@ -68,6 +68,8 @@ DEFAULT_CONFIG = {
     'freshness_half_life_hours': 36.0,
     'repeat_decay': 0.9,
     'prefetch_max': 50,
+    # 层 1 主题准入门槛开关（2026-11-02 主人拍板上层 1+3；false 回退旧行为）
+    'gate_enabled': True,
     # 权重表之外的一次性扣分（负分）
     'penalties': {'pnl_showoff': 20, 'volatility': 15},
     # 抓全文的时间预算。给足 15 分钟，避免「排在后面的条目拿不到全文」
@@ -630,6 +632,48 @@ def select_top(scored: list[dict], top_n: int) -> list[dict]:
     return sorted(scored, key=lambda item: -item['score'])[:top_n]
 
 
+# ---------------------------------------------------------------------------
+# 层 1 主题准入门槛（2026-11-02 主人拍板「上 1+3」，方案 docs/hot筛选优化方案-20261102.md）
+# 动机：11-01 实测 top10 六条杂音——个人叙事体/情绪贴/残缺回复贴靠 rank+engagement
+# 底薪进榜（见方案文档问题定位）。层 2 权重再平衡本次未拍板，不动 weights。
+# 开关：config hot_posts.gate_enabled（默认 True），置 false 一键回退旧行为。
+# ---------------------------------------------------------------------------
+_GATE_STRONG = (  # 企业分析强信号：公司基本面跟踪特征词（弱泛词「估值/基本面」不入——情绪贴也碰得到）
+    '三季报', '年报', '季报', '中报', '财报', '业绩', '营收', '净利',
+    '毛利率', '现金流', '产能', '订单', '调研', '纪要', '电话会',
+    '护城河', '市占率', '资本开支', '回购', '分红',
+)
+# 个人叙事体：只收确定性模式；「收获很大/感悟」这类中性词不入（光启调研帖标题即此，会误杀）
+_GATE_NARRATIVE_RE = re.compile(
+    r'投资总结|月度总结|年度总结|周记|反思录|复盘日记|按摩的话|随手记'
+)
+_GATE_REPLY_RE = re.compile(r'^回复@')
+
+
+def gate_topic_filter(scored: list[dict]) -> tuple[list[dict], list[dict]]:
+    """主题准入门槛：回复贴/个人叙事体一票拦；其余按企业分析准入线
+    （强信号 ≥2，或强信号 ≥1 且自选股命中）。返回 (过闸, 被拦)；
+    被拦条目附 gate_reason，进 hot_candidates.json 供误杀审计。"""
+    kept: list[dict] = []
+    blocked: list[dict] = []
+    for it in scored:
+        body = it.get('content') or it.get('text') or ''
+        title = it.get('title') or body[:60]
+        head = f"{title}\n{body[:120]}"
+        if _GATE_REPLY_RE.search(title.lstrip()) or _GATE_REPLY_RE.search(body.lstrip()):
+            blocked.append({**it, 'gate_reason': 'reply_fragment'})
+            continue
+        if _GATE_NARRATIVE_RE.search(head):
+            blocked.append({**it, 'gate_reason': 'personal_narrative'})
+            continue
+        strong_n = sum(1 for kw in _GATE_STRONG if kw in body)
+        if strong_n >= 2 or (strong_n >= 1 and it.get('symbols_hit')):
+            kept.append(it)
+            continue
+        blocked.append({**it, 'gate_reason': 'no_company_signal(strong=%d)' % strong_n})
+    return kept, blocked
+
+
 def load_top_doc(
     data_dir: Path | str = 'data', report_date: str | None = None
 ) -> dict | None:
@@ -1097,6 +1141,12 @@ def main(argv: list[str] | None = None) -> int:
             now,
             prev_top_ids,
         )
+        # 层 1 主题准入门槛（2026-11-02 主人拍板）：拦下的进 candidates 审计文件，不静默丢
+        gate_blocked: list[dict] = []
+        if cfg.get('gate_enabled', True):
+            scored, gate_blocked = gate_topic_filter(scored)
+            stats['gate_blocked'] = len(gate_blocked)
+            stats['gate_kept'] = len(scored)
         top_items = select_top(scored, int(cfg['top_n']))
 
         window_hours = float(cfg['window_hours'])
@@ -1123,6 +1173,15 @@ def main(argv: list[str] | None = None) -> int:
                 'items': [
                     _candidate_summary(item)
                     for item in sorted(scored, key=lambda x: -x['score'])
+                ],
+                # 层 1 门槛被拦条目：供误杀审计（gate_enabled=false 时为空）
+                'gate_blocked': [
+                    {
+                        'status_id': b.get('status_id'),
+                        'title': (b.get('title') or (b.get('text') or '')[:50])[:60],
+                        'gate_reason': b.get('gate_reason'),
+                    }
+                    for b in gate_blocked
                 ],
             },
         )
