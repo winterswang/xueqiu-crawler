@@ -210,6 +210,52 @@ def test_classify_priority_reference():
     assert priority == "reference"
 
 
+_UNSET = object()
+
+
+def _hot_article(topic_hits=_UNSET):
+    """热榜独有条目：内容本身够必读分，用于验证层 3 主题分桶是否越权压档。"""
+    article = {
+        "title": "深度分析：中海油估值与护城河",
+        "content": "估值 PE PB ROE 自由现金流 护城河 安全边际 商业模式 财报 年报 业绩 内在价值 毛利率 净利率 管理层 资本配置"
+        * 150,
+        "source": "hot",
+    }
+    if topic_hits is not _UNSET:
+        article["topic_hits"] = topic_hits
+    return article
+
+
+def test_classify_priority_hot_with_company_topic_keeps_bucket():
+    """热榜条目 company 命中 → 不压档，按分数正常分档。
+
+    回归：topic_hits 曾没从 hot_item_to_article 透传到 analyzer，
+    article.get('topic_hits') 恒为 None，导致所有热榜条目被压成 reference。
+    """
+    assert (
+        classify_priority(_hot_article({"company": 13, "philosophy": 2})) == "must_read"
+    )
+
+
+def test_classify_priority_hot_without_company_topic_demoted():
+    """热榜条目 company 0 命中 → 压到参考档（层 3 的本意）。"""
+    assert (
+        classify_priority(_hot_article({"company": 0, "philosophy": 5})) == "reference"
+    )
+
+
+def test_classify_priority_hot_missing_topic_hits_not_demoted():
+    """旧数据没有 topic_hits → 视为主题未知，按原逻辑分档，不一律压档。"""
+    assert classify_priority(_hot_article()) == "must_read"
+
+
+def test_classify_priority_account_article_unaffected_by_topic_rule():
+    """自选账号文章（source 非 hot）不受层 3 影响。"""
+    article = _hot_article({"company": 0})
+    article.pop("source")
+    assert classify_priority(article) == "must_read"
+
+
 # ============================================================
 # _format_article / _format_article_brief
 # ============================================================
@@ -287,6 +333,10 @@ if __name__ == "__main__":
         test_calculate_priority_score_short,
         test_classify_priority_must_read,
         test_classify_priority_reference,
+        test_classify_priority_hot_with_company_topic_keeps_bucket,
+        test_classify_priority_hot_without_company_topic_demoted,
+        test_classify_priority_hot_missing_topic_hits_not_demoted,
+        test_classify_priority_account_article_unaffected_by_topic_rule,
         test_format_article,
         test_format_article_brief,
     ]

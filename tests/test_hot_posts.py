@@ -356,6 +356,29 @@ def test_hot_item_to_article_maps_all_fields():
     }
 
 
+def test_hot_item_to_article_carries_topic_hits():
+    """主题命中要透传到 article：层 3 分桶靠它判断是否压档，丢了就一律压档。"""
+    item = make_item(
+        "412750389",
+        "2026-10-17T23:41:00+08:00",
+        topic_hits={"company": 3, "philosophy": 1, "strategy": 0},
+    )
+    article = hp.hot_item_to_article(item, 1)
+
+    assert article["topic_hits"] == {"company": 3, "philosophy": 1, "strategy": 0}
+    # 透传的是副本，拷改 article 不会污染原始条目
+    article["topic_hits"]["company"] = 0
+    assert item["topic_hits"]["company"] == 3
+
+
+def test_hot_item_to_article_omits_topic_hits_when_absent():
+    """旧数据/未打分条目没有 topic_hits 时不写这个 key，让 analyzer 按主题未知处理。"""
+    item = make_item("412750390", "2026-10-17T23:41:00+08:00")
+    article = hp.hot_item_to_article(item, 1)
+
+    assert "topic_hits" not in article
+
+
 def test_hot_item_to_article_parses_user_id_from_url():
     item = make_item("7", "2026-10-17T10:00:00+08:00", author_id="")
     item["url"] = "https://xueqiu.com/9508203182/7"

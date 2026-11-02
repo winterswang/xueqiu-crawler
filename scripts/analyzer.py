@@ -307,10 +307,12 @@ def classify_priority(article: dict, analysis: dict = None) -> str:
     # 层 3 主题分桶（2026-11-02 主人拍板「上 1+3」）：热榜独有条目聚焦企业分析——
     # company 主题 0 命中的（纯理念/个人叙事/行情杂谈，机械 gate 的灰色漏网，
     # 如「参评拉票杂感」类）一律压到参考档，不占必读/值得关注名额；
-    # 自选账号文章不受此规则影响。topic_hits 由 hot_posts.score_items 写入。
+    # 自选账号文章不受此规则影响。topic_hits 由 hot_posts.score_items 算出、
+    # hot_item_to_article 透传过来。缺这个字段（旧数据/摘要档）视为「主题未知」，
+    # 按原逻辑分档，不因缺少信号把所有热榜贴一律压成参考。
     if article.get('source') == 'hot':
-        topic = article.get('topic_hits') or {}
-        if not topic.get('company'):
+        topic = article.get('topic_hits')
+        if topic is not None and not topic.get('company'):
             return 'reference'
     if total >= 60:
         return 'must_read'

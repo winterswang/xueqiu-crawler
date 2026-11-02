@@ -826,7 +826,7 @@ def hot_item_to_article(item: dict, rank: int) -> dict | None:
     url = item.get('url') or ''
     full_text = str(item.get('content') or '').strip()
     content = full_text or text
-    return {
+    article = {
         'article_id': status_id,
         'user_id': str(item.get('author_id') or '').strip() or _user_id_from_url(url),
         'title': item.get('title') or derive_hot_title(text, author),
@@ -849,6 +849,13 @@ def hot_item_to_article(item: dict, rank: int) -> dict | None:
             'symbols_hit': list(item.get('symbols_hit') or []),
         },
     }
+    # 主题命中要一路带到 analyzer：层 3 分桶按 company 命中数决定是否压档，
+    # 而 topic_hits 只在 score_items 里算过，不显式透传就会丢（analyzer 读到
+    # None 会把所有热榜贴一律压成参考档）。老数据没有这个字段时不写 key，
+    # 让 analyzer 按「主题未知」处理，不误压。
+    if item.get('topic_hits'):
+        article['topic_hits'] = dict(item['topic_hits'])
+    return article
 
 
 def merge_hot_items(
