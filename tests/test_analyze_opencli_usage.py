@@ -95,7 +95,6 @@ def test_site_operations_set_is_pinned():
             "replies",
             "stock-notices",
             "user-articles",
-            "hot",
             "stock",
             "search",
         }
