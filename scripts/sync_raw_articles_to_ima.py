@@ -193,9 +193,7 @@ def main():
         return 0
 
     # W32: 改用入选文件列表（不再 find_article_files 全部）
-    all_files, total_selected, missing = find_selected_article_files(
-        target_date
-    )
+    all_files, total_selected, missing = find_selected_article_files(target_date)
     logger.info(
         f"日报入选: {total_selected} 篇，找到 raw: {len(all_files)} 篇，"
         f"missing: {missing} 篇"

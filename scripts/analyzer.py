@@ -1473,9 +1473,7 @@ def generate_daily_report(
         topics_str = (
             '、'.join(list(stat['topics'])[:3]) if stat['topics'] else '综合资讯'
         )
-        lines.append(
-            f"- **{author}**{media_tag}（{stat['count']}篇）：{topics_str}"
-        )
+        lines.append(f"- **{author}**{media_tag}（{stat['count']}篇）：{topics_str}")
 
     lines.append("")
 
@@ -1625,9 +1623,7 @@ def _format_article(
     url = _article_url(article)
     word_count = len(article.get('content', ''))
     word_suffix = (
-        '（摘要，未能取到全文）'
-        if article.get('content_source') == 'excerpt'
-        else ''
+        '（摘要，未能取到全文）' if article.get('content_source') == 'excerpt' else ''
     )
 
     lines.append(f"#### {index}. {title}")
@@ -1725,7 +1721,6 @@ def _format_article_brief(index: int, article: dict, result: dict | None) -> Lis
     url = _article_url(article)
 
     lines.append(f"{index}. [{title}]({url})（{author}）")
-
 
     if not result.get('quality_passed'):
         lines.append(f"   - ⚠️ {', '.join(result.get('issues', []))}")
