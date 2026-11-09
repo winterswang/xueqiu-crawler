@@ -103,15 +103,10 @@ def check_article_quality(article: dict) -> Tuple[bool, List[str]]:
     if not title or len(title.strip()) < 3:
         issues.append("标题为空或过短")
 
-    # 内容检测。热榜条目和「抓不到全文、只剩首页摘要」的条目用 80 字门槛：
-    # 摘要实测 143-199 字，用 200 会把整批热贴挡在 LLM 分析之外。上过热榜本身
-    # 就是相关性信号，所以热榜条目的短全文也放行；自有账号的短帖仍走 200。
+    # 内容检测。「抓不到全文、只剩首页摘要」的条目用 80 字门槛（摘要实测
+    # 143-199 字，用 200 会把整批摘要挡在 LLM 分析之外）；自有账号的短帖仍走 200。
     # 标题/作者/发布时间等检测不变。
-    min_content = (
-        80
-        if article.get('source') == 'hot' or article.get('content_source') == 'excerpt'
-        else 200
-    )
+    min_content = 80 if article.get('content_source') == 'excerpt' else 200
     if not content or len(content.strip()) < min_content:
         issues.append(f"正文为空或过短({len(content)}字符)")
 
@@ -304,16 +299,6 @@ def classify_priority(article: dict, analysis: dict = None) -> str:
     )
     if is_news and total < 60:
         return 'market_news'
-    # 层 3 主题分桶（2026-11-02 主人拍板「上 1+3」）：热榜独有条目聚焦企业分析——
-    # company 主题 0 命中的（纯理念/个人叙事/行情杂谈，机械 gate 的灰色漏网，
-    # 如「参评拉票杂感」类）一律压到参考档，不占必读/值得关注名额；
-    # 自选账号文章不受此规则影响。topic_hits 由 hot_posts.score_items 算出、
-    # hot_item_to_article 透传过来。缺这个字段（旧数据/摘要档）视为「主题未知」，
-    # 按原逻辑分档，不因缺少信号把所有热榜贴一律压成参考。
-    if article.get('source') == 'hot':
-        topic = article.get('topic_hits')
-        if topic is not None and not topic.get('company'):
-            return 'reference'
     if total >= 60:
         return 'must_read'
     elif total >= 30:
@@ -684,7 +669,7 @@ class ArticleAnalyzer:
                 self.max_content_chars
             )
 
-        # 热榜贴抓不到全文时只有首页摘要 —— 必须告诉模型「这不是全文」，
+        # 抓不到全文时只有首页摘要 —— 必须告诉模型「这不是全文」，
         # 否则它会照着 deep_analysis 的字段要求把缺失信息编出来。
         excerpt_note = ''
         if article.get('content_source') == 'excerpt':
@@ -1282,7 +1267,7 @@ def _is_truthy(value) -> bool:
 
 
 def _article_url(article: dict) -> str:
-    """文章链接：热榜条目自带 `url`（站点头像链接可能拿不到 uid），其余按 id 拼。"""
+    """文章链接：条目自带 `url` 时优先用它，其余按 uid/article_id 拼。"""
     return article.get('url') or (
         f"https://xueqiu.com/{article.get('user_id', '')}/{article.get('article_id', '')}"
     )
@@ -1294,7 +1279,6 @@ def generate_daily_report(
     output_path: str = None,
     crawl_stats: dict = None,
     model_name: str = None,
-    hot_stats: dict = None,
 ) -> str:
     """
     生成每日投研分析报告 v2 - 市场分组 + 操作参考
@@ -1302,9 +1286,6 @@ def generate_daily_report(
     Args:
         crawl_stats: 可选，爬取统计（含覆盖率信息）
         model_name: 可选，LLM 模型名（写进报告署名）。不传则走唯一解析入口
-        hot_stats: 可选，热榜融合统计 `{hot_total, merged, hot_only, skipped}`
-            （scripts/generate_report.py 产出）。热榜贴已合并进 articles，
-            这里只用来在概览里交代「多少条来自热榜、多少条与自有文章重合」。
     """
     if not model_name:
         model_name = resolve_model()  # 唯一来源见 scripts/llm_config.py
@@ -1367,30 +1348,7 @@ def generate_daily_report(
             ]
         )
 
-    # 热榜贴与自选账号文章已合并在 articles 里，概览要交代清楚口径：
-    # 「今日新增」只数自选账号，「分析条目」才是实际送进 LLM 的总数。
-    hot_total = int((hot_stats or {}).get('hot_total') or 0)
-    hot_merged = int((hot_stats or {}).get('merged') or 0)
-    hot_only = int((hot_stats or {}).get('hot_only') or 0)
-    hot_skipped = int((hot_stats or {}).get('skipped') or 0)
-    account_total = sum(1 for a in articles if a.get('source') != 'hot')
-
-    overview_lines = [
-        f"- **今日新增**：{account_total} 篇（自选账号）"
-        if hot_total
-        else f"- **今日新增**：{total} 篇"
-    ]
-    if hot_total:
-        overview_lines.append(
-            f"- **热门贴融合**：{hot_merged + hot_only} 条（其中 {hot_merged} 条与自有文章重合，"
-            f"已按文章 ID 合并；{hot_only} 条为热榜独有）"
-        )
-        if hot_skipped:
-            overview_lines.append(
-                f"- **热榜未纳入**：{hot_skipped} 条（摘要过短或重复）"
-            )
-        overview_lines.append(f"- **分析条目**：{total} 篇")
-
+    overview_lines = [f"- **今日新增**：{total} 篇"]
     lines.extend(
         [
             "---",
@@ -1499,11 +1457,8 @@ def generate_daily_report(
                 'count': 0,
                 'topics': set(),
                 'is_media': False,
-                'is_hot': False,
             }
         author_stats[author]['count'] += 1
-        if article.get('hot'):
-            author_stats[author]['is_hot'] = True
         topic = (result.get('analysis') or {}).get('topic_category', '')
         if topic and topic != '其他':
             author_stats[author]['topics'].add(topic)
@@ -1511,17 +1466,15 @@ def generate_daily_report(
         if author in ['海豚研究君', '腾讯新闻', '新浪财经', '格隆汇']:
             author_stats[author]['is_media'] = True
 
-    # 按发文数排序；融合热榜后作者数会明显变多，只列前 15 位（同分保持原顺序，
-    # 自选账号作者在前、热榜作者在后）。
+    # 按发文数排序；只列前 15 位（同分保持原顺序）。
     sorted_authors = sorted(author_stats.items(), key=lambda x: -x[1]['count'])[:15]
     for author, stat in sorted_authors:
         media_tag = ' [资讯]' if stat['is_media'] else ''
-        hot_tag = ' 🔥' if stat.get('is_hot') else ''
         topics_str = (
             '、'.join(list(stat['topics'])[:3]) if stat['topics'] else '综合资讯'
         )
         lines.append(
-            f"- **{author}**{media_tag}{hot_tag}（{stat['count']}篇）：{topics_str}"
+            f"- **{author}**{media_tag}（{stat['count']}篇）：{topics_str}"
         )
 
     lines.append("")
@@ -1654,33 +1607,6 @@ def generate_daily_report(
     return report
 
 
-def _hot_badge(article: dict) -> str:
-    """热榜标记：`🔥 热榜第3 · 👍99 💬214 · 64.2分`（附今晨 / 关注作者 / ⭐代码）。
-
-    只有融合自 hot_top10.json 的条目才有 `hot` 元数据；普通文章返回空串。
-    """
-    hot = article.get('hot') or {}
-    if not hot:
-        return ''
-    segments = [f"🔥 热榜第{hot['rank']}" if hot.get('rank') else '🔥 热榜']
-    engagement = []
-    if hot.get('likes') is not None:
-        engagement.append(f"👍{hot.get('likes')}")
-    if hot.get('comments') is not None:
-        engagement.append(f"💬{hot.get('comments')}")
-    if engagement:
-        segments.append(' '.join(engagement))
-    if hot.get('score'):
-        segments.append(f"{float(hot['score']):.1f}分")
-    if hot.get('is_overnight'):
-        segments.append('今晨')
-    if hot.get('followed'):
-        segments.append('关注作者')
-    if hot.get('symbols_hit'):
-        segments.append('⭐' + '/'.join(hot['symbols_hit'][:3]))
-    return ' · '.join(segments)
-
-
 def _format_article(
     index: int,
     article: dict,
@@ -1699,7 +1625,7 @@ def _format_article(
     url = _article_url(article)
     word_count = len(article.get('content', ''))
     word_suffix = (
-        '（热榜摘要，未能取到全文）'
+        '（摘要，未能取到全文）'
         if article.get('content_source') == 'excerpt'
         else ''
     )
@@ -1707,9 +1633,6 @@ def _format_article(
     lines.append(f"#### {index}. {title}")
     lines.append("")
     lines.append(f"- **作者**：{author}")
-    badge = _hot_badge(article)
-    if badge:
-        lines.append(f"- **热度**：{badge}")
     lines.append(f"- **链接**：{url}")
     lines.append(f"- **字数**：{word_count} 字{word_suffix}")
 
@@ -1803,10 +1726,6 @@ def _format_article_brief(index: int, article: dict, result: dict | None) -> Lis
 
     lines.append(f"{index}. [{title}]({url})（{author}）")
 
-    # 热度另起一个缩进行：push_feishu 按 `^\d+\.` 抽标题，缩进行不会被误当成条目。
-    badge = _hot_badge(article)
-    if badge:
-        lines.append(f"   - {badge}")
 
     if not result.get('quality_passed'):
         lines.append(f"   - ⚠️ {', '.join(result.get('issues', []))}")

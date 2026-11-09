@@ -22,12 +22,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from logging_utils import get_logger, log_execution_summary
 from analyzer import ArticleAnalyzer, generate_daily_report
-from hot_posts import (
-    enrich_items_with_fulltext,
-    load_top_doc,
-    merge_hot_items,
-    update_top_doc_items,
-)
 
 # 风控页判定统一走 xueqiu_analyzer.waf（唯一实现，见 scripts/waf_bridge.py）
 from waf_bridge import is_error_page
@@ -162,68 +156,6 @@ def get_today_articles(data_dir: str = 'data') -> list:
     return filtered
 
 
-def _merge_hot_posts(
-    data_dir: str, articles: list[dict], cfg: dict
-) -> tuple[list[dict], dict]:
-    """读当日热榜，按文章 ID 合并进 articles。
-
-    全文默认由 01:00 的 prepare job 抓好写进 hot_top10.json；这里只在
-    `hot_posts.fetch_fulltext=true`（兜底开关）时补抓缺失的那几条。
-    热榜只是增量内容供给：读不到就原样返回，日报降级为纯自选账号文章。
-    """
-    logger = get_logger()
-    top_doc = load_top_doc(data_dir)
-    items = (top_doc or {}).get('items')
-    if not isinstance(items, list) or not items:
-        logger.info('热门贴融合: 无热榜数据，日报只含自选账号文章')
-        return articles, {}
-
-    # 01:00 的 prepare job 正常会把 content 一起写好。缺失时才考虑补抓，
-    # 且**跳过与今日已爬文章重合的条目** —— 合并后它们用已爬到的正文，
-    # 再去抓一次纯属白烧滚动小时的额度。
-    today_ids = {str(a.get('article_id') or '').strip() for a in articles}
-    missing_items = [
-        item
-        for item in items
-        if isinstance(item, dict)
-        and not item.get('content')
-        and str(item.get('status_id') or '').strip() not in today_ids
-    ]
-    if missing_items:
-        if ((cfg or {}).get('hot_posts') or {}).get('fetch_fulltext'):
-            logger.info(
-                '热榜: %d 条缺全文，按 fetch_fulltext=true 现场补抓',
-                len(missing_items),
-            )
-            enrich_stats = enrich_items_with_fulltext(missing_items, logger)
-            if enrich_stats.get('fetched'):
-                # 补抓的全文必须回写 hot_top10.json：同一轮 cron 的 5/6 步
-                # IMA 同步按这个文件找热榜帖的 raw，不回写的话那边读到的
-                # 还是首页摘要，刚抓的全文白抓（2026-10-20 收口）。
-                update_top_doc_items(data_dir, missing_items, logger)
-        else:
-            logger.info(
-                '热榜: %d 条没有全文（01:00 prepare job 未抓到），按首页摘要分析',
-                len(missing_items),
-            )
-
-    # 「昨天爬过、仍落在 24h 窗口内」的帖子已由 hot_posts.py 在 select_top 之前
-    # 剔除（见 load_prior_status_ids），这里只做今日重合条目的合并。
-    merged, stats = merge_hot_items(articles, items)
-    logger.info(
-        '热门贴融合: 热榜 %d 条, 与自有文章合并 %d 条, 独有 %d 条, 跳过 %d 条',
-        stats.get('hot_total', 0),
-        stats.get('merged', 0),
-        stats.get('hot_only', 0),
-        stats.get('skipped', 0),
-    )
-    if stats.get('hot_total') and not stats.get('merged'):
-        logger.info(
-            '热门贴融合: 本轮无 ID 重合（若长期为 0，检查 status_id/article_id 口径）'
-        )
-    return merged, stats
-
-
 def generate_today_report(
     data_dir: str = 'data',
     output_path: str = None,
@@ -287,16 +219,6 @@ def generate_today_report(
         if config_path.exists()
         else {}
     )
-    # 热榜贴融合：放在 `[:limit]` 之后，limit 仍只约束自选账号文章数，
-    # 热榜最多再追加 top_n 条。融合时必须先于分析 —— 热贴要和自有文章走同一套
-    # 质量门、LLM 分析和优先级分桶，而不是单独渲染成一个热榜列表。
-    try:
-        articles, hot_stats = _merge_hot_posts(data_dir, articles, cfg)
-    except (OSError, RuntimeError, ValueError, ImportError) as exc:
-        # 热贴是增量内容，读写/子进程/适配器任何一环失败都不允许阻塞整份日报。
-        logger.warning(f'热门贴融合失败（日报降级为纯自选账号文章）: {exc}')
-        hot_stats = {}
-
     analyzer = ArticleAnalyzer(api_key=api_key, config=cfg)
 
     # 分析每篇文章
@@ -344,7 +266,6 @@ def generate_today_report(
         output_path,
         crawl_stats=crawl_stats,
         model_name=analyzer.model_name,
-        hot_stats=hot_stats,
     )
 
     # 输出统计
@@ -375,9 +296,6 @@ def generate_today_report(
         "api_errors": analyzer_stats.get("api_errors", 0),
         "total_latency_ms": total_latency_ms,
         "output_path": output_path,
-        "hot_total": hot_stats.get("hot_total", 0),
-        "hot_merged": hot_stats.get("merged", 0),
-        "hot_only": hot_stats.get("hot_only", 0),
     }
     log_execution_summary(summary)
     logger.info(

@@ -45,7 +45,6 @@ SITE_OPERATIONS = frozenset(
         "replies",
         "stock-notices",
         "user-articles",
-        "hot",
         "stock",
         "search",
     }
